@@ -115,6 +115,7 @@ let streamState: 'idle' | 'loading' | 'streaming' = 'idle';
 let streamLineBuf = '';
 let waitingStartTime = 0;
 let streamTokenCount = 0;
+let waitingActivity = '分析中';
 let bottomOptions: { label: string; desc: string; action: string }[] = [];
 let mutedInput = false;
 let pendingExitSince = 0;
@@ -896,7 +897,15 @@ async function handleChat(input: string): Promise<void> {
     printToolDegradationNotice();
     console.log(`\n  ${C.accent('◇')} ${chalk.bold('You')}  ${input}`);
     state.conversation.push({ role: 'user', content: input, timestamp: new Date().toISOString() });
-    streamState = 'loading'; streamLineBuf = ''; startWaitingPhase();
+    streamState = 'loading'; streamLineBuf = '';
+    // Detect user intent for more informative waiting status
+    if (/文档|doc|补完|补齐/.test(input)) waitingActivity = '读取文档中';
+    else if (/扫描|检查|分析.*项目|项目.*分析/.test(input)) waitingActivity = '扫描项目中';
+    else if (/修复|fix|bug|错误/.test(input)) waitingActivity = '分析代码中';
+    else if (/测试|test/.test(input)) waitingActivity = '生成测试中';
+    else if (/启动|运行|start|run/.test(input)) waitingActivity = '准备命令中';
+    else waitingActivity = '分析中';
+    startWaitingPhase();
     process.stdout.write(`\r  ${C.primary('◉')} ${chalk.bold('AI')} ${C.dim(`正在连接 ${state.aiConfig.provider.toUpperCase()}...`)}`);
     let fullResponse = ''; let firstChunk = true; let inCodeBlock = false; let codeLang = ''; let suppressCodeBlock = false;
     let codeBlockLines = 0; let codeBlockFolded = false; const FOLD_THRESHOLD = 30; const FOLD_PREVIEW = 5;
@@ -2170,7 +2179,7 @@ function startWaitingPhase(): void {
     const barLen = 20;
     const progI = Math.min(Math.floor((tick * 3) % barLen), barLen - 1);
     const bar = WAIT_BAR.repeat(progI) + WAIT_BAR_EMPTY.repeat(barLen - progI);
-    process.stdout.write(`\r  ${C.primary(pulse)} ${chalk.bold('AI')} ${C.dim('分析中')} ${C.primary(`[${elapsed}s]`)}  ${C.dim(bar)}`);
+    process.stdout.write(`\r  ${C.primary(pulse)} ${chalk.bold('AI')} ${C.dim(waitingActivity)} ${C.primary(`[${elapsed}s]`)}  ${C.dim(bar)}`);
     spinnerIdx = (spinnerIdx + 1) % WAIT_PULSE.length;
     // Show hint after 10s
     if (tick === 125) {
