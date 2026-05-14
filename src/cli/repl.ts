@@ -171,8 +171,9 @@ function inputBoxBottom(): string {
 
 function printBottomBlock(): void {
   bottomOptions = [];
-  // Render panel only — no orphaned box bottom (it scrolled away during output)
-  process.stdout.write(`\n${renderBottomPanel(buildCurrentPanel())}\n`);
+  // Render input box frame + panel together as static bottom area
+  process.stdout.write(`\n${inputBoxTop()}\n  ${C.accent('│')}${' '.repeat(termWidth() - 6)}${C.accent('│')}\n${inputBoxBottom()}\n`);
+  process.stdout.write(`${renderBottomPanel(buildCurrentPanel())}\n`);
 }
 
 function buildCurrentPanelStr(): string {
@@ -224,12 +225,7 @@ function refreshPrompt(): void {
     rl.setPrompt(`${C.accent('选择')} ${C.dim('输入选项后回车')} ${C.accent('>')} `);
     return;
   }
-  // Input box frame: top border + content line with prompt
-  // \ continuation hint in the prompt line
-  rl.setPrompt(
-    `${inputBoxTop()}\n` +
-    `  ${C.accent('│')} ${C.accent('◇')}  `
-  );
+  rl.setPrompt(`${C.accent('◇')}  `);
 }
 
 function promptRepl(): void {
