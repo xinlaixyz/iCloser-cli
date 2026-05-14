@@ -20,7 +20,7 @@ export async function detectProject(rootPath: string): Promise<ProjectIdentity> 
 
   const language = detectLanguage(files, { packageJson, goMod, cargoToml, requirements, pyproject, composer, gemfile, buildGradle, pomXml });
   const framework = detectFramework(files, language, packageJson, goMod, requirements, buildGradle, pomXml);
-  const database = detectDatabase(files, packageJson, goMod, requirements, pyproject, buildGradle);
+  const database = detectDatabase(files, packageJson, goMod, requirements, pyproject, buildGradle, pomXml);
   const buildSystem = detectBuildSystem(files, language, packageJson);
   const testFramework = detectTestFramework(files, packageJson, goMod, requirements, buildGradle);
   const deploymentType = detectDeploymentType(files);
@@ -105,6 +105,11 @@ function detectLanguage(
 
   // Swift indicators
   if (files.some(f => f.endsWith('.swift'))) scores.swift += 15;
+  if (files.some(f => f.includes('.xcodeproj') || f.includes('.xcworkspace'))) scores.swift += 10;
+  if (files.some(f => f === 'Podfile' || f === 'Package.swift')) scores.swift += 5;
+
+  // Objective-C indicators (often alongside Swift in iOS projects)
+  if (files.some(f => f.endsWith('.m') || f.endsWith('.mm') || f.endsWith('.h'))) scores.swift += 3;
 
   // C/C++ indicators
   if (files.some(f => f.endsWith('.c'))) scores.c += 10;
@@ -148,7 +153,7 @@ function detectFramework(
   if ('next' in deps) return 'nextjs';
   if ('nuxt' in deps) return 'nuxt';
   if ('react' in deps || 'react-dom' in deps) return 'react';
-  if ('vue' in deps) return 'vue';
+  if ('vue' in deps || files.some(f => f.endsWith('.vue'))) return 'vue';
   if ('svelte' in deps) return 'svelte';
   if ('@angular/core' in deps) return 'angular';
   if ('express' in deps) return 'express';
@@ -167,6 +172,23 @@ function detectFramework(
     const mod = goMod.toLowerCase();
     if (mod.includes('gin-gonic/gin')) return 'gin';
     if (mod.includes('labstack/echo')) return 'express'; // closest match
+  }
+
+  // iOS / Swift frameworks
+  if (language === 'swift') {
+    // Check file paths for framework indicators
+    if (files.some(f => /swiftui/i.test(f) || /SwiftUI/i.test(f))) return 'swiftui';
+    if (files.some(f => /uikit/i.test(f) || /UIKit/i.test(f) || /UIViewController/i.test(f))) return 'uikit';
+    if (files.some(f => f.includes('.storyboard') || f.includes('.xib'))) return 'uikit';
+    // Modern Swift projects (2019+) default to SwiftUI
+    if (files.some(f => f.includes('.xcodeproj') || f.includes('.xcworkspace'))) return 'swiftui';
+    return 'swiftui'; // default for Swift
+  }
+
+  // iOS / ObjC frameworks
+  if (files.some(f => f.endsWith('.m') || f.endsWith('.mm'))) {
+    // ObjC is always UIKit era
+    return 'uikit';
   }
 
   // Java frameworks
@@ -193,11 +215,12 @@ function detectDatabase(
   goMod: string | null,
   requirements: string | null,
   pyproject: Record<string, unknown> | null,
-  buildGradle: string | null
+  buildGradle: string | null,
+  pomXml: string | null,
 ): DatabaseType {
   const allText = files.join(' ').toLowerCase();
 
-  // Config file detection
+  // Config file path detection
   if (allText.includes('postgres') || allText.includes('psql') || files.some(f => f.includes('pg'))) return 'postgresql';
   if (allText.includes('mysql') || files.some(f => f.includes('mysql'))) return 'mysql';
   if (files.some(f => f === 'db.sqlite3' || f.endsWith('.sqlite') || f.endsWith('.db'))) return 'sqlite';
@@ -205,6 +228,22 @@ function detectDatabase(
   if (allText.includes('redis')) return 'redis';
   if (allText.includes('elasticsearch')) return 'elasticsearch';
   if (allText.includes('dynamodb')) return 'dynamodb';
+
+  // Java/Maven MySQL detection via pom.xml content
+  const pomLower = (pomXml || '').toLowerCase();
+  const gradleLower = (buildGradle || '').toLowerCase();
+  const javaBuildText = pomLower + gradleLower;
+  if (javaBuildText.includes('mysql-connector') || javaBuildText.includes('com.mysql')) return 'mysql';
+  if (javaBuildText.includes('postgresql') || javaBuildText.includes('org.postgresql')) return 'postgresql';
+  if (javaBuildText.includes('mongo') || javaBuildText.includes('mongodb')) return 'mongodb';
+  if (javaBuildText.includes('redis') || javaBuildText.includes('jedis') || javaBuildText.includes('lettuce')) return 'redis';
+  if (javaBuildText.includes('oracle') || javaBuildText.includes('ojdbc')) return 'postgresql'; // best match
+  // Spring Boot JPA/Hibernate implies a database is used
+  if (javaBuildText.includes('spring-boot-starter-data-jpa') || javaBuildText.includes('hibernate')) {
+    if (javaBuildText.includes('h2')) return 'postgresql'; // best match for embedded
+    if (pomLower.includes('mysql') || gradleLower.includes('mysql')) return 'mysql';
+    if (pomLower.includes('postgres') || gradleLower.includes('postgres')) return 'postgresql';
+  }
 
   // Package dependency detection
   const deps = packageJson ? {
@@ -233,6 +272,12 @@ function detectDatabase(
     if (reqs.includes('pymongo') || reqs.includes('mongoengine')) return 'mongodb';
     if (reqs.includes('redis')) return 'redis';
   }
+
+  // iOS database detection
+  if (files.some(f => f.includes('.xcdatamodeld') || f.includes('CoreData'))) return 'sqlite'; // CoreData uses SQLite
+  const hasRealm = files.some(f => f.includes('Realm') || f.includes('realm'));
+  const javaRealm = javaBuildText.includes('realm');
+  if (hasRealm || javaRealm) return 'mongodb'; // Realm is NoSQL-like
 
   // Migration folder detection
   if (files.some(f => f.includes('migration') || f.includes('migrate'))) {
@@ -292,6 +337,9 @@ function detectTestFramework(
 
   if (buildGradle || files.some(f => f.endsWith('Test.java'))) return 'junit';
 
+  // iOS test frameworks
+  if (files.some(f => f.includes('XCTest') || f.endsWith('Tests.swift') || f.endsWith('Test.swift'))) return 'xctest';
+
   return 'unknown';
 }
 
@@ -303,6 +351,8 @@ function detectDeploymentType(files: string[]): ProjectIdentity['deploymentType'
   if (files.includes('Dockerfile') || files.includes('docker-compose.yml') || files.includes('docker-compose.yaml')) return 'docker';
   if (files.some(f => f.includes('serverless.yml') || f.includes('serverless'))) return 'serverless';
   if (files.some(f => f.includes('microservice'))) return 'microservices';
+  // iOS deployment
+  if (files.some(f => f.includes('.xcodeproj') || f.includes('.xcworkspace') || f.includes('Info.plist'))) return 'ios-app';
   return 'unknown';
 }
 
@@ -367,9 +417,14 @@ function detectPackageManager(
   if (files.includes('Cargo.toml')) return 'cargo';
   if (files.includes('go.mod')) return 'go-mod';
   if (files.includes('pom.xml')) return 'maven';
-  if (files.includes('build.gradle')) return 'gradle';
+  if (files.includes('build.gradle') || files.includes('build.gradle.kts')) return 'gradle';
   if (files.includes('pyproject.toml')) return 'poetry';
   if (files.includes('requirements.txt')) return 'pip';
+  // iOS build systems
+  if (files.some(f => f.includes('.xcodeproj') || f.includes('.xcworkspace'))) return 'xcode';
+  if (files.includes('Podfile')) return 'cocoapods';
+  if (files.includes('Package.swift') && !files.includes('Podfile')) return 'spm';
+  if (files.includes('Cartfile')) return 'carthage';
   return 'none';
 }
 

@@ -12,6 +12,7 @@ export type FrameworkType =
   | 'react' | 'vue' | 'nextjs' | 'nuxt' | 'svelte' | 'angular'
   | 'django' | 'flask' | 'fastapi' | 'spring-boot' | 'gin'
   | 'actix' | 'express' | 'nestjs' | 'laravel' | 'rails'
+  | 'swiftui' | 'uikit'
   | 'unknown';
 
 export type DatabaseType =
@@ -20,11 +21,14 @@ export type DatabaseType =
 
 export type BuildSystem =
   | 'npm' | 'yarn' | 'pnpm' | 'cargo' | 'go-mod' | 'gradle'
-  | 'maven' | 'pip' | 'poetry' | 'unknown';
+  | 'maven' | 'pip' | 'poetry'
+  | 'xcode' | 'cocoapods' | 'spm' | 'carthage'
+  | 'unknown';
 
 export type TestFramework =
   | 'jest' | 'vitest' | 'pytest' | 'go-test' | 'junit'
-  | 'cypress' | 'playwright' | 'unknown';
+  | 'cypress' | 'playwright' | 'xctest'
+  | 'unknown';
 
 // ============================================================
 // Project Identity
@@ -36,7 +40,7 @@ export interface ProjectIdentity {
   buildSystem: BuildSystem;
   testFramework: TestFramework;
   runtime: string;
-  deploymentType: 'docker' | 'kubernetes' | 'serverless' | 'monolith' | 'microservices' | 'unknown';
+  deploymentType: 'docker' | 'kubernetes' | 'serverless' | 'monolith' | 'microservices' | 'ios-app' | 'unknown';
   packageManager: string;
   languageVersion: string;
 }
