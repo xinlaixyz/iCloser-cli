@@ -400,3 +400,169 @@ export function getCustomTemplates(): string[] {
 export function getTemplate(name: string): DocTemplate[] | undefined {
   return CUSTOM_TEMPLATES[name];
 }
+
+// ============================================================
+// D1: ask — AI answers questions from project docs
+// ============================================================
+export async function askDocs(
+  rootPath: string, query: string, _index: ProjectIndex, config: { ai: { provider: string; model: string; apiKey?: string; maxTokens: number; temperature: number } }
+): Promise<string> {
+  const docs = await loadAllDocs(rootPath);
+  const docText = Object.entries(docs).map(([file, content]) => `## ${file}\n${content.substring(0, 3000)}`).join('\n\n');
+  const prompt = `你是一个项目文档助手。根据以下项目文档回答用户问题。
+
+项目文档:
+${docText.substring(0, 8000)}
+
+用户问题: ${query}
+
+请基于文档内容精准回答。如果文档中没有相关信息，请明确说明。`;
+  const { createProvider } = await import('../ai/provider.js');
+  const provider = createProvider({
+    provider: config.ai.provider as 'mock' | 'claude' | 'deepseek' | 'openai' | 'qwen',
+    model: config.ai.model, apiKey: config.ai.apiKey || '',
+    maxTokens: config.ai.maxTokens, temperature: config.ai.temperature,
+  });
+  const response = await provider.chat({ systemPrompt: prompt, context: { projectMeta: '', relevantCode: [], relevantMemory: '', totalTokens: 0, budgetUsed: 0 }, task: query, history: '' });
+  return `  ${response.content || '无法获取回答'}`;
+}
+
+// ============================================================
+// D2: summarize — generate document summary
+// ============================================================
+export async function summarizeDoc(
+  content: string, config: { ai: { provider: string; model: string; apiKey?: string; maxTokens: number; temperature: number } }
+): Promise<string> {
+  const prompt = `请用3-5句话总结以下文档的核心内容，用中文输出。
+
+文档内容:
+${content.substring(0, 6000)}`;
+  const { createProvider } = await import('../ai/provider.js');
+  const provider = createProvider({
+    provider: config.ai.provider as 'mock' | 'claude' | 'deepseek' | 'openai' | 'qwen',
+    model: config.ai.model, apiKey: config.ai.apiKey || '',
+    maxTokens: 500, temperature: 0.3,
+  });
+  const response = await provider.chat({ systemPrompt: prompt, context: { projectMeta: '', relevantCode: [], relevantMemory: '', totalTokens: 0, budgetUsed: 0 }, task: '生成摘要', history: '' });
+  return `  ${response.content || '无法生成摘要'}`;
+}
+
+// ============================================================
+// D8: review — quality review with issues list
+// ============================================================
+export async function reviewDoc(
+  content: string, config: { ai: { provider: string; model: string; apiKey?: string; maxTokens: number; temperature: number } }
+): Promise<{ section: string; severity: 'high' | 'medium' | 'low'; description: string; suggestion?: string }[]> {
+  const prompt = `审查以下文档的质量。找出：
+1. 不明确或模糊的描述
+2. 矛盾或冲突的内容
+3. 缺失的关键信息
+4. 格式和结构问题
+
+对每个问题标注严重程度(high/medium/low)和所在章节。
+
+文档内容:
+${content.substring(0, 8000)}
+
+输出格式：每行一个问题，格式为 "严重程度|章节|问题描述|建议"`;
+  const { createProvider } = await import('../ai/provider.js');
+  const provider = createProvider({
+    provider: config.ai.provider as 'mock' | 'claude' | 'deepseek' | 'openai' | 'qwen',
+    model: config.ai.model, apiKey: config.ai.apiKey || '',
+    maxTokens: 1000, temperature: 0.3,
+  });
+  const response = await provider.chat({ systemPrompt: prompt, context: { projectMeta: '', relevantCode: [], relevantMemory: '', totalTokens: 0, budgetUsed: 0 }, task: '审查文档质量', history: '' });
+  const lines = (response.content || '').split('\n').filter(l => l.includes('|'));
+  return lines.map(line => {
+    const parts = line.split('|').map(p => p.trim());
+    return {
+      severity: (parts[0] || 'low') as 'high' | 'medium' | 'low',
+      section: parts[1] || '未知',
+      description: parts[2] || line,
+      suggestion: parts[3] || undefined,
+    };
+  });
+}
+
+// ============================================================
+// D9: rewrite — adapt document for different audience
+// ============================================================
+export async function rewriteDoc(
+  content: string, audience: string, config: { ai: { provider: string; model: string; apiKey?: string; maxTokens: number; temperature: number } }
+): Promise<string> {
+  const audienceMap: Record<string, string> = {
+    beginner: '编程初学者，需要更多解释和示例',
+    developer: '有经验的开发者，关注实现细节和 API',
+    manager: '技术管理者，关注架构决策和资源需求',
+    newbie: '完全新手，需要从基础概念开始解释',
+    qa: '测试工程师，关注测试策略和验收标准',
+  };
+  const audienceDesc = audienceMap[audience] || audience;
+  const prompt = `将以下文档改写为适合"${audienceDesc}"阅读的版本。保持原意，调整语言风格和详细程度。
+
+原文档:
+${content.substring(0, 6000)}`;
+  const { createProvider } = await import('../ai/provider.js');
+  const provider = createProvider({
+    provider: config.ai.provider as 'mock' | 'claude' | 'deepseek' | 'openai' | 'qwen',
+    model: config.ai.model, apiKey: config.ai.apiKey || '',
+    maxTokens: 2000, temperature: 0.5,
+  });
+  const response = await provider.chat({ systemPrompt: prompt, context: { projectMeta: '', relevantCode: [], relevantMemory: '', totalTokens: 0, budgetUsed: 0 }, task: `改写文档为${audience}版本`, history: '' });
+  return `  ${response.content || '改写失败'}`;
+}
+
+// ============================================================
+// D7: changelog — generate changelog from git history
+// ============================================================
+export async function generateChangelog(
+  rootPath: string, config: { ai: { provider: string; model: string; apiKey?: string; maxTokens: number; temperature: number } }
+): Promise<string> {
+  let gitLog = '';
+  try {
+    const { execSync } = await import('child_process');
+    gitLog = execSync('git log --oneline -30', { cwd: rootPath, encoding: 'utf-8', timeout: 5000 });
+  } catch { return '  无法读取 git 历史（需在 git 仓库中运行）'; }
+  if (!gitLog.trim()) return '  Git 历史为空';
+  const prompt = `将以下 git 提交记录整理为结构化的 CHANGELOG。按类型分组(feat/fix/docs/chore)，用中文描述。
+
+Git 历史:
+${gitLog}`;
+  const { createProvider } = await import('../ai/provider.js');
+  const provider = createProvider({
+    provider: config.ai.provider as 'mock' | 'claude' | 'deepseek' | 'openai' | 'qwen',
+    model: config.ai.model, apiKey: config.ai.apiKey || '',
+    maxTokens: 1000, temperature: 0.3,
+  });
+  const response = await provider.chat({ systemPrompt: prompt, context: { projectMeta: '', relevantCode: [], relevantMemory: '', totalTokens: 0, budgetUsed: 0 }, task: '生成 CHANGELOG', history: '' });
+  return response.content || '  生成失败';
+}
+
+// ============================================================
+// readFileContent — read a file from project root
+// ============================================================
+export async function readFileContent(rootPath: string, file: string): Promise<string> {
+  const fs = await import('fs/promises');
+  const p = await import('path');
+  const fp = p.join(rootPath, file);
+  try { return await fs.readFile(fp, 'utf-8'); } catch { throw new Error(`无法读取文件: ${file}`); }
+}
+
+async function loadAllDocs(rootPath: string): Promise<Record<string, string>> {
+  const docs: Record<string, string> = {};
+  const fs = await import('fs/promises');
+  const p = await import('path');
+  const dirs = ['docs', 'doc'];
+  for (const dir of dirs) {
+    const dp = p.join(rootPath, dir);
+    try {
+      const entries = await fs.readdir(dp, { withFileTypes: true });
+      for (const e of entries) {
+        if (e.isFile() && /\.(md|txt)$/i.test(e.name)) {
+          docs[`${dir}/${e.name}`] = await fs.readFile(p.join(dp, e.name), 'utf-8');
+        }
+      }
+    } catch { /* dir may not exist */ }
+  }
+  return docs;
+}
