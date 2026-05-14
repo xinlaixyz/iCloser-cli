@@ -171,9 +171,8 @@ function inputBoxBottom(): string {
 
 function printBottomBlock(): void {
   bottomOptions = [];
-  // Render input box frame + panel together as static bottom area
-  process.stdout.write(`\n${inputBoxTop()}\n  ${C.accent('│')}${' '.repeat(termWidth() - 6)}${C.accent('│')}\n${inputBoxBottom()}\n`);
-  process.stdout.write(`${renderBottomPanel(buildCurrentPanel())}\n`);
+  // Panel only — clean single-line separator above
+  process.stdout.write(`\n${renderBottomPanel(buildCurrentPanel())}\n`);
 }
 
 function buildCurrentPanelStr(): string {
@@ -810,11 +809,9 @@ async function handleSlashCommand(input: string): Promise<void> {
     }
 
 
-function printLoopStatus(step: import('../core/task-loop.js').TaskLoopStepId, title?: string): void {
-  console.log(renderReplLoopPanel(step, { title: title || '任务循环' }) + '\n');
-  if (step === 'collect-context') {
-    printToolDegradationNotice();
-  }
+function printLoopStatus(_step: import('../core/task-loop.js').TaskLoopStepId, title?: string): void {
+  // S20 panel handles all status display — show minimal one-liner
+  if (title) console.log(`  ${C.primary('◉')} ${C.dim(title)}`);
 }
 // ============================================================
 // Chat
@@ -913,7 +910,6 @@ async function handleChat(input: string): Promise<void> {
     const richContext = await buildRichContext(input);
     const prompt: AIPrompt = { systemPrompt: buildSystemPrompt(), context: richContext, task: input, history };
     printToolDegradationNotice();
-    console.log(renderReplLoopStatusBar('collect-context'));
     console.log(`\n  ${C.accent('◇')} ${chalk.bold('You')}  ${input}`);
     state.conversation.push({ role: 'user', content: input, timestamp: new Date().toISOString() });
     streamState = 'loading'; streamLineBuf = ''; startWaitingPhase();
@@ -1352,6 +1348,10 @@ function isWrittenFilesQuestion(input: string): boolean {
 
 function isStartProjectIntent(input: string): boolean {
   const normalized = input.trim().toLowerCase().replace(/\s+/g, '');
+  // Exclude questions — "怎么启动" / "如何启动" is asking HOW, not commanding
+  const isQuestion = /^(怎么|如何|怎样|你知道|请问|谁能|谁知道|啥是|什么是|为什么)/i.test(normalized) ||
+    /(怎么启动|如何启动|怎样启动|怎么运行|如何运行|怎么跑|如何跑)/i.test(normalized);
+  if (isQuestion) return false;
   return /(启动|运行|跑起来|打开|起服务|启动服务|运行项目|启动项目|跑项目|start|serve|npmrundev)/i.test(normalized) &&
     /(项目|服务|前端|后端|vite|react|app|应用|dev|serve|start)/i.test(normalized);
 }
