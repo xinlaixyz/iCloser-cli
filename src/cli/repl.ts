@@ -1919,19 +1919,16 @@ function startWaitingPhase(): void {
 
 function startStreamingPhase(): void {
   if (spinnerTimer) { clearInterval(spinnerTimer); spinnerTimer = null; }
-  spinnerTimer = setInterval(() => {
-    if (streamState === 'idle') { stopWaitingPhase(); return; }
-    const elapsed = ((Date.now() - waitingStartTime) / 1000).toFixed(1);
-    const pulse = WAIT_PULSE[spinnerIdx];
-    process.stdout.write(`\r  ${C.primary(pulse)} ${chalk.bold('AI')} ${C.dim('输出中')} ${C.primary(`[${elapsed}s]`)}  ${C.dim('已接收')} ${C.accent(String(streamTokenCount))} ${C.dim('tokens')}`);
-    spinnerIdx = (spinnerIdx + 1) % WAIT_PULSE.length;
-  }, 200);
+  // One-time transition — no continuous updates (corrupts stream output with \r)
+  process.stdout.write(`\r\x1b[K  ${C.primary('◉')} ${chalk.bold('AI')} ${C.dim('输出中...')}\n\n`);
 }
 
 function stopWaitingPhase(): void {
   if (spinnerTimer) { clearInterval(spinnerTimer); spinnerTimer = null; }
-  const elapsed = ((Date.now() - waitingStartTime) / 1000).toFixed(1);
-  process.stdout.write(`\r\x1b[K  ${C.success('✓')} ${C.dim(`完成  [${elapsed}s]  ${streamTokenCount.toLocaleString()} tokens`)}}\n`);
+  if (streamState === 'streaming') {
+    const elapsed = ((Date.now() - waitingStartTime) / 1000).toFixed(1);
+    process.stdout.write(`\n  ${C.success('✓')} ${C.dim(`[${elapsed}s]  ${streamTokenCount.toLocaleString()} tokens`)}\n`);
+  }
 }
 
 function startSpinner(): void { startWaitingPhase(); }
