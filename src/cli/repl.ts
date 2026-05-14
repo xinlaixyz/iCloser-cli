@@ -847,7 +847,12 @@ async function handleChat(input: string): Promise<void> {
     if (fileBlocks.length === 0 && shouldRepairWriteOutput(input, fullResponse || response.content)) {
       fileBlocks = await repairWriteOutput(provider, prompt, fullResponse || response.content);
     }
-    if (fileBlocks.length > 0) { for (const fb of fileBlocks) { console.log(`  ${C.success('▸')} ${C.accent(fb.path)} ${C.dim('(' + fb.lines + '行)')}`); } }
+    if (fileBlocks.length > 0) {
+      for (const fb of fileBlocks) {
+        const addLine = fb.content.split('\n').length;
+        console.log(`  ${C.success('▸')} ${C.accent(fb.path)} ${C.success(`+${addLine}`)}`);
+      }
+    }
     printFooter(fileBlocks.length > 0);
   } catch (err) {
     stopSpinner(); streamState = 'idle'; if (signal.aborted) { abortController = null; return; }
@@ -1582,7 +1587,10 @@ function printFileConfirm(): void {
 
 async function cmdDiff(): Promise<void> {
   if (state.pendingFiles.length === 0) { console.log(`  ${C.dim('没有待预览的文件')}\n`); return; }
-  for (const pf of state.pendingFiles) { console.log(`\n  ${C.primary('╭─')} ${C.accent(pf.path)} ${C.dim('(' + pf.lines + '行)')}`); const ls = pf.content.split('\n'); for (let i = 0; i < Math.min(ls.length, 20); i++) console.log(`  ${C.dim('│')} ${C.dim(String(i + 1).padStart(3))} ${ls[i]}`); if (ls.length > 20) console.log(`  ${C.dim('│')} ${C.dim('... ' + (ls.length - 20) + ' 行')}`); console.log(`  ${C.primary('╰─')}`); } console.log('');
+  const { renderDiff, filesToDiff, parseDiff } = await import('./diff-renderer.js');
+  const diffText = filesToDiff(state.pendingFiles);
+  const parsed = parseDiff(diffText);
+  console.log(renderDiff(parsed, termWidth()) + '\n');
 }
 
 async function cmdUndo(): Promise<void> {

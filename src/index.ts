@@ -602,17 +602,21 @@ program.command('d')
   .action(async (taskId?: string) => {
     const rootPath = process.cwd();
     try {
+      const { parseDiff, renderDiff } = await import('./cli/diff-renderer.js');
       if (taskId) {
         const diffPath = path.join(rootPath, '.icloser', 'tasks', taskId, 'diff.patch');
         if (await fileExists(diffPath)) {
-          console.log(await readFile(diffPath) || chalk.dim('(空 diff)'));
+          const raw = await readFile(diffPath) || '';
+          if (raw.trim()) console.log(renderDiff(parseDiff(raw)));
+          else console.log(chalk.dim('  (空 diff)'));
         } else {
           warn(`任务 ${chalk.cyan(taskId)} 的 diff 不存在（任务可能尚未执行）`);
         }
       } else {
         if (!isGitRepo(rootPath)) { warn('当前目录不是 Git 仓库'); return; }
         const diff = getDiff(rootPath);
-        console.log(diff || chalk.dim('工作区无变更'));
+        if (diff) console.log(renderDiff(parseDiff(diff)));
+        else console.log(chalk.dim('  工作区无变更'));
       }
     } catch (err) { printError(err as Error); }
   });
