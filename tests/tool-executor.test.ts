@@ -131,7 +131,7 @@ describe('tool-executor (S18)', () => {
 
     it('code_intel parses a known TS file', async () => {
       const result = await executeToolCall('code_intel', { file: 'src/core/tool-executor.ts' }, root);
-      expect(result).toContain('export');
+      expect(result).toContain('导出');
     });
   });
 });
