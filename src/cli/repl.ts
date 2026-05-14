@@ -968,8 +968,8 @@ async function handleChat(input: string): Promise<void> {
     if (fileBlocks.length === 0 && shouldRepairWriteOutput(input, fullResponse || response.content)) {
       fileBlocks = await repairWriteOutput(provider, prompt, fullResponse || response.content);
     }
-    // S21: summary-first — show tldr line before full output if response is long
-    const respText = fullResponse || response.content;
+    // S21: clean leaked JSON, then show summary
+    const respText = cleanResponseForDisplay(fullResponse || response.content);
     const responseLines = respText.split('\n').length;
     if (responseLines > 30) {
       const firstLine = respText.split('\n').find(l => l.trim() && !l.trim().startsWith('```') && l.trim().length > 10) || '';
@@ -2594,8 +2594,22 @@ function extractMentionedFiles(text: string): string[] {
 }
 
 function shouldHideWriteJsonBlock(_input: string, codeLang: string): boolean {
-  // JSON output blocks are ALWAYS hidden — they are the AI output contract, not user content
-  return /(json|icloser-ai-output)/i.test(codeLang);
+  // AI output contracts are ALWAYS hidden
+  if (/(json|icloser-ai-output)/i.test(codeLang)) return true;
+  return false;
+}
+// Post-process: strip any leaked JSON output contract blocks
+function cleanResponseForDisplay(text: string): string {
+  const lines = text.split('\n');
+  const result: string[] = [];
+  let inJsonBlock = false;
+  for (const line of lines) {
+    const t = line.trim();
+    if (t === '```json' || t.startsWith('```json')) { inJsonBlock = true; continue; }
+    if (inJsonBlock && t === '```') { inJsonBlock = false; continue; }
+    if (!inJsonBlock) result.push(line);
+  }
+  return result.join('\n');
 }
 
 async function repairWriteOutput(
