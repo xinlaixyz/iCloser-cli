@@ -951,7 +951,8 @@ async function handleChat(input: string): Promise<void> {
       process.stdout.write(`  ${C.dim('```')}\n`);
     }
     // Clear progress line and show final status
-    process.stdout.write(`\r\x1b[K  ${C.success('✓')} ${C.dim(`[${(elapsed/1000).toFixed(1)}s]  ${lineCount} 行`)}\n`);
+    const tokens = response.tokensUsed > 0 ? response.tokensUsed : streamTokenCount;
+    process.stdout.write(`\r\x1b[K  ${C.success('✓')} ${C.dim(`[${(elapsed/1000).toFixed(1)}s]  ${lineCount} 行  ${tokens.toLocaleString()} tokens`)}\n`);
     stopWaitingPhase(); streamState = 'idle'; streamLineBuf = '';
     state.conversation.push({ role: 'assistant', content: fullResponse || response.content, timestamp: new Date().toISOString() });
     let fileBlocks = extractFileBlocks(fullResponse || response.content, input);
