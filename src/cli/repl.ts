@@ -911,7 +911,7 @@ async function handleChat(input: string): Promise<void> {
     streamState = 'loading'; streamLineBuf = ''; startWaitingPhase();
     process.stdout.write(`\r  ${C.primary('◉')} ${chalk.bold('AI')} ${C.dim(`正在连接 ${state.aiConfig.provider.toUpperCase()}...`)}`);
     let fullResponse = ''; let firstChunk = true; let inCodeBlock = false; let codeLang = ''; let suppressCodeBlock = false;
-    let codeBlockLines = 0; let codeBlockFolded = false; const FOLD_THRESHOLD = 20; const FOLD_PREVIEW = 5;
+    let codeBlockLines = 0; let codeBlockFolded = false; const FOLD_THRESHOLD = 30; const FOLD_PREVIEW = 5;
     let lineCount = 0; let lastStatusUpdate = 0;
     const aiStartTime = Date.now(); const tw = Math.min(termWidth(), 100); const contentW = tw - 4;
     const provider = createProvider(state.aiConfig);
@@ -1953,14 +1953,34 @@ async function cmdDoctor(): Promise<void> {
 // ============================================================
 // Renderers
 // ============================================================
+let tableHeaderSeen = false;
 function renderMarkdownLine(line: string, maxW: number): void {
-  if (line.trim() === '') { process.stdout.write('\n'); return; }
-  const hM = line.match(/^(#{1,4})\s+(.+)/); if (hM) { const t = hM[2]; process.stdout.write('  ' + (hM[1].length === 1 ? chalk.bold.underline(C.bright(t)) : chalk.bold(C.bright(t))) + '\n'); return; }
-  if (line.trim().startsWith('> ')) { process.stdout.write(`  ${C.dim('▎')} ${C.dim(line.trim().slice(2))}\n`); return; }
-  if (/^[-*_]{3,}\s*$/.test(line.trim())) { process.stdout.write(`  ${C.dim('─'.repeat(Math.min(maxW, 60)))}\n`); return; }
-  const ulM = line.match(/^(\s*)[-*+]\s+(.+)/); if (ulM) { process.stdout.write('  ' + C.primary('•') + ' ' + renderInlineFormatting(ulM[2]) + '\n'); return; }
-  const olM = line.match(/^(\s*)(\d+)\.\s+(.+)/); if (olM) { process.stdout.write('  ' + C.dim(olM[2] + '.') + ' ' + renderInlineFormatting(olM[3]) + '\n'); return; }
-  if (line.trim().startsWith('|') && line.trim().endsWith('|')) { const cs = line.trim().split('|').filter(c => c.trim()); process.stdout.write('  ' + C.dim('│') + ' ' + cs.map((c, i) => i === 0 ? chalk.bold(c.trim()) : c.trim()).join(C.dim(' │ ')) + ' ' + C.dim('│') + '\n'); return; }
+  if (line.trim() === '') { tableHeaderSeen = false; process.stdout.write('\n'); return; }
+  const hM = line.match(/^(#{1,4})\s+(.+)/); if (hM) { tableHeaderSeen = false; const t = hM[2]; process.stdout.write('  ' + (hM[1].length === 1 ? chalk.bold.underline(C.bright(t)) : chalk.bold(C.bright(t))) + '\n'); return; }
+  if (line.trim().startsWith('> ')) { tableHeaderSeen = false; process.stdout.write(`  ${C.dim('▎')} ${C.dim(line.trim().slice(2))}\n`); return; }
+  if (/^[-*_]{3,}\s*$/.test(line.trim())) { tableHeaderSeen = false; process.stdout.write(`  ${C.dim('─'.repeat(Math.min(maxW, 60)))}\n`); return; }
+  const ulM = line.match(/^(\s*)[-*+]\s+(.+)/); if (ulM) { tableHeaderSeen = false; process.stdout.write('  ' + C.primary('•') + ' ' + renderInlineFormatting(ulM[2]) + '\n'); return; }
+  const olM = line.match(/^(\s*)(\d+)\.\s+(.+)/); if (olM) { tableHeaderSeen = false; process.stdout.write('  ' + C.dim(olM[2] + '.') + ' ' + renderInlineFormatting(olM[3]) + '\n'); return; }
+  // Table rows
+  if (line.trim().startsWith('|') && line.trim().endsWith('|')) {
+    const cells = line.trim().split('|').filter(c => c.trim()).map(c => c.trim());
+    // Separator row: |---|----|
+    if (cells.every(c => /^:?-{3,}:?$/.test(c))) {
+      tableHeaderSeen = true;
+      process.stdout.write(`  ${C.dim('├─' + cells.map(() => '─'.repeat(10)).join('─┼─') + '─┤')}\n`);
+      return;
+    }
+    const isHeader = !tableHeaderSeen && cells.length > 0;
+    if (isHeader) tableHeaderSeen = true;
+    const maxCellW = Math.min(26, Math.floor((maxW - 4) / Math.max(cells.length, 1)));
+    const rendered = cells.map((c, i) => {
+      const display = c.length > maxCellW ? c.substring(0, maxCellW - 1) + '…' : c;
+      return isHeader ? chalk.bold(display) : C.dim(display);
+    }).join(C.dim(' │ '));
+    process.stdout.write(`  ${C.dim('│')} ${rendered} ${C.dim('│')}\n`);
+    return;
+  }
+  tableHeaderSeen = false;
   process.stdout.write('  ' + renderInlineFormatting(line) + '\n');
 }
 function renderInlineFormatting(text: string): string { let t = text; t = t.replace(/\*\*(.+?)\*\*/g, (_, m) => chalk.bold(m)); t = t.replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, (_, m) => chalk.italic(m)); t = t.replace(/`([^`]+)`/g, (_, m) => C.accent(m)); return t; }
