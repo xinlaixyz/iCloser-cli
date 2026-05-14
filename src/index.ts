@@ -2156,12 +2156,33 @@ async function executeTask(
     return;
   }
 
-  // 5. Extract file changes
+  // 5. Extract file changes — or handle analysis-only tasks
   const fileBlocks = aiOutput?.changes.map(change => ({
     path: change.file,
     content: change.content,
     reasoning: change.reasoning,
   })) || [];
+
+  // Analysis-only task: AI returned text analysis, no file changes needed
+  if (fileBlocks.length === 0 && isAnalysisOnlyTask(task.description)) {
+    addReasoning(task.id, {
+      file: '(无文件修改 — 纯分析任务)',
+      intent: task.description,
+      reasoning: aiContent,
+      impact: { directlyAffected: [], indirectlyAffected: [], notAffected: [] },
+      riskLevel: 'low',
+    });
+    updateTaskStatus(task.id, 'completed');
+    task.completedAt = new Date().toISOString();
+    await persistTask(rootPath, task);
+    releaseFileLocks(task);
+    setTaskLoopStep(task.id, 'verify-result');
+    await completeTaskLoop(task.id, 'pass');
+    success('分析完成（纯分析任务，无文件修改）');
+    console.log(chalk.dim(aiContent.slice(0, 2000)));
+    return;
+  }
+
   if (fileBlocks.length === 0) {
     task.errorLog.push('AI 未返回可执行的文件变更');
     updateTaskStatus(task.id, 'failed');
@@ -2868,6 +2889,11 @@ function printGateResult(result: import('./types.js').GateResult, _task: Task): 
     console.log(`${ICONS.fail} ${chalk.red.bold(`门禁阻塞 (${result.blocking.length} 项):`)} ${blockers}`);
   }
   console.log();
+}
+
+function isAnalysisOnlyTask(desc: string): boolean {
+  return /(分析|检查|review|扫描|质量|代码质量|是什么|是否完整|当前目录|整个目录|整个项目)/i.test(desc) &&
+    !/(修改|创建|写入|生成文件|新增|删除|修复|改成|更新|update|write|create|delete|fix|改|写)/i.test(desc);
 }
 
 function buildSystemPrompt(

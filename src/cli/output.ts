@@ -1,6 +1,7 @@
 // CLI output formatting with colors and spinners
 import chalk from 'chalk';
 import ora, { Ora } from 'ora';
+import { C } from './theme.js';
 import { buildToolCapabilitySnapshot } from '../core/tool-registry.js';
 
 // ============================================================
@@ -204,17 +205,20 @@ export function printTaskSummary(task: {
 
 export function printVerifyResult(result: {
   overall: string;
-  stages: { stage: string; status: string }[];
+  stages: { stage: string; status: string; errorDetails?: string; output?: string }[];
   totalTests: number;
   passedTests: number;
   attempts: number;
   coverage?: { lineCoverage: number; branchCoverage: number; coveredLines: number; totalLines: number };
 }): void {
   section('验证结果');
+  const failedStages: string[] = [];
   for (const stage of result.stages) {
     const icon = stage.status === 'pass' ? ICONS.success :
       stage.status === 'fail' ? ICONS.fail : ICONS.warn;
     console.log(`${icon} ${stage.stage}`);
+    if (stage.status === 'fail') failedStages.push(stage.stage);
+    if (stage.errorDetails) console.log(`    ${chalk.dim(stage.errorDetails.substring(0, 200))}`);
   }
   if (result.totalTests > 0) {
     detail('测试', `${result.passedTests}/${result.totalTests} 通过`);
@@ -228,6 +232,37 @@ export function printVerifyResult(result: {
   if (result.attempts > 1) {
     detail('修复轮次', `${result.attempts}`);
   }
+  // S20.6: Error recovery hints
+  if (failedStages.length > 0) {
+    printErrorRecovery(failedStages);
+  }
+}
+
+function printErrorRecovery(failedStages: string[]): void {
+  console.log(`\n  ${chalk.cyan('╭─')} ${chalk.bold('建议操作')} ${chalk.cyan('─'.repeat(50))}${chalk.cyan('╮')}`);
+  const suggestions = getSuggestions(failedStages);
+  for (const s of suggestions) {
+    console.log(`  ${chalk.cyan('│')} ${s}`);
+  }
+  console.log(`  ${chalk.cyan('╰')}${chalk.cyan('─'.repeat(60))}${chalk.cyan('╯')}`);
+}
+function getSuggestions(stages: string[]): string[] {
+  const tips: string[] = [];
+  if (stages.some(s => s.includes('compile') || s.includes('tsc'))) {
+    tips.push(`${chalk.cyan('●')} 输入错误描述让 AI 自动修复编译错误`);
+    tips.push(`${chalk.dim('○')} 运行 ${chalk.cyan('/doctor')} 查看完整诊断`);
+  }
+  if (stages.some(s => s.includes('lint') || s.includes('eslint'))) {
+    tips.push(`${chalk.cyan('●')} 输入 "修复 lint 错误" 让 AI 自动修正`);
+  }
+  if (stages.some(s => s.includes('test') || s.includes('vitest') || s.includes('jest'))) {
+    tips.push(`${chalk.cyan('●')} 输入 "修复测试失败" 让 AI 分析并修复`);
+  }
+  if (stages.some(s => s.includes('e2e'))) {
+    tips.push(`${chalk.cyan('●')} 检查服务是否启动，或输入 "修复 e2e 测试"`);
+  }
+  tips.push(`${chalk.dim('○')} 运行 ${chalk.cyan('/undo')} 撤销此次变更`);
+  return tips;
 }
 
 export function printGateResult(result: {
