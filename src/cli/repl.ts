@@ -1766,15 +1766,20 @@ function getAgentManager(): AgentManager {
 
 async function cmdOrchestrate(description: string): Promise<void> {
   const mgr = getAgentManager();
-  console.log(`  ${I.running} 编排中...`);
+  console.log(`\n  ${I.running} ${chalk.bold('编排')} ${C.dim('拆解任务 → 并行执行 → 汇总')}`);
+  console.log(`  ${C.dim('╭─')} ${C.accent(description.substring(0, 60))}`);
   const result = await mgr.orchestrate(description);
   if (result.success) {
-    console.log(`  ${I.ok} ${result.summary}`);
-    for (const cr of result.childResults) {
-      console.log(`  ${cr.success ? I.ok : I.err} ${cr.agentName}`);
+    console.log(`  ${C.dim('├─')} ${I.ok} ${result.summary}`);
+    for (let i = 0; i < result.childResults.length; i++) {
+      const cr = result.childResults[i];
+      const isLast = i === result.childResults.length - 1;
+      const prefix = isLast ? '└─' : '├─';
+      console.log(`  ${C.dim(prefix)} ${cr.success ? I.ok : I.err} ${cr.agentName} ${C.dim(cr.output.substring(0, 60))}`);
     }
+    console.log('');
   } else {
-    console.log(`  ${I.err} ${result.summary}\n`);
+    console.log(`  ${C.dim('╰─')} ${I.err} ${result.summary}\n`);
   }
 }
 async function cmdRunAgent(description: string): Promise<void> {
