@@ -157,6 +157,11 @@ const SLASH_COMMANDS = [
 function box(content: string, title: string): string { return drawWideBox(content, { title }); }
 function printBottomBlock(): void {
   bottomOptions = [];
+  const tw = termWidth();
+  const w = tw - 4;
+  // Close the input box frame (opened by refreshPrompt)
+  process.stdout.write(`\n  ${C.accent('╰')}${C.accent('─'.repeat(w))}${C.accent('╯')}`);
+  // Render bottom panel
   process.stdout.write(buildCurrentPanelStr());
 }
 function buildCurrentPanelStr(): string {
@@ -201,7 +206,13 @@ function refreshPrompt(): void {
     rl.setPrompt(`${C.accent('选择')} ${C.dim('输入选项后回车')} ${C.accent('>')} `);
     return;
   }
-  rl.setPrompt(`${C.accent('◇')}  `);
+  const tw = termWidth();
+  const w = tw - 4;
+  // Input box frame: top border + content line + bottom border
+  rl.setPrompt(
+    `  ${C.accent('╭─')} ${C.accent('输入')} ${C.accent('─'.repeat(Math.max(1, w - 10)))}╮\n` +
+    `  ${C.accent('│')} ${C.accent('◇')}  `
+  );
 }
 
 function promptRepl(): void {
@@ -251,10 +262,20 @@ export async function startRepl(): Promise<void> {
     console.log(chalk.dim('\n  再次 Ctrl+C 或 /exit 退出'));
     promptRepl();
   });
+  let multiLineBuf = '';
   promptRepl();
   rl.on('line', async (line: string) => {
     pendingExitSince = 0;
-    const input = line.trim();
+    // S20.5: line continuation with trailing backslash
+    if (line.endsWith('\\') && !line.startsWith('/')) {
+      multiLineBuf += line.slice(0, -1) + '\n';
+      rl.setPrompt(`  ${C.accent('│')} ${C.dim('…')}  `);
+      rl.prompt();
+      return;
+    }
+    const rawInput = multiLineBuf ? multiLineBuf + line : line;
+    multiLineBuf = '';
+    const input = rawInput.trim();
     // Panel shortcuts: single-letter input when no active choice panel
     if (!activeChoicePanel) {
       const panel = buildCurrentPanel();
