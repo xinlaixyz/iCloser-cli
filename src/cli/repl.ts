@@ -1833,15 +1833,9 @@ function formatRunnerMessage(message: string): string {
 }
 
 async function cmdWrite(filesToWrite?: PendingFile[]): Promise<void> {
-  // Called with explicit files → execute directly (from inline confirm)
-  if (filesToWrite && filesToWrite.length > 0) {
-    await doWriteFiles(filesToWrite);
-    return;
-  }
-  // Called from /write slash command → show confirmation first
-  if (state.pendingFiles.length === 0) { console.log(`  ${C.dim('没有待写入的文件')}\n`); return; }
-  printFileConfirm();
-  pendingConfirm = 'write';
+  const targets = filesToWrite && filesToWrite.length > 0 ? filesToWrite : state.pendingFiles;
+  if (targets.length === 0) { console.log(`  ${C.dim('没有待写入的文件')}\n`); return; }
+  await doWriteFiles(targets);
 }
 
 async function doWriteFiles(targets: PendingFile[]): Promise<void> {
