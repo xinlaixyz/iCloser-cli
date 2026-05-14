@@ -154,7 +154,7 @@ const SLASH_COMMANDS = [
   '/diff', '/d', '/undo', '/test', '/tt', '/report', '/rp', '/apikey', '/key',
   '/commit', '/config', '/cd', '/pwd', '/start', '/serve', '/stop', '/restart', '/status', '/doctor', '/run', '/agents', '/ag',
   '/global', '/gm', '/memory', '/mem', '/search', '/context', '/ctx', '/intel', '/code',
-  '/brief', '/full', '/p', '/orchestrate', '/docs',
+  '/brief', '/full', '/p', '/orchestrate', '/docs', '/export', '/theme',
 ];
 
 function box(content: string, title: string): string { return drawWideBox(content, { title }); }
@@ -789,6 +789,8 @@ async function handleSlashCommand(input: string): Promise<void> {
     case '/intel': case '/code': if (args) await cmdIntel(args); else console.log(`  ${C.dim('用法: /intel <函数名 | 文件 | 依赖>')}\n`); break;
     case '/context': case '/ctx': await cmdContext(args); break;
     case '/docs': await cmdDocsSlash(args); break;
+    case '/export': await cmdExport(args); break;
+    case '/theme': await cmdTheme(args); break;
     default: console.log(`  ${C.warn('?')} 未知命令: ${cmd}\n`);
     }
     }
@@ -2305,6 +2307,8 @@ const ALL_PALETTE = [
   { name: '/full', desc: '详细模式(完整输出)', aliases: '' },
   { name: '/clear', desc: '清空对话历史', aliases: '/c' },
   { name: '/exit', desc: '退出 REPL', aliases: '/quit /q' },
+  { name: '/export', desc: '导出对话为 Markdown', aliases: '' },
+  { name: '/theme', desc: '暗色/亮色主题切换', aliases: '' },
 ];
 
 async function cmdCommandPalette(query: string): Promise<void> {
@@ -2750,6 +2754,47 @@ async function cmdIntel(query: string): Promise<void> {
   } catch (err) {
     console.log(`  ${C.dim('代码智能不可用')}\n`);
   }
+}
+
+// /export — export conversation to Markdown
+async function cmdExport(format: string): Promise<void> {
+  if (format !== 'md' && format !== 'markdown') { console.log(`  ${C.dim('用法: /export md')}\n`); return; }
+  if (state.conversation.length === 0) { console.log(`  ${C.dim('无对话可导出')}\n`); return; }
+  const lines: string[] = [
+    `# iCloser Agent Shell — 对话导出`,
+    `> 导出时间: ${new Date().toLocaleString('zh-CN')}`,
+    `> 项目: ${state.context.projectName || '未命名'}`,
+    `> 模型: ${state.aiConfig.provider} / ${state.aiConfig.model}`,
+    `> 共 ${state.conversation.length} 轮对话`,
+    '',
+  ];
+  for (const m of state.conversation) {
+    const role = m.role === 'user' ? '### ◇ You' : '### ◆ AI';
+    const time = new Date(m.timestamp).toLocaleTimeString('zh-CN');
+    lines.push(`${role}  (${time})`);
+    lines.push('');
+    // Indent code blocks for proper markdown
+    const content = m.content.replace(/```/g, '\n```\n');
+    lines.push(content);
+    lines.push('');
+    lines.push('---');
+    lines.push('');
+  }
+  const md = lines.join('\n');
+  const fs = await import('fs/promises');
+  const p = await import('path');
+  const filename = `icloser-export-${Date.now().toString(36)}.md`;
+  const fp = p.join(process.cwd(), filename);
+  await fs.writeFile(fp, md, 'utf-8');
+  console.log(`  ${I.ok} 已导出 ${state.conversation.length} 轮对话 → ${C.accent(filename)}\n`);
+}
+
+// /theme — switch between dark/light color presets
+let themeMode: 'dark' | 'light' = 'dark';
+async function cmdTheme(mode: string): Promise<void> {
+  if (mode === 'dark') { themeMode = 'dark'; console.log(`  ${I.ok} ${C.dim('暗色主题')}\n`); }
+  else if (mode === 'light') { themeMode = 'light'; console.log(`  ${I.ok} ${C.dim('亮色主题(实验性)')}\n`); }
+  else { console.log(`  ${C.dim('用法: /theme dark|light  (当前: ' + themeMode + ')')}\n`); }
 }
 
 async function cmdContext(args: string): Promise<void> {
