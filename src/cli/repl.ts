@@ -271,20 +271,10 @@ export async function startRepl(): Promise<void> {
     console.log(chalk.dim('\n  再次 Ctrl+C 或 /exit 退出'));
     promptRepl();
   });
-  let multiLineBuf = '';
   promptRepl();
   rl.on('line', async (line: string) => {
     pendingExitSince = 0;
-    // Multi-line: line continuation with trailing backslash
-    if (line.endsWith('\\') && !line.startsWith('/')) {
-      multiLineBuf += line.slice(0, -1) + '\n';
-      rl.setPrompt(`  ${C.accent('│')} ${C.dim('↳')}  `);
-      rl.prompt();
-      return;
-    }
-    const rawInput = multiLineBuf ? multiLineBuf + line : line;
-    multiLineBuf = '';
-    const input = rawInput.trim();
+    const input = line.trim();
     // Panel shortcuts: single-letter input when no active choice panel
     if (!activeChoicePanel) {
       const panel = buildCurrentPanel();
