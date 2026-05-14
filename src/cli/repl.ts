@@ -188,6 +188,8 @@ async function executePanelAction(action: string): Promise<void> {
     case 'exit': await shutdownRepl(); break;
     case 'cancel': state.pendingFiles = []; pendingConfirm = null; console.log(`  ${C.dim('已取消')}\n`); break;
     case 'interrupt': if (abortController) abortController.abort(); break;
+    case 'system-approve': await handleSystemOperationApprove(); break;
+    case 'system-deny': pendingSystemOperation = null; pendingConfirm = null; console.log(`  ${C.dim('已拒绝系统操作')}\n`); break;
     default: break;
   }
 }
@@ -198,6 +200,14 @@ function buildCurrentPanel(): BottomPanelState {
   const ctxPct = Math.min(100, Math.round((ctxTokens / ctxMax) * 100));
   const ctxBar = '█'.repeat(Math.round(ctxPct / 10)) + '░'.repeat(10 - Math.round(ctxPct / 10));
 
+  // System operation approval
+  if (pendingSystemOperation) {
+    return {
+      type: 'verify', title: pendingSystemOperation.title,
+      items: pendingSystemOperation.steps.map(s => ({ label: s.display, status: 'pending' as const })),
+      actions: [{ key: 'y', label: '允许', action: 'system-approve' }, { key: 'n', label: '拒绝', action: 'system-deny' }],
+    };
+  }
   if (streamState !== 'idle') {
     const elapsed = ((Date.now() - waitingStartTime) / 1000).toFixed(1);
     return { type: 'status', title: `AI 执行中 [${elapsed}s]`, items: [
@@ -1341,6 +1351,106 @@ function isWrittenFilesQuestion(input: string): boolean {
     /(写到哪里|保存到哪里|文件路径|文档路径)/.test(normalized);
 }
 
+// S2: Scan subdirectories (depth 2) for project indicators
+async function scanForSubProjects(
+  cwd: string, fsp: any, path: any
+): Promise<{ type: string; command: string; args: string[]; label: string; needsInstall: boolean; cwd: string; dir: string }[]> {
+  const results: { type: string; command: string; args: string[]; label: string; needsInstall: boolean; cwd: string; dir: string }[] = [];
+  try {
+    const entries = await fsp.readdir(cwd, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.name.startsWith('.') || entry.name === 'node_modules') continue;
+      const subDir = path.join(cwd, entry.name);
+      const info = await detectProjectStartInfo(subDir, fsp, path);
+      if (info) results.push({ ...info, cwd: subDir, dir: entry.name });
+    }
+  } catch {}
+  return results;
+}
+
+async function detectProjectStartInfo(
+  dir: string, fsp: any, path: any
+): Promise<{ type: string; command: string; args: string[]; label: string; needsInstall: boolean } | null> {
+  // 1. npm/Node.js
+  try {
+    const pkg = JSON.parse(await fsp.readFile(path.join(dir, 'package.json'), 'utf-8'));
+    const scripts = pkg.scripts || {};
+    const scriptName = ['dev', 'start', 'serve', 'preview'].find((n: string) => scripts[n]);
+    if (scriptName) {
+      const pm = await detectPackageManager(dir);
+      const nmMissing = !(await fsp.stat(path.join(dir, 'node_modules')).catch(() => null));
+      const hasDeps = Object.keys({ ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) }).length > 0;
+      const cmd = pm === 'yarn' ? 'yarn' : pm === 'pnpm' ? 'pnpm' : 'npm';
+      return { type: `Node.js (${pm})`, command: cmd, args: ['run', scriptName], label: `${cmd} run ${scriptName}`, needsInstall: nmMissing && hasDeps };
+    }
+  } catch {}
+
+  // 2. Java/Maven
+  try {
+    const pom = await fsp.readFile(path.join(dir, 'pom.xml'), 'utf-8').catch(() => null);
+    const mvnw = await fsp.stat(path.join(dir, 'mvnw.cmd')).catch(() => null)
+      || await fsp.stat(path.join(dir, 'mvnw')).catch(() => null);
+    if (pom) {
+      const cmd = mvnw ? (process.platform === 'win32' ? 'mvnw.cmd' : './mvnw') : 'mvn';
+      return { type: 'Spring Boot (Maven)', command: cmd, args: ['spring-boot:run'], label: `${cmd} spring-boot:run`, needsInstall: false };
+    }
+  } catch {}
+
+  // 3. Java/Gradle
+  try {
+    const gradle = await fsp.stat(path.join(dir, 'build.gradle')).catch(() => null)
+      || await fsp.stat(path.join(dir, 'build.gradle.kts')).catch(() => null);
+    const gradlew = await fsp.stat(path.join(dir, 'gradlew')).catch(() => null);
+    if (gradle) {
+      const cmd = gradlew ? (process.platform === 'win32' ? 'gradlew.bat' : './gradlew') : 'gradle';
+      return { type: 'Java (Gradle)', command: cmd, args: ['bootRun'], label: `${cmd} bootRun`, needsInstall: false };
+    }
+  } catch {}
+
+  // 4. Go
+  try {
+    const goMod = await fsp.readFile(path.join(dir, 'go.mod'), 'utf-8').catch(() => null);
+    const hasMain = await fsp.readFile(path.join(dir, 'main.go'), 'utf-8').catch(() => null);
+    if (goMod && hasMain) {
+      const mf = await fsp.readFile(path.join(dir, 'Makefile'), 'utf-8').catch(() => null);
+      return mf ? { type: 'Go (Makefile)', command: 'make', args: ['run'], label: 'make run', needsInstall: false }
+        : { type: 'Go', command: 'go', args: ['run', '.'], label: 'go run .', needsInstall: false };
+    }
+  } catch {}
+
+  // 5. Python
+  try {
+    const pyproject = await fsp.readFile(path.join(dir, 'pyproject.toml'), 'utf-8').catch(() => null);
+    const mainPy = await fsp.readFile(path.join(dir, 'main.py'), 'utf-8').catch(() => null)
+      || await fsp.readFile(path.join(dir, 'app.py'), 'utf-8').catch(() => null);
+    if (pyproject || mainPy) {
+      return { type: 'Python (FastAPI)', command: process.platform === 'win32' ? 'python' : 'python3',
+        args: [mainPy ? 'main.py' : 'app.py'], label: `python ${mainPy ? 'main.py' : 'app.py'}`, needsInstall: false };
+    }
+  } catch {}
+
+  // 6. Rust
+  try {
+    const cargoToml = await fsp.readFile(path.join(dir, 'Cargo.toml'), 'utf-8').catch(() => null);
+    if (cargoToml) return { type: 'Rust', command: 'cargo', args: ['run'], label: 'cargo run', needsInstall: false };
+  } catch {}
+
+  // 7. Docker Compose
+  try {
+    const dc = await fsp.readFile(path.join(dir, 'docker-compose.yml'), 'utf-8').catch(() => null)
+      || await fsp.readFile(path.join(dir, 'docker-compose.yaml'), 'utf-8').catch(() => null);
+    if (dc) return { type: 'Docker Compose', command: 'docker-compose', args: ['up'], label: 'docker-compose up', needsInstall: false };
+  } catch {}
+
+  // 8. Makefile-only
+  try {
+    const mf = await fsp.readFile(path.join(dir, 'Makefile'), 'utf-8').catch(() => null);
+    if (mf) return { type: 'Makefile', command: 'make', args: [], label: 'make', needsInstall: false };
+  } catch {}
+
+  return null;
+}
+
 function isStartProjectIntent(input: string): boolean {
   const normalized = input.trim().toLowerCase().replace(/\s+/g, '');
   // Exclude questions — "怎么启动" / "如何启动" is asking HOW, not commanding
@@ -1573,94 +1683,40 @@ async function cmdStartProject(): Promise<void> {
     const fsp = await import('fs/promises');
     const path = await import('path');
 
-    // Detect project type and find startup command
-    let startInfo: { type: string; command: string; args: string[]; label: string; needsInstall: boolean } | null = null;
+    // S2: Scan for subdirectory projects (monorepo support)
+    const projects = await scanForSubProjects(cwd, fsp, path);
 
-    // 1. npm/Node.js project
-    try {
-      const pkgPath = path.join(cwd, 'package.json');
-      const pkg = JSON.parse(await fsp.readFile(pkgPath, 'utf-8'));
-      const scripts = pkg.scripts || {};
-      const scriptName = ['dev', 'start', 'serve', 'preview'].find(name => scripts[name]);
-      if (scriptName) {
-        const pm = await detectPackageManager(cwd);
-        const nmMissing = !(await pathExists(path.join(cwd, 'node_modules')));
-        const hasDeps = Object.keys({ ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) }).length > 0;
-        const cmd = pm === 'yarn' ? 'yarn' : pm === 'pnpm' ? 'pnpm' : 'npm';
-        startInfo = {
-          type: `Node.js (${pm})`,
-          command: cmd,
-          args: scriptName === 'dev' ? ['run', 'dev'] : ['run', scriptName],
-          label: `${cmd} run ${scriptName}`,
-          needsInstall: nmMissing && hasDeps,
-        };
-      }
-    } catch {}
+    // If multiple sub-projects found, list them and start all
+    if (projects.length > 1) {
+      printLoopStatus('take-action', '多服务启动');
+      console.log(drawWideBox(
+        `发现 ${projects.length} 个可启动服务:\n${projects.map(p => `  ${C.accent(p.dir)} — ${C.accent(p.type)} → ${p.label}`).join('\n')}\n\n输入 ${C.accent('1')} 全部启动  ${C.accent('2')} 选择启动  ${C.accent('3')} 取消`,
+        { title: '多服务发现' }
+      ) + '\n');
 
-    // 2. Go project
-    if (!startInfo) {
-      try {
-        const goMod = await fsp.readFile(path.join(cwd, 'go.mod'), 'utf-8').catch(() => null);
-        const hasMain = await fsp.readFile(path.join(cwd, 'main.go'), 'utf-8').catch(() => null)
-          || await fsp.readFile(path.join(cwd, 'cmd', 'main.go'), 'utf-8').catch(() => null);
-        if (goMod && hasMain) {
-          const makefile = await fsp.readFile(path.join(cwd, 'Makefile'), 'utf-8').catch(() => null);
-          if (makefile) {
-            startInfo = { type: 'Go (Makefile)', command: 'make', args: ['run'], label: 'make run', needsInstall: false };
-          } else {
-            startInfo = { type: 'Go', command: 'go', args: ['run', '.'], label: 'go run .', needsInstall: false };
-          }
-        }
-      } catch {}
+      pendingSystemOperation = {
+        title: '启动全部服务',
+        reason: `启动 ${projects.length} 个服务: ${projects.map(p => p.dir).join(', ')}`,
+        impact: `共 ${projects.length} 个进程`,
+        cwd,
+        approvalKey: `start:all:${projects.map(p => p.dir).join(',')}`,
+        steps: projects.flatMap(p => [
+          ...(p.needsInstall ? [{ label: `${p.dir}: install`, command: p.command, args: ['install'], display: `${p.dir}: ${p.command} install` }] : []),
+          { label: `${p.dir}: ${p.label}`, command: p.command, args: p.args, display: `${p.dir}: ${p.label}`, background: true, cwd: p.cwd },
+        ]),
+      };
+      pendingConfirm = 'system';
+      printSystemOperationConfirm(pendingSystemOperation);
+      return;
     }
 
-    // 3. Python project
-    if (!startInfo) {
-      try {
-        const pyproject = await fsp.readFile(path.join(cwd, 'pyproject.toml'), 'utf-8').catch(() => null);
-        const mainPy = await fsp.readFile(path.join(cwd, 'main.py'), 'utf-8').catch(() => null);
-        const appPy = await fsp.readFile(path.join(cwd, 'app.py'), 'utf-8').catch(() => null);
-        if (pyproject || mainPy || appPy) {
-          const entry = mainPy ? 'main.py' : appPy ? 'app.py' : '.';
-          startInfo = { type: 'Python', command: 'python', args: [entry], label: `python ${entry}`, needsInstall: false };
-        }
-      } catch {}
-    }
-
-    // 4. Rust project
-    if (!startInfo) {
-      try {
-        const cargoToml = await fsp.readFile(path.join(cwd, 'Cargo.toml'), 'utf-8').catch(() => null);
-        if (cargoToml) {
-          startInfo = { type: 'Rust', command: 'cargo', args: ['run'], label: 'cargo run', needsInstall: false };
-        }
-      } catch {}
-    }
-
-    // 5. Docker project
-    if (!startInfo) {
-      try {
-        const dc = await fsp.readFile(path.join(cwd, 'docker-compose.yml'), 'utf-8').catch(() => null)
-          || await fsp.readFile(path.join(cwd, 'docker-compose.yaml'), 'utf-8').catch(() => null);
-        if (dc) {
-          startInfo = { type: 'Docker Compose', command: 'docker-compose', args: ['up'], label: 'docker-compose up', needsInstall: false };
-        } else {
-          const df = await fsp.readFile(path.join(cwd, 'Dockerfile'), 'utf-8').catch(() => null);
-          if (df) {
-            startInfo = { type: 'Docker', command: 'docker', args: ['build', '-t', 'app', '.', '&&', 'docker', 'run', 'app'], label: 'docker build && run', needsInstall: false };
-          }
-        }
-      } catch {}
-    }
-
-    // 6. Generic Makefile
-    if (!startInfo) {
-      try {
-        const mf = await fsp.readFile(path.join(cwd, 'Makefile'), 'utf-8').catch(() => null);
-        if (mf) {
-          startInfo = { type: 'Makefile', command: 'make', args: [], label: 'make', needsInstall: false };
-        }
-      } catch {}
+    // Single project or no sub-projects found — check root
+    let startInfo: { type: string; command: string; args: string[]; label: string; needsInstall: boolean; cwd: string } | null = null;
+    if (projects.length === 1) {
+      startInfo = projects[0];
+    } else {
+      // No sub-projects — try root directory
+      startInfo = await detectProjectStartInfo(cwd, fsp, path);
     }
 
     if (!startInfo) {
@@ -1710,6 +1766,16 @@ function printSystemOperationConfirm(operation: SystemOperation): void {
     ],
   };
   process.stdout.write(renderSystemOperationApproval(operation));
+}
+
+async function handleSystemOperationApprove(): Promise<void> {
+  if (!pendingSystemOperation) return;
+  const op = pendingSystemOperation;
+  pendingSystemOperation = null;
+  pendingConfirm = null;
+  approvedSystemOperations.add(op.approvalKey);
+  console.log(`  ${I.ok} 执行: ${C.accent(op.title)}\n`);
+  await executeStartProjectOperation(op);
 }
 
 async function executeStartProjectOperation(operation: SystemOperation): Promise<void> {
