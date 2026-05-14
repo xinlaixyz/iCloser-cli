@@ -145,7 +145,7 @@ AI Layer (src/ai/)
 | 核心引擎 | 100% | task-engine, task-loop, agent/manager |
 | 工具链 | 95% | scanner, ast-parser, docs-generator |
 | 质量保障 | 90% | verifier, gate/checker, security |
-| UI/UX | 97% | cli/repl, cli/output, cli/diff-renderer |
+| UI/UX | 98% | cli/repl, cli/output, cli/diff-renderer |
 | 部署运维 | 60% | install scripts, .github/workflows |
 | 生态扩展 | 20% | 未开始 |
 
@@ -159,12 +159,14 @@ AI Layer (src/ai/)
 | S20.4 | Diff红绿着色 | 100% |
 | S20.5 | 输入框 | 100% (readline) |
 | S20.6 | 错误恢复指引 | 100% |
-| S20.7 | 命令面板 | 90% (/? /p) |
-| S20.8 | 历史搜索 | 90% (!query !N) |
+| S20.7 | 命令面板 | 100% (/? /p + 29条过滤) |
+| S20.8 | 历史搜索 | 100% (!query + !N 复用) |
 | S20.9 | Tab补全 | 100% |
 | S21.0 | 流式进度+代码折叠+TLDR | 100% |
 | S21.1 | 编排树+面板精简 | 100% |
 | S22.0 | 上下文仪表+brief/full | 100% |
+| P2#6  | /export md 对话导出 | 100% |
+| P2#7  | /theme dark/light | 100% |
 
 ---
 
