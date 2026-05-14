@@ -75,6 +75,16 @@ export const DEFAULT_SHORTCUTS: BottomPanelState = {
   ],
 };
 
+export function contextMeterItem(ctxTokens: number, ctxMax: number): PanelItem {
+  const ctxPct = Math.min(100, Math.round((ctxTokens / ctxMax) * 100));
+  const bar = '█'.repeat(Math.round(ctxPct / 10)) + '░'.repeat(10 - Math.round(ctxPct / 10));
+  return {
+    key: 'ctx',
+    label: `上下文 ${(ctxTokens/1000).toFixed(1)}K/${(ctxMax/1000).toFixed(0)}K ${bar}`,
+    status: ctxPct > 80 ? 'fail' : ctxPct > 50 ? 'pending' : 'ok',
+  };
+}
+
 // ============================================================
 // Screen layout
 // ============================================================

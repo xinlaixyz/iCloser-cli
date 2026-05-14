@@ -98,6 +98,7 @@ interface PendingAutopilotAction {
   testPlan?: TestWritePlan;
 }
 
+let outputMode: 'full' | 'brief' = 'full';
 let state: SessionState = {
   projectRoot: null, sessionId: `repl-${Date.now().toString(36)}`, conversation: [],
   context: { projectName: '', language: '', framework: '', database: '', buildSystem: '', testFramework: '' },
@@ -190,9 +191,17 @@ async function executePanelAction(action: string): Promise<void> {
   }
 }
 function buildCurrentPanel(): BottomPanelState {
+  // Context usage estimate
+  const ctxTokens = Math.round(state.conversation.reduce((s, m) => s + m.content.length / 2, 0));
+  const ctxMax = state.aiConfig.maxTokens || 4096;
+  const ctxPct = Math.min(100, Math.round((ctxTokens / ctxMax) * 100));
+  const ctxBar = '█'.repeat(Math.round(ctxPct / 10)) + '░'.repeat(10 - Math.round(ctxPct / 10));
+
   if (streamState !== 'idle') {
     const elapsed = ((Date.now() - waitingStartTime) / 1000).toFixed(1);
-    return { type: 'status', title: `AI 执行中 [${elapsed}s]`, items: [], actions: [{ key: 'Ctrl+C', label: '中断', action: 'interrupt' }] };
+    return { type: 'status', title: `AI 执行中 [${elapsed}s]`, items: [
+      { key: 'ctx', label: `${(ctxTokens/1000).toFixed(1)}K/${(ctxMax/1000).toFixed(0)}K ${ctxBar}`, status: ctxPct > 80 ? 'fail' : ctxPct > 50 ? 'pending' : 'ok' }
+    ], actions: [{ key: 'Ctrl+C', label: '中断', action: 'interrupt' }] };
   }
   if (pendingConfirm === 'write' || state.pendingFiles.length > 0) {
     return {
@@ -767,6 +776,8 @@ async function handleSlashCommand(input: string): Promise<void> {
   switch (cmd) {
     case '/help': case '/h': console.log(commandHelp()); break;
     case '/?': case '/p': await cmdCommandPalette(args); break;
+    case '/brief': outputMode = 'brief'; console.log(`  ${I.ok} ${C.dim('简洁模式 — 代码块折叠，仅显示关键内容')}\n`); break;
+    case '/full': outputMode = 'full'; console.log(`  ${I.ok} ${C.dim('详细模式 — 完整输出')}\n`); break;
     case '/exit': case '/quit': case '/q': await shutdownRepl(); break;
     case '/clear': case '/c': state.conversation = []; state.pendingFiles = []; console.log(`  ${I.ok} 对话历史已清除\n`); break;
     case '/init': case '/i': await cmdInit(); break;
@@ -933,8 +944,9 @@ async function handleChat(input: string): Promise<void> {
             // Entering code block
             inCodeBlock = true; codeBlockLines = 0; codeBlockFolded = false;
             codeLang = line.trim().slice(3).trim();
-            suppressCodeBlock = shouldHideWriteJsonBlock(input, codeLang);
+            suppressCodeBlock = shouldHideWriteJsonBlock(input, codeLang) || outputMode === 'brief';
             if (!suppressCodeBlock) process.stdout.write(`  ${C.dim(codeLang ? '```' + codeLang : '```')}\n`);
+            else if (outputMode === 'brief') process.stdout.write(`  ${C.dim('```')} ${C.accent(codeLang || 'code')} ${C.dim('(简洁模式隐藏)')}\n`);
           } else {
             // Exiting code block
             if (codeBlockFolded) {
