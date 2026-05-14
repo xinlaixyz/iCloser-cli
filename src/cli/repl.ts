@@ -314,7 +314,7 @@ export async function startRepl(): Promise<void> {
       await cmdHistorySearch(input.substring(1));
       printBottomBlock(); if (state.running) promptRepl(); return;
     }
-    if (!input) { printBottomBlock(); promptRepl(); return; }
+    if (!input) { rl?.prompt(); return; }
     await recordReplUserInput(input);
     if (await handleInlineConfirm(input)) { printBottomBlock(); if (state.running) promptRepl(); return; }
     if (await handleBottomSelection(input)) { printBottomBlock(); if (state.running) promptRepl(); return; }
@@ -2454,8 +2454,8 @@ async function repairWriteOutput(
 ): Promise<PendingFile[]> {
   console.log(`\n  ${C.warn('!')} 写入方案格式不完整，正在自动整理为可执行操作...`);
 
-  // Only attempt once, with a short timeout to avoid blocking the REPL
-  const maxWaitMs = 15000;
+  // Max wait for AI repair — increase to 30s for complex outputs
+  const maxWaitMs = 30000;
   const startTime = Date.now();
 
   try {
@@ -2485,18 +2485,23 @@ async function repairWriteOutput(
       new Promise<null>((resolve) => setTimeout(() => resolve(null), maxWaitMs)),
     ]);
 
-    if (!repaired) {
-      console.log(`  ${C.warn('!')} 自动整理超时（${maxWaitMs / 1000}s），跳过修复\n`);
-      return [];
-    }
-
-    const elapsed = Date.now() - startTime;
-    const fileBlocks = extractFileBlocks(repaired.content, originalPrompt.task);
-    if (fileBlocks.length > 0) {
-      console.log(`  ${I.ok} 已整理出 ${C.accent(String(fileBlocks.length))} 个待写入文件 ${C.dim('(' + elapsed + 'ms)')}`);
-      return fileBlocks;
+    if (repaired) {
+      const elapsed = Date.now() - startTime;
+      const fileBlocks = extractFileBlocks(repaired.content, originalPrompt.task);
+      if (fileBlocks.length > 0) {
+        console.log(`  ${I.ok} 已整理出 ${C.accent(String(fileBlocks.length))} 个待写入文件 ${C.dim('(' + elapsed + 'ms)')}`);
+        return fileBlocks;
+      }
     }
   } catch { /* fall through */ }
+
+  // Fallback: try to extract file blocks from the ORIGINAL output
+  // before giving up — the AI may have written valid content in non-JSON format
+  const fallbackBlocks = extractFileBlocks(rawOutput, originalPrompt.task);
+  if (fallbackBlocks.length > 0) {
+    console.log(`  ${I.ok} 从原始输出提取了 ${C.accent(String(fallbackBlocks.length))} 个待写入文件\n`);
+    return fallbackBlocks;
+  }
 
   console.log(`  ${C.warn('!')} 仍无法生成可写入文件。请重新输入更具体的描述，例如：${C.accent('创建 docs/PRD.md，写完整 PRD 文档')}\n`);
   return [];
