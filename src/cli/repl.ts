@@ -22,7 +22,7 @@ import {
   drawWideBox, processStep,
   notification, thinDivider, termWidth,
 } from './theme.js';
-import { renderBottomPanel, DEFAULT_SHORTCUTS, type BottomPanelState } from './tui.js';
+import { renderBottomPanel, DEFAULT_SHORTCUTS, type BottomPanelState, InputBox, setupRawInput } from './tui.js';
 import type { AIConfig, AIProvider, AIPrompt, ContextPackage, ProjectIdentity, ProjectIndex, Task } from '../types.js';
 import type { StreamCallback } from '../ai/provider.js';
 import {
@@ -192,21 +192,19 @@ function buildCurrentPanel(): BottomPanelState {
 }
 
 function refreshPrompt(): void {
+  // Raw mode renders input via InputBox — readline prompt is decorative only
   if (!rl) return;
-  if (activeChoicePanel) {
-    rl.setPrompt(choicePrompt(activeChoicePanel));
-    return;
-  }
-  if (pendingConfirm || state.pendingFiles.length > 0) {
-    rl.setPrompt(`${C.accent('选择')} ${C.dim('输入选项后回车')} ${C.accent('>')} `);
-    return;
-  }
   rl.setPrompt(`${C.accent('◇')}  `);
 }
 
 function promptRepl(): void {
+  // Raw input mode handles rendering via startRawInputLoop
+  // No-op: keep for backward compat with choice panel / inline confirm
+}
+
+function promptLegacy(): void {
   refreshPrompt();
-  rl.prompt();
+  rl?.prompt();
 }
 
 // ============================================================
@@ -226,35 +224,7 @@ export async function startRepl(): Promise<void> {
   if (resumed) { console.log(notification(`已恢复上次会话 (${state.conversation.length} 条记录)`, 'info')); }
   if (state.context.projectName) { console.log(''); console.log(statusBar([{ label: 'PROJECT', value: state.context.projectName, color: 'accent' }, { label: 'LANG', value: state.context.language || '—', color: 'primary' }, { label: 'FRAMEWORK', value: state.context.framework || '—', color: 'primary' }, { label: 'AI', value: state.aiConfig.provider.toUpperCase(), color: 'success' }])); }
   printFirstRunGuide(Boolean(offlineReason));
-  printBottomBlock();
-  rl = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: `${C.accent('◇')}  `, terminal: true, historySize: 1000, completer: replCompleter });
-  promptRepl();
-  rl.on('line', async (line: string) => {
-    pendingExitSince = 0;
-    // S20.3: single-letter panel shortcuts (only when not in choice panel)
-    if (!activeChoicePanel) {
-      const panel = buildCurrentPanel();
-      const action = panel.actions.find(a => a.key === line.trim());
-      if (action && line.trim().length <= 2) {
-        await executePanelAction(action.action);
-        promptRepl();
-        return;
-      }
-    }
-    const input = line.trim();
-    // S20.8: history search via ! prefix
-    if (input.startsWith('!') && input.length > 1) {
-      await cmdHistorySearch(input.substring(1));
-      printBottomBlock(); if (state.running) promptRepl();
-      return;
-    }
-    await recordReplUserInput(input);
-    if (await handleInlineConfirm(input)) { printBottomBlock(); if (state.running) promptRepl(); return; }
-    if (await handleBottomSelection(input)) { printBottomBlock(); if (state.running) promptRepl(); return; }
-    if (!input) { promptRepl(); return; }
-    if (input.startsWith('/')) { await handleSlashCommand(input); } else { await handleChat(input); }
-    printBottomBlock(); if (state.running) promptRepl();
-  });
+  rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: false });
   rl.on('close', () => { void shutdownRepl(); });
   rl.on('SIGINT', () => {
     if (shuttingDown) return;
@@ -268,17 +238,102 @@ export async function startRepl(): Promise<void> {
       promptRepl();
       return;
     }
-
     const now = Date.now();
     if (pendingExitSince > 0 && now - pendingExitSince <= 2000) {
       void shutdownRepl();
       return;
     }
-
     pendingExitSince = now;
     console.log(chalk.dim('\n  再次 Ctrl+C 或 /exit 退出'));
     promptRepl();
   });
+  startRawInputLoop();
+}
+
+// S20.5: raw input loop with InputBox + fixed bottom panel
+function startRawInputLoop(): void {
+  const box = new InputBox();
+  box.history = state.conversation.filter(m => m.role === 'user').map(m => m.content);
+
+  function renderFixedArea(): void {
+    const tw = termWidth();
+    const inputStr = box.render(tw);
+    const panelStr = buildCurrentPanelStr();
+    // Save cursor, render fixed area at bottom
+    process.stdout.write('\x1b[s'); // save position
+    process.stdout.write('\x1b[0J'); // clear from cursor to end
+    process.stdout.write(inputStr + '\n');
+    process.stdout.write(panelStr + '\n');
+    // Position cursor inside box
+    const cursorRow = Math.min(box.cursorRow - box.scrollOffset, box.maxHeight - 1);
+    const upLines = panelStr.split('\n').length + Math.min(box.lines.length, box.maxHeight) + 4 - cursorRow;
+    process.stdout.write(`\x1b[${upLines}A`); // up to cursor row
+    process.stdout.write(`\x1b[${box.cursorCol + 3}C`); // right to cursor col
+    process.stdout.write('\x1b[u'); // restore saved position
+  }
+
+  function renderSimple(): void {
+    process.stdout.write(box.render(termWidth()) + '\n');
+    process.stdout.write(buildCurrentPanelStr() + '\n');
+  }
+
+  const cleanup = setupRawInput(
+    (ev) => {
+      if (!state.running) return;
+      switch (ev.type) {
+        case 'char':
+          if (ev.char === '\n') box.handleShiftEnter();
+          else if (ev.char) box.insertChar(ev.char);
+          break;
+        case 'enter': submitLine(); return;
+        case 'backspace': box.handleBackspace(); break;
+        case 'up': box.handleUp(); break;
+        case 'down': box.handleDown(); break;
+        case 'left': box.handleLeft(); break;
+        case 'right': box.handleRight(); break;
+        case 'ctrl_c':
+          if (box.text.trim()) { box.reset(); }
+          else if (abortController) { abortController.abort(); }
+          break;
+        default: break;
+      }
+      renderSimple();
+    },
+    () => {}
+  );
+
+  async function submitLine(): Promise<void> {
+    const text = box.text;
+    if (!text.trim()) { renderSimple(); return; }
+    box.addToHistory(text);
+    box.reset();
+    process.stdout.write('\r\x1b[K\n');
+    await processRawInput(text.trim());
+    box.history = state.conversation.filter(m => m.role === 'user').map(m => m.content);
+    if (state.running) renderSimple();
+  }
+
+  async function processRawInput(input: string): Promise<void> {
+    // S20.8: history search via ! prefix
+    if (input.startsWith('!') && input.length > 1) {
+      await cmdHistorySearch(input.substring(1));
+      printBottomBlock(); return;
+    }
+    // Panel shortcuts
+    const panel = buildCurrentPanel();
+    const action = panel.actions.find(a => a.key === input);
+    if (action && input.length <= 2) {
+      await executePanelAction(action.action);
+      return;
+    }
+    await recordReplUserInput(input);
+    if (await handleInlineConfirm(input)) { printBottomBlock(); return; }
+    if (await handleBottomSelection(input)) { printBottomBlock(); return; }
+    if (input.startsWith('/')) { await handleSlashCommand(input); } else { await handleChat(input); }
+    printBottomBlock();
+  }
+
+  renderSimple();
 }
 
 async function shutdownRepl(): Promise<void> {

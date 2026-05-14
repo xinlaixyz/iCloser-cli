@@ -253,33 +253,42 @@ export function setupRawInput(onKey: (ev: KeyEvent) => void, onLine: (line: stri
   stdin.setRawMode(true);
   stdin.resume();
 
-  let inputBuf = '';
-  let cursorPos = 0;
   let escSeq = '';
+  // Track if last char was \r and next is \n (Windows CRLF)
+  let lastWasCR = false;
 
   const onData = (data: Buffer): void => {
     const str = data.toString();
 
-    // Handle escape sequences
+    // Handle escape sequences (arrows, Shift+Enter, etc.)
     if (str === '\x1b') {
       escSeq = str;
       return;
     }
     if (escSeq) {
       escSeq += str;
+      // Up/Down/Left/Right arrows
       if (escSeq === '\x1b[A') { onKey({ type: 'up' }); escSeq = ''; return; }
       if (escSeq === '\x1b[B') { onKey({ type: 'down' }); escSeq = ''; return; }
       if (escSeq === '\x1b[C') { onKey({ type: 'right' }); escSeq = ''; return; }
       if (escSeq === '\x1b[D') { onKey({ type: 'left' }); escSeq = ''; return; }
-      if (escSeq.length > 5) { escSeq = ''; return; } // Unknown escape, discard
+      // Shift+Enter: \x1b[13;2u or \x1b[13;u
+      if (escSeq.match(/^\x1b\[13;/)) { onKey({ type: 'char', char: '\n' }); escSeq = ''; return; }
+      // Home/End
+      if (escSeq === '\x1b[H' || escSeq === '\x1b[1~') { onKey({ type: 'ctrl_c' }); escSeq = ''; return; } // Map Home to Ctrl+C
+      if (escSeq.length > 8) { escSeq = ''; return; }
       return;
     }
 
-    // Enter
-    if (str === '\r' || str === '\n') {
-      onKey({ type: 'enter' });
+    // Windows CRLF: \r\n → treat as single Enter
+    if (str === '\r') { lastWasCR = true; onKey({ type: 'enter' }); return; }
+    if (str === '\n') {
+      if (lastWasCR) { lastWasCR = false; return; } // Ignore LF after CR
+      // Standalone \n → Shift+Enter / Ctrl+J → insert newline
+      onKey({ type: 'char', char: '\n' });
       return;
     }
+    lastWasCR = false;
 
     // Backspace
     if (str === '\x7f' || str === '\b') {
@@ -299,14 +308,8 @@ export function setupRawInput(onKey: (ev: KeyEvent) => void, onLine: (line: stri
       return;
     }
 
-    // Escape
-    if (str === '\x1b') {
-      onKey({ type: 'escape' });
-      return;
-    }
-
-    // Printable character
-    if (str.length === 1 && str.charCodeAt(0) >= 32) {
+    // Printable character (including Unicode)
+    if (str.length >= 1 && str.charCodeAt(0) >= 32) {
       onKey({ type: 'char', char: str });
       return;
     }

@@ -560,15 +560,16 @@ program.command('st')
   .alias('status')
   .description('查看任务状态')
   .argument('[task-id]', '任务 ID（不指定则显示所有）')
-  .option('--json', 'JSON 格式输出')
-  .action(async (taskId?: string, options?: { json?: boolean }) => {
+  .allowUnknownOption(true)
+  .action(async (taskId?: string) => {
     const rootPath = process.cwd();
+    const jsonMode = process.argv.includes('--json');
     try {
       const { listTasks, loadTask } = await import('./core/task-engine.js');
-      if (taskId) {
+      if (taskId && taskId !== '--json') {
         const task = await loadTask(rootPath, taskId);
         if (!task) { warn(`任务 ${chalk.cyan(taskId)} 不存在`); return; }
-        if (options?.json) {
+        if (jsonMode) {
           console.log(JSON.stringify(jsonEnvelope('task', serializeTask(task)), null, 2));
           return;
         }
@@ -576,14 +577,14 @@ program.command('st')
       } else {
         const tasks = await listTasks(rootPath);
         if (tasks.length === 0) {
-          if (options?.json) {
+          if (jsonMode) {
             console.log(JSON.stringify(jsonEnvelope('task-list', serializeTaskList([])), null, 2));
             return;
           }
           info('无任务记录。使用 ic t "描述" 创建任务');
           return;
         }
-        if (options?.json) {
+        if (jsonMode) {
           console.log(JSON.stringify(jsonEnvelope('task-list', serializeTaskList(tasks)), null, 2));
           return;
         }
@@ -2060,13 +2061,15 @@ async function executeTask(
     // Tool-calling loop: AI → call tools → get results → AI thinks again
     let currentTask = task.description;
     let toolRound = 0;
-    const MAX_TOOL_ROUNDS = 5;
+    const isAnalysis = isAnalysisOnlyTask(task.description);
+    const MAX_TOOL_ROUNDS = isAnalysis ? 10 : 5;
+    const allToolResults: string[] = [];
 
     while (toolRound < MAX_TOOL_ROUNDS) {
       const roundLabel = toolRound === 0 ? '' : chalk.dim(` (第 ${toolRound + 1}/${MAX_TOOL_ROUNDS} 轮)`);
       progress(`AI 执行中...${roundLabel}`);
       const response = await provider.chat({
-        systemPrompt: buildSystemPrompt(config, index),
+        systemPrompt: buildSystemPrompt(config, index, task.description),
         context: contextPkg || { projectMeta: '', relevantCode: [], relevantMemory: '', totalTokens: 0, budgetUsed: 0 },
         task: currentTask,
         history: toolRound > 0 ? `上一轮工具结果已注入上下文。` : '',
@@ -2085,6 +2088,7 @@ async function executeTask(
             toolResults.push(`[${tc.name}] 错误: ${(e as Error).message}`);
           }
         }
+        allToolResults.push(...toolResults);
         currentTask = `${task.description}\n\n工具调用结果：\n${toolResults.join('\n')}\n\n请基于这些结果继续分析。`;
         toolRound++;
         continue;
@@ -2097,7 +2101,12 @@ async function executeTask(
       break;
     }
 
-    if (!aiContent) {
+    // For analysis tasks that exhausted rounds without final response,
+    // synthesize a response from tool results
+    if (!aiContent && isAnalysis && allToolResults.length > 0) {
+      const summaries = allToolResults.map(r => r.length > 300 ? r.slice(0, 300) + '...' : r);
+      aiContent = '基于工具探索的分析结果（共 ' + allToolResults.length + ' 次工具调用）：\n\n' + summaries.join('\n\n');
+    } else if (!aiContent) {
       aiContent = 'AI 未返回有效响应（可能超出工具调用轮次）';
     }
     if (!aiOutput) aiOutput = parseAIOutput(aiContent);
@@ -2270,6 +2279,17 @@ async function executeTask(
   }
 
   setTaskLoopStep(task.id, 'verify-result');
+
+  // A1: Analysis-only tasks skip verification (no compile/lint/test needed)
+  if (isAnalysisOnlyTask(task.description)) {
+    updateTaskStatus(task.id, 'completed');
+    task.completedAt = new Date().toISOString();
+    await persistTask(rootPath, task);
+    releaseFileLocks(task);
+    await completeTaskLoop(task.id, 'pass');
+    success(`分析完成 — ${fileBlocks.length} 个文件已写入`);
+    return;
+  }
 
   // 9. Verification + auto-fix loop
   progress('验证中...');
@@ -2918,7 +2938,10 @@ function isAnalysisOnlyTask(desc: string): boolean {
 function buildSystemPrompt(
   config: ICloserConfig,
   index: import('./types.js').ProjectIndex | null,
+  taskDescription?: string,
 ): string {
+  const isAnalysis = taskDescription ? isAnalysisOnlyTask(taskDescription) : false;
+
   let toolSection = '';
   try {
     const { buildToolCapabilitySnapshot } = require('./core/tool-registry.js');
@@ -2933,7 +2956,16 @@ function buildSystemPrompt(
     }
   } catch { /* non-critical */ }
 
+  const isWin = process.platform === 'win32';
   let p = `你是 iCloser Agent Shell，终端中的 AI 工程助手。
+
+## 运行环境
+- 操作系统: ${isWin ? 'Windows' : process.platform}
+- Shell: ${isWin ? 'PowerShell / CMD（不是 bash）' : 'bash/zsh'}
+- 文件列表: ${isWin ? '用 dir /B 或 Get-ChildItem' : '用 ls'}
+- 文件搜索: ${isWin ? '用 findstr 或 Select-String' : '用 grep'}
+- 路径分隔: ${isWin ? '反斜杠 \\ 或正斜杠 /' : '正斜杠 /'}
+${isWin ? '- 注意: 不要使用 ls/grep/find 等 Unix 命令，它们在此环境不可用。使用 PowerShell cmdlet 或 Node.js 执行命令。' : ''}
 
 ## 项目信息
 - 语言: ${config.project.identity.language}
@@ -2961,6 +2993,34 @@ function buildSystemPrompt(
 5. 代码匹配项目的语言/框架/代码风格
 6. 中文说明写在 summary/reasoning 中，代码术语保留英文
 7. 上述工具能力可供理解项目时参考，最终输出必须是 JSON 变更契约`;
+
+  // B2: Analysis-specific instructions — override the JSON contract for analysis tasks
+  if (isAnalysis) {
+    p += '\n\n## 分析任务特殊规则（覆盖上述 JSON 变更规则）';
+    p += '\n你是项目分析专家。当前任务是分析项目，不是修改代码。请按以下策略操作：';
+    p += '\n\n**探索策略：**';
+    p += '\n1. 先 read_file README.md 了解项目身份和功能概述';
+    p += '\n2. read_file 入口文件（main.go / App.js / Makefile）了解技术栈和构建方式';
+    p += '\n3. read_file 关键配置（go.mod / package.json / Dockerfile）识别依赖和服务';
+    p += '\n4. 用 search_code 搜索功能关键词（handler/route/api/controller/service/feature）发现功能模块';
+    p += '\n5. read_file 2-3 个核心业务文件，了解具体实现细节';
+    p += '\n6. **最后必须输出分析写入 ANALYSIS.md 文件**，格式为：';
+    p += '\n```json';
+    p += '\n{';
+    p += '\n  "summary": "项目综合分析结论（一句话）",';
+    p += '\n  "changes": [{';
+    p += '\n    "file": "ANALYSIS.md",';
+    p += '\n    "operation": "write",';
+    p += '\n    "content": "# 项目名称\\n\\n## 身份\\n...\\n\\n## 技术栈\\n...\\n\\n## 架构\\n...\\n\\n## 已实现功能\\n- ...\\n\\n## 待开发/未完成\\n- ...\\n\\n## 完整度评估\\n...",';
+    p += '\n    "reasoning": "基于对 README + 入口文件 + 关键代码的深入分析"';
+    p += '\n  }]';
+    p += '\n}';
+    p += '\n```';
+    p += '\n**关键要求：**';
+    p += '\n- 功能清单必须从 README 和源码中提取，至少列出 15 项';
+    p += '\n- 技术栈必须包含具体的库名和版本号（从 go.mod/package.json 读取）';
+    p += '\n- 完整度评估给出百分比并说明理由';
+  }
 
   if (index) {
     p += `\n\n## 项目结构
