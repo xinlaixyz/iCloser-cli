@@ -111,6 +111,8 @@ let spinnerTimer: ReturnType<typeof setInterval> | null = null;
 let abortController: AbortController | null = null;
 let streamState: 'idle' | 'loading' | 'streaming' = 'idle';
 let streamLineBuf = '';
+let waitingStartTime = 0;
+let streamTokenCount = 0;
 let bottomOptions: { label: string; desc: string; action: string }[] = [];
 let mutedInput = false;
 let pendingExitSince = 0;
@@ -807,13 +809,15 @@ async function handleChat(input: string): Promise<void> {
     console.log(renderReplLoopStatusBar('collect-context'));
     console.log(`\n  ${C.accent('◇')} ${chalk.bold('You')}  ${input}`);
     state.conversation.push({ role: 'user', content: input, timestamp: new Date().toISOString() });
-    streamState = 'loading'; streamLineBuf = ''; startSpinner();
+    streamState = 'loading'; streamLineBuf = ''; startWaitingPhase();
+    process.stdout.write(`\r  ${C.primary('◉')} ${chalk.bold('AI')} ${C.dim(`正在连接 ${state.aiConfig.provider.toUpperCase()}...`)}`);
     let fullResponse = ''; let firstChunk = true; let inCodeBlock = false; let codeLang = ''; let suppressCodeBlock = false;
     const aiStartTime = Date.now(); const tw = Math.min(termWidth(), 100); const contentW = tw - 4;
     const provider = createProvider(state.aiConfig);
     const response = await provider.chatStream(prompt, (chunk: string) => {
       if (signal.aborted) return;
-      if (firstChunk) { stopSpinner(); streamState = 'streaming'; process.stdout.write('\n'); firstChunk = false; }
+      streamTokenCount += Math.round(chunk.length / 3.5);
+      if (firstChunk) { streamState = 'streaming'; streamTokenCount = 0; process.stdout.write('\n'); firstChunk = false; }
       fullResponse += chunk; streamLineBuf += chunk;
       const lines = streamLineBuf.split('\n'); streamLineBuf = lines.pop() || '';
       for (const line of lines) {
@@ -834,12 +838,10 @@ async function handleChat(input: string): Promise<void> {
       }
     });
     const elapsed = Date.now() - aiStartTime;
-    if (signal.aborted) { process.stdout.write(`\n  ${C.warn('⚡ 已中断')}\n\n`); streamState = 'idle'; return; }
+    if (signal.aborted) { stopWaitingPhase(); process.stdout.write(`\n  ${C.warn('⚡ 已中断')}\n\n`); streamState = 'idle'; return; }
     if (streamLineBuf) renderMarkdownLine(streamLineBuf, contentW);
     if (inCodeBlock && !suppressCodeBlock) { process.stdout.write(`  ${C.dim('```')}\n`); }
-    stopSpinner(); streamState = 'idle'; streamLineBuf = '';
-    let meta = ''; if (response.tokensUsed > 0) meta += `${response.tokensUsed.toLocaleString()} tokens`; if (elapsed > 0) meta += `  ${(elapsed / 1000).toFixed(1)}s`;
-    if (meta) process.stdout.write(`  ${C.dim(meta)}\n`);
+    stopWaitingPhase(); streamState = 'idle'; streamLineBuf = '';
     state.conversation.push({ role: 'assistant', content: fullResponse || response.content, timestamp: new Date().toISOString() });
     let fileBlocks = extractFileBlocks(fullResponse || response.content, input);
     if (fileBlocks.length === 0 && shouldRepairWriteOutput(input, fullResponse || response.content)) {
@@ -1814,8 +1816,53 @@ function printFooter(hasFiles: boolean): void {
 
 function stripAnsiLen(str: string): number { return str.replace(/\x1b\[[0-9;]*m/g, '').length; }
 
-function startSpinner(): void { spinnerIdx = 0; const frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']; let tick = 0; spinnerTimer = setInterval(() => { if (streamState === 'streaming') { stopSpinner(); return; } tick++; process.stdout.write('\r  ' + C.primary('◉') + ' ' + chalk.bold('AI') + ' ' + C.primary(frames[spinnerIdx]) + '  ' + C.dim('思考中')); spinnerIdx = (spinnerIdx + 1) % frames.length; }, 80); }
-function stopSpinner(): void { if (spinnerTimer) { clearInterval(spinnerTimer); spinnerTimer = null; } }
+// S20.2 Waiting UX — three-phase feedback
+const WAIT_PULSE = ['◉', '◔', '◑', '◕'];
+const WAIT_BAR = '█';
+const WAIT_BAR_EMPTY = '░';
+
+function startWaitingPhase(): void {
+  waitingStartTime = Date.now();
+  streamTokenCount = 0;
+  spinnerIdx = 0;
+  let tick = 0;
+  spinnerTimer = setInterval(() => {
+    tick++;
+    if (streamState === 'streaming') { startStreamingPhase(); return; }
+    if (streamState === 'idle') { stopWaitingPhase(); return; }
+    const elapsed = ((Date.now() - waitingStartTime) / 1000).toFixed(1);
+    const pulse = WAIT_PULSE[spinnerIdx];
+    const barLen = 20;
+    const progI = Math.min(Math.floor((tick * 3) % barLen), barLen - 1);
+    const bar = WAIT_BAR.repeat(progI) + WAIT_BAR_EMPTY.repeat(barLen - progI);
+    process.stdout.write(`\r  ${C.primary(pulse)} ${chalk.bold('AI')} ${C.dim('分析中')} ${C.primary(`[${elapsed}s]`)}  ${C.dim(bar)}`);
+    spinnerIdx = (spinnerIdx + 1) % WAIT_PULSE.length;
+    // Show hint after 10s
+    if (tick === 125) {
+      process.stdout.write(`\n  ${C.dim('复杂任务可能需要 10-30 秒，Ctrl+C 可中断')}`);
+    }
+  }, 80);
+}
+
+function startStreamingPhase(): void {
+  if (spinnerTimer) { clearInterval(spinnerTimer); spinnerTimer = null; }
+  spinnerTimer = setInterval(() => {
+    if (streamState === 'idle') { stopWaitingPhase(); return; }
+    const elapsed = ((Date.now() - waitingStartTime) / 1000).toFixed(1);
+    const pulse = WAIT_PULSE[spinnerIdx];
+    process.stdout.write(`\r  ${C.primary(pulse)} ${chalk.bold('AI')} ${C.dim('输出中')} ${C.primary(`[${elapsed}s]`)}  ${C.dim('已接收')} ${C.accent(String(streamTokenCount))} ${C.dim('tokens')}`);
+    spinnerIdx = (spinnerIdx + 1) % WAIT_PULSE.length;
+  }, 200);
+}
+
+function stopWaitingPhase(): void {
+  if (spinnerTimer) { clearInterval(spinnerTimer); spinnerTimer = null; }
+  const elapsed = ((Date.now() - waitingStartTime) / 1000).toFixed(1);
+  process.stdout.write(`\r\x1b[K  ${C.success('✓')} ${C.dim(`完成  [${elapsed}s]  ${streamTokenCount.toLocaleString()} tokens`)}}\n`);
+}
+
+function startSpinner(): void { startWaitingPhase(); }
+function stopSpinner(): void { stopWaitingPhase(); }
 
 export function replCompleter(line: string): [string[], string] {
   if (!line.startsWith('/')) return [[], line];
