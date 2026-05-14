@@ -44,17 +44,23 @@ export function renderBottomPanel(panel: BottomPanelState): string {
     out += '\n';
   }
 
-  // Divider + actions
+  // Actions
+  if (panel.actions.length > 0 && panel.items.length > 0) {
+    out += `  ${C.dim('├─')} ${C.dim('─'.repeat(w))}${C.dim('┤')}\n`;
+  }
   if (panel.actions.length > 0) {
-    out += `  ${C.dim('├─')} ${C.dim('操作')} ${C.dim('─'.repeat(Math.max(0, w - 8)) + '┤')}\n`;
     const actionStr = panel.actions.map(a =>
       `${C.accent(`[${a.key}]`)} ${C.dim(a.label)}`
     ).join(`  ${C.dim('│')}  `);
-    out += `  ${C.dim('│')} ${actionStr}${' '.repeat(Math.max(0, w - actionStr.length - 2))} ${C.dim('│')}\n`;
+    out += `  ${C.dim('│')} ${actionStr}${' '.repeat(Math.max(0, w - stripAnsiLen(actionStr) - 2))} ${C.dim('│')}\n`;
   }
 
   out += `  ${C.dim('╰')}${C.dim('─'.repeat(w))}${C.dim('╯')}`;
   return out;
+}
+
+function stripAnsiLen(str: string): number {
+  return str.replace(/\x1b\[[0-9;]*m/g, '').length;
 }
 
 export const DEFAULT_SHORTCUTS: BottomPanelState = {
@@ -254,11 +260,21 @@ export function setupRawInput(onKey: (ev: KeyEvent) => void, onLine: (line: stri
   stdin.resume();
 
   let escSeq = '';
-  // Track if last char was \r and next is \n (Windows CRLF)
   let lastWasCR = false;
+  // Buffer for incomplete multi-byte UTF-8 sequences
+  let byteBuf = Buffer.alloc(0);
 
   const onData = (data: Buffer): void => {
-    const str = data.toString();
+    // Accumulate bytes and decode with proper multi-byte handling
+    byteBuf = Buffer.concat([byteBuf, data]);
+    let str: string;
+    try {
+      str = byteBuf.toString('utf-8');
+      byteBuf = Buffer.alloc(0);
+    } catch {
+      // Incomplete sequence — wait for more bytes
+      return;
+    }
 
     // Handle escape sequences (arrows, Shift+Enter, etc.)
     if (str === '\x1b') {

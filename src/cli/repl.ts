@@ -254,27 +254,27 @@ export async function startRepl(): Promise<void> {
 function startRawInputLoop(): void {
   const box = new InputBox();
   box.history = state.conversation.filter(m => m.role === 'user').map(m => m.content);
+  let lastInputLines = 0;
+  let lastPanelLines = 0;
 
-  function renderFixedArea(): void {
+  function renderInput(clearPrevious: boolean): void {
     const tw = termWidth();
     const inputStr = box.render(tw);
     const panelStr = buildCurrentPanelStr();
-    // Save cursor, render fixed area at bottom
-    process.stdout.write('\x1b[s'); // save position
-    process.stdout.write('\x1b[0J'); // clear from cursor to end
+    const inputLines = inputStr.split('\n').length;
+    const panelLines = panelStr.split('\n').length;
+    const totalLines = lastInputLines + lastPanelLines;
+
+    if (clearPrevious && totalLines > 0) {
+      // Move cursor up to erase previous render
+      process.stdout.write(`\x1b[${totalLines}A`);
+      process.stdout.write('\x1b[0J'); // clear from cursor to end of screen
+    }
+
     process.stdout.write(inputStr + '\n');
     process.stdout.write(panelStr + '\n');
-    // Position cursor inside box
-    const cursorRow = Math.min(box.cursorRow - box.scrollOffset, box.maxHeight - 1);
-    const upLines = panelStr.split('\n').length + Math.min(box.lines.length, box.maxHeight) + 4 - cursorRow;
-    process.stdout.write(`\x1b[${upLines}A`); // up to cursor row
-    process.stdout.write(`\x1b[${box.cursorCol + 3}C`); // right to cursor col
-    process.stdout.write('\x1b[u'); // restore saved position
-  }
-
-  function renderSimple(): void {
-    process.stdout.write(box.render(termWidth()) + '\n');
-    process.stdout.write(buildCurrentPanelStr() + '\n');
+    lastInputLines = inputLines + 1;
+    lastPanelLines = panelLines + 1;
   }
 
   const cleanup = setupRawInput(
@@ -297,34 +297,41 @@ function startRawInputLoop(): void {
           break;
         default: break;
       }
-      renderSimple();
+      renderInput(true);
     },
     () => {}
   );
 
   async function submitLine(): Promise<void> {
-    const text = box.text;
-    if (!text.trim()) { renderSimple(); return; }
-    box.addToHistory(text);
+    const text = box.text.trim();
     box.reset();
-    process.stdout.write('\r\x1b[K\n');
-    await processRawInput(text.trim());
+    // Clear input area entirely
+    if (lastInputLines + lastPanelLines > 0) {
+      process.stdout.write(`\x1b[${lastInputLines + lastPanelLines}A`);
+      process.stdout.write('\x1b[0J');
+    }
+    lastInputLines = 0;
+    lastPanelLines = 0;
+
+    if (!text) { renderInput(false); return; }
+    box.addToHistory(text);
+    if (state.running) await processRawInput(text);
     box.history = state.conversation.filter(m => m.role === 'user').map(m => m.content);
-    if (state.running) renderSimple();
+    if (state.running) renderInput(false);
   }
 
   async function processRawInput(input: string): Promise<void> {
-    // S20.8: history search via ! prefix
     if (input.startsWith('!') && input.length > 1) {
       await cmdHistorySearch(input.substring(1));
       printBottomBlock(); return;
     }
-    // Panel shortcuts
     const panel = buildCurrentPanel();
-    const action = panel.actions.find(a => a.key === input);
-    if (action && input.length <= 2) {
-      await executePanelAction(action.action);
-      return;
+    if (!panel.items.length) {
+      const action = panel.actions.find(a => a.key === input);
+      if (action && input.length <= 2) {
+        await executePanelAction(action.action);
+        return;
+      }
     }
     await recordReplUserInput(input);
     if (await handleInlineConfirm(input)) { printBottomBlock(); return; }
@@ -333,7 +340,7 @@ function startRawInputLoop(): void {
     printBottomBlock();
   }
 
-  renderSimple();
+  renderInput(false);
 }
 
 async function shutdownRepl(): Promise<void> {
