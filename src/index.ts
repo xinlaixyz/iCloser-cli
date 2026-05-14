@@ -17,6 +17,7 @@ import { AIOutputContractError, parseAIOutput } from './ai/output-contract.js';
 import {
   success, fail, progress, warn, info, section, detail,
   divider, printProjectIdentity, printError, printHelp, ICONS,
+  enableOutputSanitizer,
 } from './cli/output.js';
 import { startRepl } from './cli/repl.js';
 import type { AgentStatus, AgentType, AIProvider, ICloserConfig, MemoryCandidate, ProjectMemory, Task, VerifyStage } from './types.js';
@@ -1847,6 +1848,7 @@ program.command('agent')
 // ============================================================
 // Parse
 // ============================================================
+enableOutputSanitizer();
 if (process.argv.length <= 2) {
   await startRepl();
 } else {

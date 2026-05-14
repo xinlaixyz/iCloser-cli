@@ -41,7 +41,7 @@ import {
 } from './system-runner.js';
 import { choicePrompt, parseChoiceInput, renderChoicePanel, type ChoicePanel } from './choice-panel.js';
 import { isLoopInterventionInput, renderLoopInterventionNotice, renderReplLoopPanel, renderReplLoopStatusBar } from './loop-panel.js';
-import { printToolDegradationNotice, resetToolDegradationNotices } from './output.js';
+import { enableOutputSanitizer, printToolDegradationNotice, resetToolDegradationNotices } from './output.js';
 import { analyzeProjectAutopilot, planProjectTests, renderAutopilotReport, renderAutopilotTestPlan } from '../core/autopilot.js';
 import { buildDocWritePlan, writeDocs, type DocWritePlan } from '../core/autodoc.js';
 import { buildTestWritePlan, renderTestWritePlan, writeTests, type TestWritePlan } from '../core/autotest.js';
@@ -180,6 +180,7 @@ function promptRepl(): void {
 // Entry
 // ============================================================
 export async function startRepl(): Promise<void> {
+  enableOutputSanitizer();
   await loadGlobalConfig(); await detectProjectContext(); const resumed = await loadSession();
   state.aiConfig.apiKey = resolveApiKeyForProvider(state.aiConfig.provider);
   const offlineReason = enableOfflineModeIfMissingKey();

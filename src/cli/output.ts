@@ -83,6 +83,73 @@ function stripAnsi(str: string): string {
 }
 
 // ============================================================
+// Output sanitization (S20.1)
+// ============================================================
+let sanitizedCount = 0;
+let sanitizedLines = 0;
+const MAX_LINE_LENGTH = 1000;
+
+export function sanitizeOutput(text: string): string {
+  let out = '';
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    // Pass ANSI escape sequence: ESC(27) + '[' + ... + letter
+    if (code === 27 && i + 1 < text.length && text[i + 1] === '[') {
+      out += text[i]; i++;
+      out += text[i]; // '['
+      // Consume until the terminator letter (A-Z, a-z)
+      while (i + 1 < text.length) {
+        i++;
+        const c = text.charCodeAt(i);
+        out += text[i];
+        if ((c >= 65 && c <= 90) || (c >= 97 && c <= 122)) break;
+      }
+      continue;
+    }
+    // Allow: \n(10), \r(13), \t(9), printable(32-126), Unicode(128+), surrogates
+    if (code === 10 || code === 13 || code === 9) { out += text[i]; continue; }
+    if (code >= 32 && code <= 126) { out += text[i]; continue; }
+    if (code >= 128 && code <= 0xD7FF) { out += text[i]; continue; }
+    if (code >= 0xE000 && code <= 0xFFFF) { out += text[i]; continue; }
+    if (code >= 0xD800 && code <= 0xDFFF) { out += text[i]; continue; }
+    sanitizedCount++;
+  }
+  // Truncate overly long lines
+  const lines = out.split('\n');
+  let changed = false;
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].length > MAX_LINE_LENGTH) {
+      lines[i] = lines[i].substring(0, MAX_LINE_LENGTH - 3) + '…';
+      sanitizedLines++;
+      changed = true;
+    }
+  }
+  return changed ? lines.join('\n') : out;
+}
+
+export function sanitizeWrite(data: string | Uint8Array, encoding?: BufferEncoding | undefined): boolean {
+  const str = typeof data === 'string' ? data : new TextDecoder().decode(data);
+  const cleaned = sanitizeOutput(str);
+  return process.stdout.write(cleaned, encoding as BufferEncoding | undefined);
+}
+
+let stdoutPatched = false;
+export function enableOutputSanitizer(): void {
+  if (stdoutPatched) return;
+  const orig = process.stdout.write.bind(process.stdout);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (process.stdout.write as any) = (data: string | Uint8Array, encoding?: BufferEncoding, cb?: (err?: Error | null) => void): boolean => {
+    const cleaned = sanitizeOutput(typeof data === 'string' ? data : new TextDecoder().decode(data));
+    return orig(cleaned, encoding, cb);
+  };
+  stdoutPatched = true;
+}
+
+export function getSanitizerStats(): { chars: number; lines: number } {
+  return { chars: sanitizedCount, lines: sanitizedLines };
+}
+
+// ============================================================
 // Spinner
 // ============================================================
 export function spinner(text: string): Ora {
