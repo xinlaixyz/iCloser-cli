@@ -255,9 +255,9 @@ function startRawInputLoop(): void {
   const box = new InputBox();
   box.history = state.conversation.filter(m => m.role === 'user').map(m => m.content);
   let prevRenderLines = 0;
+  let cursorLinesAboveBottom = 0; // how many lines the cursor was positioned above the render bottom
   let isFirstRender = true;
 
-  // Count lines in a string (excluding trailing empty)
   function countLines(s: string): number {
     const n = s.split('\n').length;
     return s.endsWith('\n') ? n - 1 : n;
@@ -272,30 +272,31 @@ function startRawInputLoop(): void {
 
     let out = '';
     if (!isFirstRender && prevRenderLines > 0) {
-      // Move cursor up to the start of the previous render area
+      // Phase 1: move cursor down to the BOTTOM of the previous render
+      // (the cursor was left inside the box, cursorLinesAboveBottom from the bottom)
+      if (cursorLinesAboveBottom > 0) {
+        out += `\x1b[${cursorLinesAboveBottom}B`;
+      }
+      // Phase 2: now at the bottom, move up to the start of the render area
       out += `\x1b[${prevRenderLines}A`;
       out += '\r';
       out += '\x1b[0J'; // clear from cursor to end of screen
     }
     out += newContent;
 
-    // Position cursor inside the input box (first content line, after "  │ " prefix)
-    // Cursor goes to: start of input box content + column offset
-    const inputLines = inputStr.split('\n').length;
-    const panelLines = panelStr.split('\n').length;
-    // How far from end of output to go up: panel + bottom border + (input height - cursor row)
+    // Position cursor on the correct input box content line
+    const panelLines = countLines(panelStr);
     const cursorRowInBox = Math.min(box.cursorRow - box.scrollOffset, box.maxHeight - 1);
-    const inputContentHeight = Math.min(box.lines.length, box.maxHeight);
-    const scrollHintLines = box.scrollOffset > 0 ? 1 : 0;
-    const remainingHintLines = (box.lines.length > box.scrollOffset + inputContentHeight) ? 1 : 0;
-    // Lines from end of output to cursor position:
-    // panel + bottom input border + (input content height - cursor row)
-    const linesUp = panelLines + 1 + (inputContentHeight + scrollHintLines + remainingHintLines - cursorRowInBox);
-    if (linesUp > 0 && linesUp < newLines) {
-      out += `\x1b[${linesUp}A`; // move up to cursor row
-      out += `\x1b[${box.cursorCol + 3}C`; // move right to cursor column ("  │ " = 3 chars)
+    const inputContentH = Math.min(box.lines.length, box.maxHeight);
+    const hintLines = (box.scrollOffset > 0 ? 1 : 0) + (box.lines.length > box.scrollOffset + inputContentH ? 1 : 0);
+    // Lines from the end of the output up to the cursor row inside the box
+    const cursorUp = panelLines + 1 + hintLines + inputContentH - cursorRowInBox;
+    if (cursorUp > 0 && cursorUp < newLines) {
+      out += `\x1b[${cursorUp}A`;
+      out += `\x1b[${box.cursorCol + 3}C`;
       out += '\x1b[?25h'; // show cursor
     }
+    cursorLinesAboveBottom = cursorUp > 0 ? cursorUp : 0;
 
     process.stdout.write(out);
     prevRenderLines = newLines;
