@@ -22,7 +22,7 @@ import {
   drawWideBox, processStep,
   notification, thinDivider, termWidth,
 } from './theme.js';
-import { renderBottomPanel, DEFAULT_SHORTCUTS, contextMeterItem, type BottomPanelState } from './tui.js';
+import type { BottomPanelState } from './tui.js';
 import type { AIConfig, AIProvider, AIPrompt, ContextPackage, ProjectIdentity, ProjectIndex, Task } from '../types.js';
 import type { StreamCallback } from '../ai/provider.js';
 import {
@@ -158,26 +158,28 @@ const SLASH_COMMANDS = [
 
 function box(content: string, title: string): string { return drawWideBox(content, { title }); }
 
-function boxWidth(): number { return Math.max(20, termWidth() - 4); }
+function printStatusLine(): void {
+  const ctxTokens = Math.round(state.conversation.reduce((s, m) => s + m.content.length / 2, 0));
+  const ctxMax = state.aiConfig.maxTokens || 4096;
+  // Context-aware status line
+  if (pendingSystemOperation) {
+    process.stdout.write(`\n  ${C.warn('⚡')} ${C.accent(pendingSystemOperation.title)} ${C.dim('─ [y] 允许 [n] 拒绝')}\n`);
+    return;
+  }
+  if (streamState !== 'idle') {
+    process.stdout.write(`\r  ${C.primary('◉')} AI ${C.dim('执行中... Ctrl+C 中断')}\n`);
+    return;
+  }
+  if (state.pendingFiles.length > 0) {
+    const files = state.pendingFiles.map(f => `${C.accent(f.path)}+${f.lines}`).join(' ');
+    process.stdout.write(`\n  ${C.success('▸')} ${files} ${C.dim('─ /write 写入 /diff 预览 /clear 取消')}\n`);
+    return;
+  }
+  process.stdout.write(`\n  ${C.dim(`─ /help /scan /diff /clear · ${(ctxTokens/1000).toFixed(1)}K/${(ctxMax/1000).toFixed(0)}K ─`)}\n`);
+}
 
-function inputBoxTop(): string {
-  const w = boxWidth() - 2;
-  return `  ${C.accent('╭─')} ${C.accent('输入')} ${C.accent('─'.repeat(Math.max(1, w - 6)) + '╮')}`;
-}
-function inputBoxBottom(): string {
-  const w = boxWidth() - 2;
-  return `  ${C.accent('╰')}${C.accent('─'.repeat(w))}${C.accent('╯')}`;
-}
+function printBottomBlock(): void { printStatusLine(); }
 
-function printBottomBlock(): void {
-  bottomOptions = [];
-  // Panel only — clean single-line separator above
-  process.stdout.write(`\n${renderBottomPanel(buildCurrentPanel())}\n`);
-}
-
-function buildCurrentPanelStr(): string {
-  return renderBottomPanel(buildCurrentPanel());
-}
 async function executePanelAction(action: string): Promise<void> {
   switch (action) {
     case 'help': console.log(commandHelp()); break;
@@ -192,36 +194,6 @@ async function executePanelAction(action: string): Promise<void> {
     case 'system-deny': pendingSystemOperation = null; pendingConfirm = null; console.log(`  ${C.dim('已拒绝系统操作')}\n`); break;
     default: break;
   }
-}
-function buildCurrentPanel(): BottomPanelState {
-  // Context usage estimate
-  const ctxTokens = Math.round(state.conversation.reduce((s, m) => s + m.content.length / 2, 0));
-  const ctxMax = state.aiConfig.maxTokens || 4096;
-  const ctxPct = Math.min(100, Math.round((ctxTokens / ctxMax) * 100));
-  const ctxBar = '█'.repeat(Math.round(ctxPct / 10)) + '░'.repeat(10 - Math.round(ctxPct / 10));
-
-  // System operation approval
-  if (pendingSystemOperation) {
-    return {
-      type: 'verify', title: pendingSystemOperation.title,
-      items: pendingSystemOperation.steps.map(s => ({ label: s.display, status: 'pending' as const })),
-      actions: [{ key: 'y', label: '允许', action: 'system-approve' }, { key: 'n', label: '拒绝', action: 'system-deny' }],
-    };
-  }
-  if (streamState !== 'idle') {
-    const elapsed = ((Date.now() - waitingStartTime) / 1000).toFixed(1);
-    return { type: 'status', title: `AI 执行中 [${elapsed}s]`, items: [
-      { key: 'ctx', label: `${(ctxTokens/1000).toFixed(1)}K/${(ctxMax/1000).toFixed(0)}K ${ctxBar}`, status: ctxPct > 80 ? 'fail' : ctxPct > 50 ? 'pending' : 'ok' }
-    ], actions: [{ key: 'Ctrl+C', label: '中断', action: 'interrupt' }] };
-  }
-  if (pendingConfirm === 'write' || state.pendingFiles.length > 0) {
-    return {
-      type: 'files', title: `待处理文件 (${state.pendingFiles.length})`,
-      items: state.pendingFiles.map((f, i) => ({ key: String(i + 1), label: f.path, detail: `+${f.lines}行`, checked: true })),
-      actions: [{ key: 'w', label: '写入全部', action: 'write' }, { key: 'd', label: '预览变更', action: 'diff' }, { key: 'x', label: '取消', action: 'cancel' }],
-    };
-  }
-  return { ...DEFAULT_SHORTCUTS, items: [contextMeterItem(ctxTokens, ctxMax)] };
 }
 
 function refreshPrompt(): void {
@@ -290,8 +262,6 @@ export async function startRepl(): Promise<void> {
     const input = line.trim();
     // During AI execution: block all input — just re-display cursor, no rendering
     if (streamState !== 'idle') { rl?.prompt(); return; }
-    // Close input box frame (only for non-empty input that will be processed)
-    if (input) process.stdout.write(`${inputBoxBottom()}\n`);
     // S20.8: history number selection (!1, !2, etc.)
     if (/^!\d+$/.test(input)) {
       const userMsgs = state.conversation.filter(m => m.role === 'user');
@@ -305,14 +275,17 @@ export async function startRepl(): Promise<void> {
       else await handleChat(histInput);
       printBottomBlock(); if (state.running) promptRepl(); return;
     }
-    // Panel shortcuts: single-letter input when no active choice panel
-    if (!activeChoicePanel) {
-      const panel = buildCurrentPanel();
-      const action = panel.actions.find(a => a.key === input);
-      if (action && input.length <= 2) {
-        await executePanelAction(action.action);
-        printBottomBlock(); if (state.running) promptRepl(); return;
-      }
+    // Direct single-key shortcuts (no panel lookup)
+    if (/^[yhscdwq]$/.test(input) && !activeChoicePanel) {
+      if (input === 'y' && pendingSystemOperation) { await handleSystemOperationApprove(); }
+      else if (input === 'n' && pendingSystemOperation) { pendingSystemOperation = null; pendingConfirm = null; console.log(`  ${C.dim('已拒绝')}\n`); }
+      else if (input === 'h') { console.log(commandHelp()); }
+      else if (input === 's') { await cmdScan(); }
+      else if (input === 'd') { await cmdDiff(); }
+      else if (input === 'c') { state.conversation = []; state.pendingFiles = []; console.log(`  ${I.ok} 对话历史已清除\n`); }
+      else if (input === 'w') { await cmdWrite(); }
+      else if (input === 'q') { await shutdownRepl(); }
+      printBottomBlock(); if (state.running) promptRepl(); return;
     }
     // History search via ! prefix
     if (input.startsWith('!') && input.length > 1) {
@@ -1716,11 +1689,38 @@ async function cmdStartProject(): Promise<void> {
       startInfo = projects[0];
     } else {
       // No sub-projects — try root directory
-      startInfo = await detectProjectStartInfo(cwd, fsp, path);
+      const rootInfo = await detectProjectStartInfo(cwd, fsp, path);
+      if (rootInfo) startInfo = { ...rootInfo, cwd };
     }
 
     if (!startInfo) {
-      console.log(drawWideBox(`未找到可启动配置\n${C.accent(cwd)}\n\n支持的启动方式:\n- package.json (dev/start/serve/preview)\n- go.mod + main.go\n- pyproject.toml / main.py\n- Cargo.toml\n- Makefile\n- Dockerfile / docker-compose.yml\n\n切换到项目根目录后再试: ${C.accent('/cd <目录>')}`, { title: '启动项目' }) + '\n');
+      // AI fallback: read project files and ask AI for startup instructions
+      try {
+        const { createProvider } = await import('../ai/provider.js');
+        if (state.aiConfig.provider !== 'mock') {
+          printLoopStatus('take-action', 'AI 启动分析');
+          const ai = createProvider(state.aiConfig);
+          const readme = await fsp.readFile(path.join(cwd, 'README.md'), 'utf-8').catch(() => '');
+          const devDoc = await fsp.readFile(path.join(cwd, 'DEVELOPMENT.md'), 'utf-8').catch(() => '');
+          const dirList = (await fsp.readdir(cwd, { withFileTypes: true }))
+            .filter(e => !e.name.startsWith('.') && !e.name.startsWith('node_'))
+            .map(e => `${e.isDirectory() ? 'd' : 'f'} ${e.name}`).slice(0, 20).join(', ');
+          const resp = await ai.chat({
+            systemPrompt: '你是启动专家。分析项目结构后输出JSON: {"command":"完整启动命令","reasoning":"理由","install":"安装命令(可选)"}',
+            task: `目录: ${cwd}\n内容: ${dirList}\n${readme ? 'README: ' + readme.slice(0, 1500) : ''}`,
+            context: { projectMeta: '', relevantCode: [], relevantMemory: '', totalTokens: 0, budgetUsed: 0 }, history: '',
+          });
+          try {
+            const j = JSON.parse((resp.content.match(/\{[\s\S]*\}/)?.[0] || '{}'));
+            console.log(drawWideBox(
+              `🤖 AI 启动建议\n${C.accent(cwd)}\n\n${C.accent(j.command || '未知')}\n\n${j.reasoning || ''}${j.install ? '\n\n📦 ' + j.install : ''}`,
+              { title: 'AI 启动顾问' }
+            ) + '\n');
+          } catch { console.log(drawWideBox(resp.content.slice(0, 600), { title: 'AI 启动建议' }) + '\n'); }
+          return;
+        }
+      } catch { /* AI fallback failed, show static help */ }
+      console.log(drawWideBox(`未找到可启动配置\n${C.accent(cwd)}\n\n支持的启动方式: npm/go/python/rust/maven/docker\n\n找不到时 AI 会自动分析项目给出建议`, { title: '启动项目' }) + '\n');
       return;
     }
 
