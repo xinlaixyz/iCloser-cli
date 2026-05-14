@@ -911,6 +911,7 @@ async function handleChat(input: string): Promise<void> {
     streamState = 'loading'; streamLineBuf = ''; startWaitingPhase();
     process.stdout.write(`\r  ${C.primary('◉')} ${chalk.bold('AI')} ${C.dim(`正在连接 ${state.aiConfig.provider.toUpperCase()}...`)}`);
     let fullResponse = ''; let firstChunk = true; let inCodeBlock = false; let codeLang = ''; let suppressCodeBlock = false;
+    let lineCount = 0; let lastStatusUpdate = 0;
     const aiStartTime = Date.now(); const tw = Math.min(termWidth(), 100); const contentW = tw - 4;
     const provider = createProvider(state.aiConfig);
     const response = await provider.chatStream(prompt, (chunk: string) => {
@@ -920,6 +921,13 @@ async function handleChat(input: string): Promise<void> {
       fullResponse += chunk; streamLineBuf += chunk;
       const lines = streamLineBuf.split('\n'); streamLineBuf = lines.pop() || '';
       for (const line of lines) {
+        lineCount++;
+        // Show progress every 10 lines during streaming
+        if (lineCount % 10 === 0 && Date.now() - lastStatusUpdate > 2000) {
+          const elapsed = ((Date.now() - aiStartTime) / 1000).toFixed(1);
+          process.stdout.write(`\r  ${C.primary('◉')} ${C.dim(`输出中 [${elapsed}s] · ${lineCount} 行 · ${streamTokenCount.toLocaleString()} tokens`)}\x1b[K`);
+          lastStatusUpdate = Date.now();
+        }
         if (line.trim().startsWith('``')) {
           if (!inCodeBlock) {
             inCodeBlock = true;
@@ -938,19 +946,31 @@ async function handleChat(input: string): Promise<void> {
     });
     const elapsed = Date.now() - aiStartTime;
     if (signal.aborted) { stopWaitingPhase(); process.stdout.write(`\n  ${C.warn('⚡ 已中断')}\n\n`); streamState = 'idle'; return; }
-    if (streamLineBuf) renderMarkdownLine(streamLineBuf, contentW);
+    if (streamLineBuf) { renderMarkdownLine(streamLineBuf, contentW); lineCount++; }
     if (inCodeBlock && !suppressCodeBlock) { process.stdout.write(`  ${C.dim('```')}\n`); }
+    // Clear progress line and show final status
+    process.stdout.write(`\r\x1b[K  ${C.success('✓')} ${C.dim(`[${(elapsed/1000).toFixed(1)}s]  ${lineCount} 行  ${streamTokenCount.toLocaleString()} tokens`)}\n`);
     stopWaitingPhase(); streamState = 'idle'; streamLineBuf = '';
     state.conversation.push({ role: 'assistant', content: fullResponse || response.content, timestamp: new Date().toISOString() });
     let fileBlocks = extractFileBlocks(fullResponse || response.content, input);
     if (fileBlocks.length === 0 && shouldRepairWriteOutput(input, fullResponse || response.content)) {
       fileBlocks = await repairWriteOutput(provider, prompt, fullResponse || response.content);
     }
+    // S21: show tool activity summary
+    const mentionedFiles = extractMentionedFiles(fullResponse || response.content);
+    const codeBlocks = (fullResponse.match(/```/g) || []).length / 2;
     if (fileBlocks.length > 0) {
+      console.log(`  ${C.dim('╭─')} ${C.accent('产出')} ${C.dim('─'.repeat(60))}`);
       for (const fb of fileBlocks) {
         const addLine = fb.content.split('\n').length;
-        console.log(`  ${C.success('▸')} ${C.accent(fb.path)} ${C.success(`+${addLine}`)}`);
+        console.log(`  ${C.dim('│')} ${C.success('▸')} ${C.accent(fb.path)} ${C.success(`+${addLine} 行`)}`);
       }
+      console.log(`  ${C.dim('╰')}${C.dim('─'.repeat(66))}`);
+    } else if (mentionedFiles.length > 0 || codeBlocks > 0) {
+      console.log(`  ${C.dim('╭─')} ${C.accent('分析')} ${C.dim('─'.repeat(60))}`);
+      if (codeBlocks > 0) console.log(`  ${C.dim('│')} ${C.primary('```')} ${codeBlocks} 个代码示例`);
+      if (mentionedFiles.length > 0) console.log(`  ${C.dim('│')} ${C.dim('涉及文件:')} ${mentionedFiles.slice(0, 5).map(f => C.accent(f)).join(', ')}${mentionedFiles.length > 5 ? C.dim(` +${mentionedFiles.length - 5}`) : ''}`);
+      console.log(`  ${C.dim('╰')}${C.dim('─'.repeat(66))}`);
     }
     printFooter(fileBlocks.length > 0);
   } catch (err) {
@@ -2348,6 +2368,18 @@ function shouldRepairWriteOutput(input: string, output: string): boolean {
   // Must NOT already have valid file blocks (defense in depth)
   const hasValidBlocks = extractFileBlocks(output, input).length > 0;
   return taskLooksWritable && hasContractHints && !hasValidBlocks;
+}
+
+// S21: extract file paths mentioned in AI response for activity summary
+function extractMentionedFiles(text: string): string[] {
+  const seen = new Set<string>();
+  // Match patterns like `src/config.ts`, `doc/README.md`, `tests/foo.test.ts`
+  const pattern = /\b[\w.-]+\/[\w./-]+\.\w{1,10}\b/g;
+  for (const m of text.matchAll(pattern)) {
+    const file = m[0];
+    if (/\.[a-z]{1,6}$/i.test(file) && !file.startsWith('http')) seen.add(file);
+  }
+  return [...seen];
 }
 
 function shouldHideWriteJsonBlock(input: string, codeLang: string): boolean {

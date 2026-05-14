@@ -68,12 +68,10 @@ export const DEFAULT_SHORTCUTS: BottomPanelState = {
   title: '操作',
   items: [],
   actions: [
-    { key: 'h', label: '帮助 /help', action: 'help' },
-    { key: 's', label: '扫描 /scan', action: 'scan' },
-    { key: 'w', label: '写入 /write', action: 'write' },
-    { key: 'd', label: '预览 /diff', action: 'diff' },
-    { key: 'c', label: '清屏 /clear', action: 'clear' },
-    { key: 'q', label: '退出 /exit', action: 'exit' },
+    { key: 'h', label: '/help', action: 'help' },
+    { key: 's', label: '/scan', action: 'scan' },
+    { key: 'd', label: '/diff', action: 'diff' },
+    { key: 'c', label: '/clear', action: 'clear' },
   ],
 };
 
