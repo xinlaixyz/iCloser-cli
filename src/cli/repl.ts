@@ -159,8 +159,12 @@ function box(content: string, title: string): string { return drawWideBox(conten
 function boxWidth(): number { return Math.max(20, termWidth() - 4); }
 
 function inputBoxTop(): string {
-  const w = boxWidth() - 2; // space for ╭ ╮
+  const w = boxWidth() - 2;
   return `  ${C.accent('╭─')} ${C.accent('输入')} ${C.accent('─'.repeat(Math.max(1, w - 6)) + '╮')}`;
+}
+function inputBoxBottom(): string {
+  const w = boxWidth() - 2;
+  return `  ${C.accent('╰')}${C.accent('─'.repeat(w))}${C.accent('╯')}`;
 }
 
 function printBottomBlock(): void {
@@ -268,7 +272,22 @@ export async function startRepl(): Promise<void> {
   promptRepl();
   rl.on('line', async (line: string) => {
     pendingExitSince = 0;
+    // Close input box frame immediately
+    process.stdout.write(`${inputBoxBottom()}\n`);
     const input = line.trim();
+    // S20.8: history number selection (!1, !2, etc.)
+    if (/^!\d+$/.test(input) && state.conversation.length > 0) {
+      const idx = parseInt(input.substring(1), 10);
+      const userMsgs = state.conversation.filter(m => m.role === 'user');
+      if (idx > 0 && idx <= userMsgs.length) {
+        const histInput = userMsgs[userMsgs.length - idx].content.trim();
+        console.log(`  ${C.dim('← ' + histInput.substring(0, 80))}\n`);
+        if (histInput.startsWith('/')) await handleSlashCommand(histInput);
+        else if (histInput.startsWith('!') && histInput.length > 1) await cmdHistorySearch(histInput.substring(1));
+        else await handleChat(histInput);
+        printBottomBlock(); if (state.running) promptRepl(); return;
+      }
+    }
     // Panel shortcuts: single-letter input when no active choice panel
     if (!activeChoicePanel) {
       const panel = buildCurrentPanel();
@@ -745,7 +764,7 @@ async function handleSlashCommand(input: string): Promise<void> {
   const args = parts.slice(argStart).join(' ');
   switch (cmd) {
     case '/help': case '/h': console.log(commandHelp()); break;
-    case '/?': await cmdCommandPalette(''); break;
+    case '/?': await cmdCommandPalette(args); break;
     case '/exit': case '/quit': case '/q': await shutdownRepl(); break;
     case '/clear': case '/c': state.conversation = []; state.pendingFiles = []; console.log(`  ${I.ok} 对话历史已清除\n`); break;
     case '/init': case '/i': await cmdInit(); break;
