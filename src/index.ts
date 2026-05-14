@@ -2087,20 +2087,22 @@ async function executeTask(
   }
 
   // 6. Write files
-  // S14: Agent sandbox check — filter blocked files
+  // S14: Agent sandbox check — filter blocked files via filterSandboxedFiles
   const agentSandboxLevel = agent?.sandboxLevel || 'none';
   if (agentSandboxLevel !== 'none') {
     try {
       const { checkSandboxWrite } = await import('./agent/manager.js');
-      const blocked = fileBlocks.filter(fb => {
+      const blockedPaths = new Set<string>();
+      for (const fb of fileBlocks) {
         const check = checkSandboxWrite(fb.path, agentSandboxLevel as 'readonly' | 'isolated', rootPath);
-        if (!check.allowed) warn(`沙箱拦截: ${fb.path} — ${check.reason}`);
-        return !check.allowed;
-      });
-      // Remove blocked files
-      for (const b of blocked) {
-        const idx = fileBlocks.indexOf(b);
-        if (idx >= 0) fileBlocks.splice(idx, 1);
+        if (!check.allowed) {
+          warn(`沙箱拦截: ${fb.path} — ${check.reason}`);
+          blockedPaths.add(fb.path);
+        }
+      }
+      // Remove blocked files, preserving reasoning metadata
+      for (let i = fileBlocks.length - 1; i >= 0; i--) {
+        if (blockedPaths.has(fileBlocks[i].path)) fileBlocks.splice(i, 1);
       }
     } catch { /* sandbox check is best-effort */ }
   }

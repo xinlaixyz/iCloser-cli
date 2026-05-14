@@ -1318,8 +1318,8 @@ function parseJavaSourceText(source: string): ParsedFile {
       interfaces: extractJavaInterfaces(tree.rootNode, source),
       callGraph: [],
     };
-  } catch (err) {
-    return { filePath: '<inline>', exports: [], imports: [], functions: [], classes: [], interfaces: [], callGraph: [], error: (err as Error).message };
+  } catch {
+    return parseJavaRegex(source);
   }
 }
 
@@ -1545,8 +1545,8 @@ function parseKotlinSourceText(source: string): ParsedFile {
       interfaces: extractKtInterfaces(tree.rootNode, source),
       callGraph: [],
     };
-  } catch (err) {
-    return { filePath: '<inline>', exports: [], imports: [], functions: [], classes: [], interfaces: [], callGraph: [], error: (err as Error).message };
+  } catch {
+    return parseKotlinRegex(source);
   }
 }
 
@@ -1691,20 +1691,132 @@ function ktExtractReturnType(node: TreeSitterSyntaxNode, source: string): string
 }
 
 // ============================================================
+// Java / Kotlin — Regex-based fallback (S9 dev3)
+// ============================================================
+function parseJavaRegex(source: string): ParsedFile {
+  const exports: AstExport[] = [];
+  const imports: AstImport[] = [];
+  const funcs: AstFunction[] = [];
+  const classes: AstClass[] = [];
+  const lines = source.split('\n');
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    const lineNum = i + 1;
+
+    // import package.ClassName;
+    let m = line.match(/^import\s+([\w.]+(?:\.\*)?)\s*;/);
+    if (m) {
+      const pkg = m[1];
+      const name = pkg.endsWith('.*') ? pkg.replace('.*', '') : pkg.split('.').pop()!;
+      imports.push({ source: pkg, symbols: [name], defaultImport: null, namespaceImport: null, isTypeOnly: false, isExternal: true, line: lineNum });
+      continue;
+    }
+
+    // static import
+    m = line.match(/^import\s+static\s+([\w.]+)\.(\w+)\s*;/);
+    if (m) {
+      imports.push({ source: m[1], symbols: [m[2]], defaultImport: null, namespaceImport: null, isTypeOnly: false, isExternal: true, line: lineNum });
+      continue;
+    }
+
+    // public class ClassName
+    m = line.match(/^public\s+(?:abstract\s+|final\s+)?class\s+(\w+)/);
+    if (m) {
+      const name = m[1];
+      classes.push({ name, extends: null, implements: [], methods: [], properties: [], isExported: true, isDefault: false, line: lineNum });
+      exports.push({ name, kind: 'class', signature: `public class ${name}`, isDefault: false, line: lineNum });
+      continue;
+    }
+
+    // public interface InterfaceName
+    m = line.match(/^public\s+interface\s+(\w+)/);
+    if (m) {
+      exports.push({ name: m[1], kind: 'interface', signature: `public interface ${m[1]}`, isDefault: false, line: lineNum });
+      continue;
+    }
+
+    // public enum EnumName
+    m = line.match(/^public\s+enum\s+(\w+)/);
+    if (m) {
+      exports.push({ name: m[1], kind: 'enum', signature: `public enum ${m[1]}`, isDefault: false, line: lineNum });
+      continue;
+    }
+
+    // public (static) (final) ReturnType methodName(params)
+    m = line.match(/^public\s+(?:static\s+)?(?:final\s+)?(?:synchronized\s+)?(\w+(?:<[^>]+>)?(?:\[\])?)\s+(\w+)\s*\(([^)]*)\)/);
+    if (m && m[2] !== 'class' && m[2] !== 'interface' && m[2] !== 'enum') {
+      const name = m[2];
+      const params = m[3] ? m[3].split(',').map(p => p.trim().split(/\s+/).pop() || p.trim()).filter(Boolean) : [];
+      funcs.push({ name, params, returnType: m[1], isAsync: false, isExported: true, isDefault: false, line: lineNum });
+      exports.push({ name, kind: 'function', signature: line.substring(0, 100), isDefault: false, line: lineNum });
+    }
+  }
+
+  return { filePath: '<inline>', exports, imports, functions: funcs, classes, interfaces: [], callGraph: [] };
+}
+
+function parseKotlinRegex(source: string): ParsedFile {
+  const exports: AstExport[] = [];
+  const imports: AstImport[] = [];
+  const funcs: AstFunction[] = [];
+  const classes: AstClass[] = [];
+  const interfaces: AstInterface[] = [];
+  const lines = source.split('\n');
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    const lineNum = i + 1;
+
+    // import package.ClassName
+    let m = line.match(/^import\s+([\w.]+(?:\.\*)?)\s*$/);
+    if (m) {
+      const pkg = m[1];
+      const name = pkg.endsWith('.*') ? pkg.replace('.*', '') : pkg.split('.').pop()!;
+      imports.push({ source: pkg, symbols: [name], defaultImport: null, namespaceImport: null, isTypeOnly: false, isExternal: true, line: lineNum });
+      continue;
+    }
+
+    // class ClassName / data class ClassName / sealed class ClassName
+    m = line.match(/^(?:data\s+|sealed\s+|abstract\s+|open\s+)?class\s+(\w+)/);
+    if (m && m[1] !== 'class') {
+      const name = m[1];
+      classes.push({ name, extends: null, implements: [], methods: [], properties: [], isExported: true, isDefault: false, line: lineNum });
+      exports.push({ name, kind: 'class', signature: `class ${name}`, isDefault: false, line: lineNum });
+      continue;
+    }
+
+    // object ObjectName
+    m = line.match(/^object\s+(\w+)/);
+    if (m) {
+      exports.push({ name: m[1], kind: 'class', signature: `object ${m[1]}`, isDefault: false, line: lineNum });
+      continue;
+    }
+
+    // interface InterfaceName
+    m = line.match(/^interface\s+(\w+)/);
+    if (m) {
+      interfaces.push({ name: m[1], extends: [], members: [], isExported: true, line: lineNum });
+      exports.push({ name: m[1], kind: 'interface', signature: `interface ${m[1]}`, isDefault: false, line: lineNum });
+      continue;
+    }
+
+    // fun functionName(params): ReturnType
+    m = line.match(/^(?:suspend\s+)?fun\s+(\w+)\s*\(([^)]*)\)\s*(?::\s*(\S+))?/);
+    if (m && m[1] !== 'class' && m[1] !== 'interface') {
+      const name = m[1];
+      const params = m[2] ? m[2].split(',').map(p => p.trim().split(':')[0]?.trim()).filter(Boolean) : [];
+      funcs.push({ name, params, returnType: m[3] || null, isAsync: line.includes('suspend'), isExported: true, isDefault: false, line: lineNum });
+      exports.push({ name, kind: 'function', signature: line.substring(0, 100), isDefault: false, line: lineNum });
+    }
+  }
+
+  return { filePath: '<inline>', exports, imports, functions: funcs, classes, interfaces, callGraph: [] };
+}
+
+// ============================================================
 // Swift / ObjC / SQL — Regex-based parsers
 // ============================================================
-function parseRegexBased(source: string, language: 'swift' | 'objc' | 'sql'): ParsedFile {
-  const errors: string[] = [];
-  try {
-    switch (language) {
-      case 'swift': return parseSwiftRegex(source);
-      case 'objc': return parseObjcRegex(source);
-      case 'sql': return parseSqlRegex(source);
-    }
-  } catch (err) {
-    return { filePath: '<inline>', exports: [], imports: [], functions: [], classes: [], interfaces: [], callGraph: [], error: (err as Error).message };
-  }
-}
 
 // Swift regex patterns
 function parseSwiftRegex(source: string): ParsedFile {

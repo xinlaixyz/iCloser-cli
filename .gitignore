@@ -7,3 +7,6 @@ dist/
 Thumbs.db
 .claude/settings.local.json
 *.local.json
+*.tgz
+notes.txt
+package.js

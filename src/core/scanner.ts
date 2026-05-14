@@ -779,22 +779,6 @@ async function buildCrossFileCallGraph(
     }
   }
 
-  // Index: import source → module name
-  const importIndex = new Map<string, string>();
-  for (const mod of modules) {
-    for (const imp of mod.imports) {
-      if (!imp.isExternal) {
-        // Map relative import to a module by matching file paths
-        for (const other of modules) {
-          if (other.files.some(f => imp.source.includes(f.replace(/\.[^.]+$/, '')) || f.includes(imp.source.replace(/^\.\.?\//, '')))) {
-            importIndex.set(`${mod.name}:${imp.source}`, other.name);
-            break;
-          }
-        }
-      }
-    }
-  }
-
   // Parse AST for each module's files to get call graphs
   try {
     const { parseSourceFile } = await import('./ast-parser.js');

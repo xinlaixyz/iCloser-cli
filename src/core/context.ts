@@ -138,7 +138,7 @@ export async function assembleContext(
     externalKnowledge,
     totalTokens,
     budgetUsed: Math.round((totalTokens / usableBudget) * 100),
-    ...(astHints ? { astHints } as Partial<ContextPackage> : {}),
+    astHints,
   };
 }
 

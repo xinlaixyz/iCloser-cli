@@ -19,7 +19,7 @@ import { recordUserInputEvent } from '../core/memory.js';
 import {
   C, I, B,
   welcomeScreen, statusBar, commandHelp,
-  drawWideBox, processStep, agentCard,
+  drawWideBox, processStep,
   notification, thinDivider, termWidth,
 } from './theme.js';
 import type { AIConfig, AIProvider, AIPrompt, ContextPackage, ProjectIdentity, ProjectIndex, Task } from '../types.js';
@@ -1622,15 +1622,15 @@ async function cmdCommit(msg: string): Promise<void> {
   pendingConfirm = 'commit';
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let agentManager: any = null;
+import type { AgentManager } from '../agent/manager.js';
+let _agentManager: AgentManager | null = null;
 
-function getAgentManager(): any {
-  if (!agentManager) {
-    const { AgentManager } = require('../agent/manager.js');
-    agentManager = new AgentManager(state.aiConfig, 3);
+function getAgentManager(): AgentManager {
+  if (!_agentManager) {
+    const { AgentManager: AM } = require('../agent/manager.js');
+    _agentManager = new AM(state.aiConfig, 3);
   }
-  return agentManager;
+  return _agentManager!;
 }
 
 async function cmdOrchestrate(description: string): Promise<void> {
@@ -1665,7 +1665,7 @@ async function cmdRunAgent(description: string): Promise<void> {
 }
 
 function cmdListAgents(): void {
-  const mgr = agentManager;
+  const mgr = _agentManager;
   if (!mgr || mgr.activeCount() === 0) { console.log(`  ${C.dim('无活跃 Agent')}\n`); return; }
   for (const a of mgr.list().slice(-10)) {
     const icon = a.status === 'done' ? I.ok : a.status === 'running' ? I.running : a.status === 'failed' ? I.err : I.hollow;
@@ -1686,7 +1686,8 @@ async function cmdAgentSlash(args: string): Promise<void> {
     if (a) console.log(`  ${C.accent(a.name)} ${C.dim(`(${a.type})`)}  ${a.status}\n`);
     else console.log(`  ${C.warn('!')} Agent 不存在\n`);
   } else if (sub === 'create' && rest) {
-    const type = parts.includes('--type') ? parts[parts.indexOf('--type') + 1] || 'task' : 'task';
+    const typeStr = parts.includes('--type') ? parts[parts.indexOf('--type') + 1] || 'task' : 'task';
+    const type = (typeStr === 'review' ? 'review' : typeStr === 'verify' ? 'verify' : typeStr === 'explore' ? 'explore' : typeStr === 'orchestrator' ? 'orchestrator' : 'task') as import('../types.js').AgentType;
     const name = parts.filter(p => !p.startsWith('--') && p !== sub).join(' ');
     const agent = mgr.create({ name, type });
     console.log(`  ${I.ok} Agent ${C.accent(agent.id.substring(0, 10))} 已创建\n`);
