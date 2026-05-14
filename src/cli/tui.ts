@@ -321,6 +321,147 @@ export function setupRawInput(onKey: (ev: KeyEvent) => void, onLine: (line: stri
 }
 
 // ============================================================
+// Multi-line Input Box (S20.5)
+// ============================================================
+export class InputBox {
+  lines: string[] = [''];
+  cursorRow = 0;
+  cursorCol = 0;
+  scrollOffset = 0;
+  history: string[] = [];
+  historyIdx = -1;
+  maxHeight = 6;
+  onBeforeSubmit?: () => string; // Returns bottom panel text to print after submit
+
+  get text(): string { return this.lines.join('\n'); }
+
+  insertChar(ch: string): void {
+    const line = this.lines[this.cursorRow];
+    this.lines[this.cursorRow] = line.substring(0, this.cursorCol) + ch + line.substring(this.cursorCol);
+    this.cursorCol++;
+  }
+
+  handleBackspace(): void {
+    if (this.cursorCol > 0) {
+      const line = this.lines[this.cursorRow];
+      this.lines[this.cursorRow] = line.substring(0, this.cursorCol - 1) + line.substring(this.cursorCol);
+      this.cursorCol--;
+    } else if (this.cursorRow > 0) {
+      const prevLen = this.lines[this.cursorRow - 1].length;
+      this.lines[this.cursorRow - 1] += this.lines[this.cursorRow];
+      this.lines.splice(this.cursorRow, 1);
+      this.cursorRow--;
+      this.cursorCol = prevLen;
+    }
+  }
+
+  handleEnter(): 'submit' | 'newline' {
+    // Detect Shift+Enter via timing — if raw sequence shows Shift modifier
+    // Simple approach: always submit on Enter for now
+    // Shift+Enter detection done in the raw input handler via character sequences
+    return 'submit';
+  }
+
+  handleShiftEnter(): void {
+    const line = this.lines[this.cursorRow];
+    const rest = line.substring(this.cursorCol);
+    this.lines[this.cursorRow] = line.substring(0, this.cursorCol);
+    this.lines.splice(this.cursorRow + 1, 0, rest);
+    this.cursorRow++;
+    this.cursorCol = 0;
+  }
+
+  handleUp(): void {
+    if (this.cursorRow > 0) {
+      this.cursorRow--;
+      this.cursorCol = Math.min(this.cursorCol, this.lines[this.cursorRow].length);
+    } else if (this.historyIdx < this.history.length - 1) {
+      this.historyIdx++;
+      this.loadFromHistory();
+    }
+  }
+
+  handleDown(): void {
+    if (this.cursorRow < this.lines.length - 1) {
+      this.cursorRow++;
+      this.cursorCol = Math.min(this.cursorCol, this.lines[this.cursorRow].length);
+    } else if (this.historyIdx > 0) {
+      this.historyIdx--;
+      this.loadFromHistory();
+    } else if (this.historyIdx === 0) {
+      this.historyIdx = -1;
+      this.lines = [''];
+      this.cursorRow = 0;
+      this.cursorCol = 0;
+    }
+  }
+
+  handleLeft(): void {
+    if (this.cursorCol > 0) { this.cursorCol--; }
+    else if (this.cursorRow > 0) { this.cursorRow--; this.cursorCol = this.lines[this.cursorRow].length; }
+  }
+
+  handleRight(): void {
+    if (this.cursorCol < this.lines[this.cursorRow].length) { this.cursorCol++; }
+    else if (this.cursorRow < this.lines.length - 1) { this.cursorRow++; this.cursorCol = 0; }
+  }
+
+  addToHistory(text: string): void {
+    if (text.trim() && this.history[0] !== text) {
+      this.history.unshift(text);
+      if (this.history.length > 100) this.history.pop();
+    }
+    this.historyIdx = -1;
+  }
+
+  reset(): void {
+    this.lines = [''];
+    this.cursorRow = 0;
+    this.cursorCol = 0;
+    this.scrollOffset = 0;
+    this.historyIdx = -1;
+  }
+
+  private loadFromHistory(): void {
+    const text = this.history[this.historyIdx] || '';
+    this.lines = text.split('\n');
+    this.cursorRow = this.lines.length - 1;
+    this.cursorCol = this.lines[this.cursorRow].length;
+  }
+
+  render(tw: number): string {
+    const w = tw - 6; // padding inside box
+    let out = '';
+
+    // Top border
+    out += `  ${C.accent('╭─')} ${C.accent('输入')} ${C.accent('─'.repeat(Math.max(2, w - 6)) + '╮')}\n`;
+
+    // Content area
+    const visibleH = Math.min(this.lines.length, this.maxHeight);
+    const startRow = Math.max(0, Math.min(this.cursorRow - this.maxHeight + 1, this.lines.length - visibleH));
+    this.scrollOffset = startRow;
+
+    if (this.scrollOffset > 0) {
+      out += `  ${C.accent('│')} ${C.dim('↑ 还有 ' + this.scrollOffset + ' 行')}${' '.repeat(w - (10 + String(this.scrollOffset).length))}${C.accent('│')}\n`;
+    }
+    for (let i = startRow; i < Math.min(startRow + visibleH, this.lines.length); i++) {
+      const line = this.lines[i];
+      const display = line.length > w - 2 ? line.substring(0, w - 5) + '…' : line;
+      out += `  ${C.accent('│')} ${display}${' '.repeat(Math.max(0, w - 2 - display.length))}${C.accent('│')}\n`;
+    }
+    if (startRow + visibleH < this.lines.length) {
+      const remaining = this.lines.length - startRow - visibleH;
+      out += `  ${C.accent('│')} ${C.dim('↓ 还有 ' + remaining + ' 行')}${' '.repeat(w - (10 + String(remaining).length))}${C.accent('│')}\n`;
+    }
+
+    // Bottom border with hints
+    out += `  ${C.accent('╰─')} ${C.dim('Enter 发送 | Shift+Enter 换行 | ↑↓ 历史')} ${C.accent('─'.repeat(Math.max(2, w - 35)) + '╯')}`;
+
+    return out;
+  }
+}
+
+// ============================================================
 // Cursor manipulation
 // ============================================================
 export function moveToInputLine(): void {
