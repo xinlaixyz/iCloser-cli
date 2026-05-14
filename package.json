@@ -1,0 +1,99 @@
+{
+  "name": "icloser-agent-shell",
+  "version": "0.1.0",
+  "description": "iCloser Agent Shell - AI 工程执行 CLI 系统。理解项目、修改代码、自动验证、生成报告。",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "ic": "./dist/index.js",
+    "iCloser": "./dist/index.js"
+  },
+  "files": [
+    "dist/",
+    "skills/",
+    "templates/",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/index.ts",
+    "start": "node dist/index.js",
+    "lint": "node scripts/check-lint.mjs",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "smoke": "node scripts/release-smoke.mjs",
+    "smoke:project": "node scripts/real-project-smoke.mjs",
+    "smoke:first-run": "node scripts/first-run-smoke.mjs",
+    "smoke:repl": "node scripts/repl-first-run-smoke.mjs",
+    "smoke:repl:init": "node scripts/repl-init-refresh-smoke.mjs",
+    "smoke:repl:e2e": "node scripts/repl-beginner-e2e-smoke.mjs",
+    "smoke:memory": "node scripts/memory-event-smoke.mjs",
+    "smoke:all": "node scripts/full-smoke.mjs",
+    "smoke:keep": "node -e \"process.env.ICLOSER_KEEP_SMOKE='1'; import('./scripts/release-smoke.mjs')\"",
+    "setup": "node dist/index.js setup",
+    "postinstall": "node -e \"console.log('\\niCloser Agent Shell 已安装。\\n运行 ic setup 完成初始化配置。\\n运行 ic --help 查看所有命令。\\n也可使用 iCloser 命令（兼容旧习惯）。\\n')\"",
+    "smoke:autopilot": "node scripts/autopilot-smoke.mjs",
+    "smoke:repair": "node scripts/autopilot-repair-smoke.mjs",
+    "smoke:loop": "node scripts/loop-tool-smoke.mjs",
+    "smoke:multilang": "node scripts/multilang-smoke.mjs",
+    "smoke:web-search": "node scripts/web-search-smoke.mjs",
+    "smoke:agent": "node scripts/agent-smoke.mjs"
+  },
+  "keywords": [
+    "cli",
+    "ai",
+    "agent",
+    "code-generator",
+    "dev-tools",
+    "ai-coding-assistant",
+    "chinese",
+    "deepseek",
+    "claude"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/icloser/agent-shell"
+  },
+  "homepage": "https://github.com/icloser/agent-shell#readme",
+  "author": "iCloser",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "chalk": "^5.3.0",
+    "commander": "^12.1.0",
+    "diff": "^7.0.0",
+    "fast-glob": "^3.3.2",
+    "fs-extra": "^11.2.0",
+    "glob": "^11.0.0",
+    "ignore": "^6.0.2",
+    "marked": "^14.1.0",
+    "openai": "^4.77.0",
+    "ora": "^8.1.1",
+    "semver": "^7.6.3",
+    "tree-sitter": "^0.22.4",
+    "tree-sitter-go": "^0.25.0",
+    "tree-sitter-java": "^0.23.5",
+    "tree-sitter-kotlin": "^0.3.8",
+    "tree-sitter-python": "^0.25.0",
+    "tree-sitter-sql": "^0.1.0",
+    "tree-sitter-typescript": "^0.23.2",
+    "yaml": "^2.6.1"
+  },
+  "devDependencies": {
+    "@types/diff": "^6.0.0",
+    "@types/fs-extra": "^11.0.4",
+    "@types/node": "^22.10.0",
+    "@types/semver": "^7.5.8",
+    "@typescript-eslint/eslint-plugin": "^8.59.3",
+    "@typescript-eslint/parser": "^8.59.3",
+    "@vitest/coverage-v8": "^4.1.6",
+    "eslint": "^10.3.0",
+    "tree-sitter-cli": "^0.24.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "vitest": "^2.1.0"
+  }
+}

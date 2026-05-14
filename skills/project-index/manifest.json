@@ -1,0 +1,11 @@
+{
+  "name": "project-index",
+  "version": "1.0.0",
+  "description": "项目扫描与索引：自动识别语言/框架/DB，构建代码图谱和依赖关系",
+  "triggers": ["扫描", "索引", "分析项目", "scan", "index", "项目结构"],
+  "requires": [],
+  "provider": "claude",
+  "author": "iCloser",
+  "license": "MIT",
+  "type": "builtin"
+}

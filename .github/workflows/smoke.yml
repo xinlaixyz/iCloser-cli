@@ -1,0 +1,79 @@
+name: Release Smoke
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - master
+
+env:
+  NODE_VERSION: '22'
+
+jobs:
+  # ============================================================
+  # PR Check Gate — runs first, catches basic issues fast
+  # ============================================================
+  gate:
+    name: PR Check Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: TypeScript compile check
+        run: npx tsc --noEmit
+
+      - name: Lint check
+        run: npm run lint
+
+      - name: Unit tests
+        run: npm test
+
+  # ============================================================
+  # Multi-platform Smoke Tests
+  # ============================================================
+  smoke:
+    name: Smoke (${{ matrix.os }})
+    needs: gate
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
+        node-version:
+          - '22'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Release smoke
+        run: npm run smoke

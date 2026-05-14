@@ -1,0 +1,7 @@
+# Diff Report
+# Task: {{taskId}}
+# Description: {{description}}
+# Generated: {{timestamp}}
+# ============================================================
+
+{{diffContent}}

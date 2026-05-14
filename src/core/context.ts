@@ -1,0 +1,782 @@
+// Context Compression Manager — Token budget management and smart context assembly
+import * as path from 'path';
+import { readFile, estimateTokens, relativePath } from '../utils/fs.js';
+import { loadProjectIndex, saveProjectIndex, scanProject } from './scanner.js';
+import { loadProjectMemory, loadGlobalMemory } from './memory.js';
+import type {
+  ContextPackage, CodeSnippet, ProjectIndex, ProjectMemory,
+  Task, ProjectIdentity,
+} from '../types.js';
+
+export interface ContextOptions {
+  maxTokens: number;
+  systemPromptBudget: number;     // ~2K
+  projectMetaBudget: number;      // ~1K
+  memoryBudget: number;           // ~1-2K
+  bufferReserve: number;          // 10%
+}
+
+export interface ProjectContextOptions extends Partial<ContextOptions> {
+  scanIfMissing?: boolean;
+  maxFileSize?: number;
+}
+
+export interface ContextDebugSummary {
+  totalTokens: number;
+  budgetUsed: number;
+  codeSnippetCount: number;
+  memoryTokens: number;
+  topFiles: Array<{
+    file: string;
+    relevance: number;
+    compression: CodeSnippet['compression'];
+    tokens: number;
+  }>;
+}
+
+const DEFAULT_OPTIONS: ContextOptions = {
+  maxTokens: 100000,
+  systemPromptBudget: 2000,
+  projectMetaBudget: 1000,
+  memoryBudget: 2000,
+  bufferReserve: 0.1,             // 10% reserved for AI response + tool calls
+};
+
+// ============================================================
+// Main context assembly
+// ============================================================
+export async function assembleContext(
+  task: Task,
+  index: ProjectIndex,
+  memory: ProjectMemory,
+  identity: ProjectIdentity,
+  options: Partial<ContextOptions> = {}
+): Promise<ContextPackage> {
+  const opts = { ...DEFAULT_OPTIONS, ...options };
+  const usableBudget = Math.floor(opts.maxTokens * (1 - opts.bufferReserve));
+
+  // 1. Project meta (~1K tokens)
+  const projectMeta = assembleProjectMeta(identity, index);
+
+  // 2. Relevant code (remaining budget after meta + memory)
+  const codeBudget = Math.max(0, usableBudget - opts.projectMetaBudget - opts.memoryBudget);
+  const relevantCode = await assembleRelevantCode(task, index, codeBudget);
+
+  // 3. Relevant memory (~1-2K tokens)
+  let relevantMemory = assembleRelevantMemory(task, memory, opts.memoryBudget);
+
+  // 3.4. Global memory injection (S17.4) — user preferences, tech stack patterns
+  try {
+    const globalMem = await loadGlobalMemory();
+    const globalHints = assembleGlobalMemoryHints(globalMem, identity);
+    if (globalHints) {
+      relevantMemory = relevantMemory ? relevantMemory + '\n\n' + globalHints : globalHints;
+    }
+  } catch { /* global memory is optional */ }
+
+  // 3.5. AST call graph hints + relevant signatures (S17.6)
+  let astHints: string | undefined;
+  const taskSymbols = extractSymbolsFromDescription(task.description, index);
+  if (taskSymbols.length > 0) {
+    const parts: string[] = [];
+
+    // Relevant function/class signatures from module exports
+    const relevantExports: { name: string; kind: string; signature: string; file: string }[] = [];
+    for (const mod of index.modules) {
+      for (const exp of mod.exports) {
+        if (taskSymbols.some(s => exp.name.toLowerCase().includes(s.toLowerCase()) || s.toLowerCase().includes(exp.name.toLowerCase()))) {
+          relevantExports.push({ name: exp.name, kind: exp.kind, signature: exp.signature, file: mod.path || mod.name });
+        }
+      }
+    }
+    if (relevantExports.length > 0) {
+      parts.push('相关符号定义：\n' + relevantExports.slice(0, 12).map(e =>
+        `- ${e.kind} \`${e.name}\`: ${e.signature.substring(0, 80)} (${e.file})`
+      ).join('\n'));
+    }
+
+    // Call graph edges
+    if (index.callGraph && index.callGraph.length > 0) {
+      const relatedEdges = index.callGraph.filter(e =>
+        taskSymbols.some(s => e.callee.includes(s) || e.caller.includes(s))
+      ).slice(0, 15);
+      if (relatedEdges.length > 0) {
+        parts.push('相关调用关系：\n' + relatedEdges.map(e =>
+          `- ${e.caller} → ${e.callee} (${e.callerFile}:${e.line})`
+        ).join('\n'));
+      }
+    }
+
+    if (parts.length > 0) astHints = parts.join('\n\n');
+  }
+
+  // 4. External knowledge (web search) — best effort, non-blocking
+  let externalKnowledge: string | undefined;
+  try {
+    const keywords = extractTechKeywords(task.description);
+    if (keywords.length > 0) {
+      const { searchWeb, isWebSearchAvailable } = await import('./web-search.js');
+      if (isWebSearchAvailable()) {
+        const results = await searchWeb(keywords.join(' '), { maxResults: 3 });
+        if (results.length > 0) {
+          externalKnowledge = results.map(r => `[${r.title}](${r.url}): ${r.snippet}`).join('\n');
+        }
+      }
+    }
+  } catch { /* web search is optional */ }
+
+  const totalTokens = estimateTokens(projectMeta) +
+    relevantCode.reduce((sum, s) => sum + estimateTokens(s.content), 0) +
+    estimateTokens(relevantMemory) +
+    (astHints ? estimateTokens(astHints) : 0) +
+    (externalKnowledge ? estimateTokens(externalKnowledge) : 0);
+
+  return {
+    projectMeta,
+    relevantCode,
+    relevantMemory,
+    externalKnowledge,
+    totalTokens,
+    budgetUsed: Math.round((totalTokens / usableBudget) * 100),
+    ...(astHints ? { astHints } as Partial<ContextPackage> : {}),
+  };
+}
+
+function extractTechKeywords(description: string): string[] {
+  // Extract library names, error patterns, technology terms
+  const patterns = [
+    /\b(react|vue|angular|svelte|next\.?js|nuxt|gatsby)\b/gi,
+    /\b(node\.?js|deno|bun|express|koa|fastify|nest\.?js)\b/gi,
+    /\b(typescript|javascript|python|golang|rust|java|kotlin|swift)\b/gi,
+    /\b(postgres|mysql|mongodb|redis|sqlite|prisma|drizzle|typeorm)\b/gi,
+    /\b(docker|kubernetes|aws|gcp|azure|vercel|netlify|cloudflare)\b/gi,
+    /\b(webpack|vite|esbuild|rollup|turbopack|babel|swc)\b/gi,
+    /\b(tailwind|bootstrap|material.?ui|chakra|ant.?design)\b/gi,
+    /\b(graphql|rest|grpc|websocket|sse|trpc)\b/gi,
+    /\b(TypeError|ReferenceError|SyntaxError|ECONNREFUSED|ENOENT|EACCES)\b/,
+    /\b(Cannot find module|cannot resolve|module not found|import error)\b/i,
+  ];
+  const keywords = new Set<string>();
+  for (const pattern of patterns) {
+    for (const match of description.matchAll(pattern)) {
+      keywords.add(match[0]);
+    }
+  }
+  return [...keywords].slice(0, 3); // max 3 keywords to avoid too many searches
+}
+
+export async function assembleContextFromProject(
+  rootPath: string,
+  task: Task,
+  options: ProjectContextOptions = {}
+): Promise<ContextPackage> {
+  const scanIfMissing = options.scanIfMissing ?? true;
+  let index = await loadProjectIndex(rootPath);
+
+  if (!index && scanIfMissing) {
+    const result = await scanProject({
+      rootPath,
+      deep: false,
+      includeTests: false,
+      maxFileSize: options.maxFileSize ?? 256 * 1024,
+    });
+    index = result.index;
+    await saveProjectIndex(rootPath, index);
+  }
+
+  if (!index) {
+    throw new Error('项目索引不存在，请先运行 iCloser scan');
+  }
+
+  const memory = await loadProjectMemory(rootPath);
+  return assembleContext(task, index, memory, index.identity, options);
+}
+
+export function summarizeContextDebug(context: ContextPackage, limit = 10): ContextDebugSummary {
+  return {
+    totalTokens: context.totalTokens,
+    budgetUsed: context.budgetUsed,
+    codeSnippetCount: context.relevantCode.length,
+    memoryTokens: estimateTokens(context.relevantMemory),
+    topFiles: context.relevantCode
+      .slice()
+      .sort((a, b) => b.relevance - a.relevance)
+      .slice(0, limit)
+      .map(snippet => ({
+        file: snippet.file,
+        relevance: snippet.relevance,
+        compression: snippet.compression,
+        tokens: estimateTokens(snippet.content),
+      })),
+  };
+}
+
+// ============================================================
+// Project meta
+// ============================================================
+function assembleProjectMeta(identity: ProjectIdentity, index: ProjectIndex): string {
+  const parts: string[] = [];
+
+  parts.push('# 项目元信息');
+  parts.push(`- 语言: ${identity.language}`);
+  parts.push(`- 框架: ${identity.framework || '无'}`);
+  parts.push(`- 数据库: ${identity.database || '未检测到'}`);
+  parts.push(`- 构建系统: ${identity.buildSystem}`);
+  parts.push(`- 测试框架: ${identity.testFramework || '未检测到'}`);
+  parts.push(`- 运行时: ${identity.runtime}`);
+  if (identity.languageVersion !== 'unknown') {
+    parts.push(`- 语言版本: ${identity.languageVersion}`);
+  }
+  parts.push(`- 部署形态: ${identity.deploymentType}`);
+  parts.push(`- 架构模式: ${index.architecturePattern}`);
+
+  parts.push(`\n## 代码风格指纹`);
+  const style = index.styleFingerprint;
+  parts.push(`- 命名: ${style.namingConvention}`);
+  parts.push(`- 缩进: ${style.indentStyle} (${style.indentSize})`);
+  parts.push(`- 引号: ${style.quoteStyle}`);
+  parts.push(`- 分号: ${style.semicolons ? '有' : '无'}`);
+
+  parts.push(`\n## 模块概览 (${index.modules.length} 个模块)`);
+  for (const mod of index.modules.slice(0, 15)) {
+    parts.push(`- ${mod.name}: ${mod.files.length} 个文件`);
+    if (mod.responsibility) parts.push(`  职责: ${mod.responsibility}`);
+  }
+
+  if (index.apis.length > 0) {
+    parts.push(`\n## API 接口 (${index.apis.length} 个)`);
+    for (const api of index.apis.slice(0, 10)) {
+      parts.push(`- ${api.method} ${api.path}`);
+    }
+  }
+
+  if (index.database.tables.length > 0 || index.database.orm) {
+    parts.push(`\n## 数据库`);
+    if (index.database.orm) parts.push(`- ORM: ${index.database.orm}`);
+    for (const table of index.database.tables.slice(0, 10)) {
+      parts.push(`- 表: ${table.name} (${table.columns.length} 列)`);
+    }
+  }
+
+  return parts.join('\n');
+}
+
+// ============================================================
+// Relevant code assembly with compression
+// ============================================================
+async function assembleRelevantCode(
+  task: Task,
+  index: ProjectIndex,
+  budget: number
+): Promise<CodeSnippet[]> {
+  // Score files by relevance to the task description
+  const scored = await scoreFiles(task.description, index);
+
+  const snippets: CodeSnippet[] = [];
+  let usedTokens = 0;
+
+  for (const { file, score } of scored) {
+    if (usedTokens >= budget) break;
+
+    try {
+      const content = await readFile(file);
+      const relPath = relativePath(file, index.rootPath);
+      const tokens = estimateTokens(content);
+
+      let compression: CodeSnippet['compression'];
+      let snippetContent: string;
+
+      if (score >= 0.8 || usedTokens + tokens <= budget) {
+        // Full content for high-relevance files
+        compression = 'full';
+        snippetContent = content;
+      } else if (score >= 0.5) {
+        // Skeleton: function signatures + key logic
+        compression = 'skeleton';
+        snippetContent = compressToSkeleton(content);
+      } else if (score >= 0.3) {
+        // Summary: one-line description + exports
+        compression = 'summary';
+        snippetContent = compressToSummary(content, relPath);
+      } else {
+        continue; // Skip low-relevance files
+      }
+
+      const snippetTokens = estimateTokens(snippetContent);
+      if (usedTokens + snippetTokens > budget) {
+        // If full doesn't fit, try skeleton
+        if (compression === 'full') {
+          snippetContent = compressToSkeleton(content);
+          compression = 'skeleton';
+        } else {
+          continue;
+        }
+      }
+
+      usedTokens += estimateTokens(snippetContent);
+      snippets.push({
+        file: relPath,
+        content: snippetContent,
+        relevance: score,
+        compression,
+      });
+    } catch {
+      continue;
+    }
+  }
+
+  return snippets;
+}
+
+// ============================================================
+// File scoring
+// ============================================================
+
+/**
+ * 文件相关性打分规则
+ *
+ * 根据任务描述对项目文件进行相关性评分（0-1），用于决定哪些文件应注入 AI 上下文。
+ * 评分越高，文件与当前任务越相关，越可能以完整内容（full）形式注入。
+ *
+ * 评分维度及权重：
+ *
+ * 1. 模块名称匹配（baseScore，最高 0.3 × 关键词数）
+ *    - 任务描述中的关键词与模块名匹配，每个关键词 +0.3
+ *    - 例如：任务含 "auth"，模块名为 "auth" 或 "authentication" 均匹配
+ *
+ * 2. 文件名匹配（+0.2/关键词）
+ *    - 关键词与文件名（不含路径）匹配
+ *    - 例如：任务含 "user"，文件名为 "userService.ts" 匹配
+ *
+ * 3. 文件路径匹配（+0.1/关键词）
+ *    - 关键词与完整文件路径匹配
+ *    - 例如：任务含 "api"，路径为 "src/api/routes.ts" 匹配
+ *
+ * 4. 文件内容关键词频率（+0.02/次，上限 0.3/关键词）
+ *    - 关键词在文件内容中出现的次数
+ *    - 每个关键词独立计算，上限 0.3 防止高频词过度影响
+ *    - 例如："user" 出现 15 次 → +0.3（达到上限）
+ *
+ * 5. 导出符号匹配（+0.3/精确匹配，+0.15/部分匹配）
+ *    - 精确匹配：任务描述直接包含导出符号名（函数/类/接口等）
+ *    - 部分匹配：关键词与导出符号名匹配
+ *    - 例如：任务含 "getUser"，文件导出 getUser 函数 → +0.3
+ *
+ * 中文语义扩展：
+ * - 自动将中文关键词映射为英文别名（如 "用户" → "user"）
+ * - 覆盖常见领域：认证、服务、接口、数据库、配置、测试等
+ *
+ * 最终得分 = min(累计得分, 1.0)，取 Top 50 个文件返回。
+ *
+ * 压缩策略（基于得分）：
+ * - score >= 0.8: 完整内容（full）
+ * - score >= 0.5: 骨架（skeleton）— 保留函数签名、导出、关键逻辑
+ * - score >= 0.3: 摘要（summary）— 仅保留导出列表和文件描述
+ * - score < 0.3: 跳过
+ *
+ * @param description - 任务描述文本
+ * @param index - 项目索引（包含模块、文件、导出等信息）
+ * @returns 按得分降序排列的文件评分列表，最多 50 个
+ */
+async function scoreFiles(
+  description: string,
+  index: ProjectIndex
+): Promise<{ file: string; score: number }[]> {
+  const lower = description.toLowerCase();
+  const keywords = extractSearchKeywords(description);
+
+  const results: { file: string; score: number }[] = [];
+
+  for (const mod of index.modules) {
+    let baseScore = 0;
+
+    // Module name match
+    for (const kw of keywords) {
+      if (mod.name.toLowerCase().includes(kw)) baseScore += 0.3;
+    }
+
+    for (const file of mod.files) {
+      const fullPath = path.join(index.rootPath, file);
+      let score = baseScore;
+
+      // File name match
+      const fileName = path.basename(file).toLowerCase();
+      for (const kw of keywords) {
+        if (fileName.includes(kw)) score += 0.2;
+      }
+
+      // File path match
+      const filePath = file.toLowerCase();
+      for (const kw of keywords) {
+        if (filePath.includes(kw)) score += 0.1;
+      }
+
+      // Content-based scoring (shallow check)
+      try {
+        const content = await readFile(fullPath);
+        const contentLower = content.toLowerCase();
+        for (const kw of keywords) {
+          const count = (contentLower.match(new RegExp(escapeRegExp(kw), 'g')) || []).length;
+          score += Math.min(count * 0.02, 0.3);   // cap at 0.3 per keyword
+        }
+
+        // Exports mentioned in description
+        for (const exp of mod.exports) {
+          if (lower.includes(exp.name.toLowerCase())) {
+            score += 0.3;
+          }
+          for (const kw of keywords) {
+            if (exp.name.toLowerCase().includes(kw)) {
+              score += 0.15;
+            }
+          }
+        }
+      } catch {
+        continue;
+      }
+
+      if (score > 0) {
+        results.push({ file: fullPath, score: Math.min(score, 1) });
+      }
+    }
+  }
+
+  // Sort by score descending, then take top N
+  return results.sort((a, b) => b.score - a.score).slice(0, 50);
+}
+
+function extractSearchKeywords(description: string): string[] {
+  const lower = description.toLowerCase();
+  const keywords = new Set<string>();
+
+  for (const token of lower.split(/[\s,，。；;:：/\\()[\]{}"'`<>|!?！？、-]+/)) {
+    addKeyword(keywords, token);
+    for (const part of splitIdentifier(token)) {
+      addKeyword(keywords, part);
+    }
+  }
+
+  const chineseAliases: Array<[RegExp, string[]]> = [
+    [/用户|账号|账户|会员/g, ['user', 'account', 'member']],
+    [/认证|登录|登陆|鉴权|权限/g, ['auth', 'login', 'permission']],
+    [/服务|业务/g, ['service']],
+    [/接口|路由|控制器/g, ['api', 'route', 'router', 'controller', 'handler']],
+    [/校验|验证|检查/g, ['validate', 'validation', 'verify', 'check']],
+    [/配置|设置/g, ['config', 'setting']],
+    [/数据库|表|字段|模型/g, ['database', 'db', 'model', 'schema', 'entity']],
+    [/测试|用例/g, ['test', 'spec']],
+    [/记忆|规则|约束/g, ['memory', 'rule', 'constraint']],
+    [/任务|队列|调度/g, ['task', 'queue', 'schedule']],
+    [/上下文|压缩/g, ['context', 'compress', 'compression']],
+    [/扫描|索引|识别/g, ['scan', 'scanner', 'index', 'detect']],
+    [/安全|敏感|危险/g, ['security', 'sensitive', 'dangerous']],
+    [/报告|变更|差异/g, ['report', 'diff', 'change']],
+  ];
+
+  for (const [pattern, aliases] of chineseAliases) {
+    if (pattern.test(description)) {
+      for (const alias of aliases) addKeyword(keywords, alias);
+    }
+  }
+
+  return Array.from(keywords).slice(0, 40);
+}
+
+function splitIdentifier(value: string): string[] {
+  return value
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .split(/[_\-.]+|\s+/)
+    .filter(Boolean);
+}
+
+function addKeyword(keywords: Set<string>, value: string): void {
+  const normalized = value.trim().toLowerCase();
+  if (normalized.length < 2) return;
+  if (/^\d+$/.test(normalized)) return;
+  keywords.add(normalized);
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// ============================================================
+// Compression methods
+// ============================================================
+function compressToSkeleton(content: string): string {
+  const lines = content.split('\n');
+  const result: string[] = [];
+  let skipBlock = false;
+  let blockDepth = 0;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const trimmed = line.trim();
+
+    // Always include: imports, exports, function signatures, class declarations, interface declarations
+    if (
+      trimmed.startsWith('import ') ||
+      trimmed.startsWith('export ') ||
+      trimmed.startsWith('function ') ||
+      trimmed.startsWith('async function ') ||
+      trimmed.startsWith('class ') ||
+      trimmed.startsWith('interface ') ||
+      trimmed.startsWith('type ') ||
+      trimmed.startsWith('enum ') ||
+      trimmed.startsWith('const ') ||
+      trimmed.match(/^\s*(public|private|protected|static|async)?\s*\w+\s*\(/) ||
+      trimmed.match(/^\s*(GET|POST|PUT|DELETE|PATCH)\s/) ||
+      trimmed.startsWith('//') ||
+      trimmed.startsWith('/*') ||
+      trimmed.startsWith('*')
+    ) {
+      result.push(line);
+      skipBlock = false;
+      continue;
+    }
+
+    // Track block depth for body skipping
+    const openBraces = (trimmed.match(/{/g) || []).length;
+    const closeBraces = (trimmed.match(/}/g) || []).length;
+    blockDepth += openBraces - closeBraces;
+
+    if (skipBlock) {
+      if (blockDepth <= 0) {
+        result.push('  // ... (body omitted)');
+        skipBlock = false;
+      }
+      continue;
+    }
+
+    // Start skipping after function/class declaration
+    if (trimmed.endsWith('{') && (
+      trimmed.includes('function') || trimmed.includes('class') ||
+      trimmed.includes('if') || trimmed.includes('for') || trimmed.includes('while')
+    )) {
+      result.push(line);
+      skipBlock = true;
+      blockDepth = 1;
+      continue;
+    }
+
+    // Skip empty lines in skeleton mode
+    if (trimmed === '') continue;
+
+    result.push(line);
+  }
+
+  return result.join('\n');
+}
+
+function compressToSummary(content: string, filePath: string): string {
+  const lines = content.split('\n');
+  const exports: string[] = [];
+  const imports: string[] = [];
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith('import ')) {
+      imports.push(trimmed.substring(0, 80));
+    }
+    if (trimmed.startsWith('export ')) {
+      exports.push(trimmed.substring(0, 80));
+    }
+  }
+
+  const linesOfCode = lines.length;
+  const description = guessFileResponsibility(content, filePath);
+
+  return [
+    `// ${filePath}`,
+    `// ${description} (${linesOfCode} lines)`,
+    imports.length > 0 ? `// imports: ${imports.length}` : '',
+    exports.length > 0 ? `// exports: ${exports.slice(0, 10).join(', ')}` : '',
+  ].filter(Boolean).join('\n');
+}
+
+function guessFileResponsibility(content: string, filePath: string): string {
+  const lower = content.toLowerCase();
+  const fileName = path.basename(filePath);
+
+  if (fileName.includes('model') || fileName.includes('entity') || fileName.includes('schema')) return '数据模型定义';
+  if (fileName.includes('service')) return '业务逻辑服务';
+  if (fileName.includes('controller') || fileName.includes('handler') || fileName.includes('route')) return '请求处理和路由';
+  if (fileName.includes('repository') || fileName.includes('dao')) return '数据访问层';
+  if (fileName.includes('util') || fileName.includes('helper')) return '工具函数';
+  if (fileName.includes('config')) return '配置文件';
+  if (fileName.includes('test') || fileName.includes('spec')) return '测试文件';
+  if (fileName.includes('component') || fileName.includes('view')) return 'UI 组件';
+  if (lower.includes('class ')) return '类定义';
+  if (lower.includes('function ')) return '函数/工具集';
+
+  return '源码文件';
+}
+
+// ============================================================
+// Global memory hints (S17.4)
+// ============================================================
+function assembleGlobalMemoryHints(
+  globalMem: import('../types.js').GlobalMemory,
+  identity: ProjectIdentity
+): string {
+  const parts: string[] = [];
+
+  // User preferences
+  const prefs = globalMem.preferences;
+  if (prefs) {
+    const styleHints: string[] = [];
+    if (prefs.codeStyle?.namingConvention) styleHints.push(`命名: ${prefs.codeStyle.namingConvention}`);
+    if (prefs.codeStyle?.indentStyle) styleHints.push(`缩进: ${prefs.codeStyle.indentStyle} (${prefs.codeStyle.indentSize || 2})`);
+    if (prefs.codeStyle?.quoteStyle) styleHints.push(`引号: ${prefs.codeStyle.quoteStyle}`);
+    if (styleHints.length > 0) parts.push('## 用户代码风格偏好\n' + styleHints.map(s => `- ${s}`).join('\n'));
+
+    if (prefs.techPreferences?.length > 0) {
+      parts.push('\n## 用户技术偏好\n- ' + prefs.techPreferences.slice(0, 5).join('\n- '));
+    }
+    if (prefs.commentLanguage) {
+      parts.push(`\n注释语言偏好: ${prefs.commentLanguage === 'chinese' ? '中文' : '英文'}`);
+    }
+  }
+
+  // Tech stack best practices matching current project
+  const lang = identity.language;
+  const framework = identity.framework;
+  const relevantTechKeys = [lang, framework].filter(Boolean) as string[];
+  for (const key of relevantTechKeys) {
+    const normalizedKey = key.toLowerCase();
+    for (const [techKey, techMem] of globalMem.techStacks) {
+      if (techKey.includes(normalizedKey) || normalizedKey.includes(techKey)) {
+        if (techMem.bestPractices.length > 0) {
+          parts.push(`\n## ${key} 最佳实践\n` + techMem.bestPractices.slice(0, 5).map(bp => `- ${bp}`).join('\n'));
+        }
+        if (techMem.commonPatterns.length > 0) {
+          parts.push(`\n## ${key} 常用模式\n` + techMem.commonPatterns.slice(0, 4).map(p => `- ${p}`).join('\n'));
+        }
+        break;
+      }
+    }
+  }
+
+  // Known pitfalls relevant to current tech
+  const relevantPitfalls = globalMem.pitfalls
+    .filter(p => relevantTechKeys.some(k => p.tech.toLowerCase().includes(k.toLowerCase())))
+    .slice(0, 3);
+  if (relevantPitfalls.length > 0) {
+    parts.push('\n## 已知踩坑记录\n' + relevantPitfalls.map(p =>
+      `- [${p.severity}] ${p.description}${p.resolution ? ` — 解决: ${p.resolution}` : ''}`
+    ).join('\n'));
+  }
+
+  return parts.join('\n');
+}
+
+// ============================================================
+// Memory assembly
+// ============================================================
+function assembleRelevantMemory(
+  task: Task,
+  memory: ProjectMemory,
+  _budget: number
+): string {
+  const parts: string[] = [];
+
+  // Architecture rules
+  if (memory.rules.length > 0) {
+    parts.push('## 项目架构约束');
+    for (const rule of memory.rules.slice(0, 10)) {
+      parts.push(`- [${rule.scope}] ${rule.description}`);
+    }
+  }
+
+  // Recent decisions
+  const recentDecisions = memory.decisions.slice(-5);
+  if (recentDecisions.length > 0) {
+    parts.push('\n## 近期决策记录');
+    for (const dec of recentDecisions) {
+      parts.push(`- ${dec.decision.substring(0, 100)}`);
+    }
+  }
+
+  // Related task history
+  const relatedTasks = memory.taskHistory
+    .filter(t => task.description.toLowerCase().split(/\s+/).some(
+      kw => t.description.toLowerCase().includes(kw)
+    ))
+    .slice(0, 5);
+
+  if (relatedTasks.length > 0) {
+    parts.push('\n## 相关历史任务');
+    for (const t of relatedTasks) {
+      parts.push(`- [${t.status}] ${t.description.substring(0, 100)}`);
+    }
+  }
+
+  const approvedCandidates = memory.memoryCandidates
+    .filter(candidate =>
+      candidate.reviewStatus === 'approved' &&
+      candidate.kind !== 'sensitive' &&
+      candidate.suggestedScope !== 'task-only'
+    )
+    .filter(candidate => isMemoryCandidateRelevant(task.description, candidate.summary, candidate.content))
+    .slice(0, 8);
+
+  if (approvedCandidates.length > 0) {
+    parts.push('\n## 已确认可复用记忆');
+    for (const candidate of approvedCandidates) {
+      const label = candidate.kind === 'template' ? '模板' :
+        candidate.kind === 'preference' ? '偏好' :
+        candidate.kind === 'rule' ? '规则' :
+        candidate.kind === 'fact' ? '事实' : '记忆';
+      parts.push(`- [${label}/${candidate.riskLevel}] ${candidate.summary}`);
+    }
+  }
+
+  // Active feedback
+  const activeFeedback = memory.feedbacks.filter(f => f.decayFactor > 0.5);
+  if (activeFeedback.length > 0) {
+    parts.push('\n## 用户反馈');
+    for (const fb of activeFeedback.slice(0, 3)) {
+      parts.push(`- ${fb.content}`);
+    }
+  }
+
+  return parts.join('\n');
+}
+
+function isMemoryCandidateRelevant(taskDescription: string, summary: string, content: string): boolean {
+  const taskTokens = extractMemoryMatchTokens(taskDescription);
+  const memoryText = `${summary} ${content}`.toLowerCase();
+  if (taskTokens.length === 0) return true;
+  return taskTokens.some(token => memoryText.includes(token));
+}
+
+function extractMemoryMatchTokens(text: string): string[] {
+  const normalized = text.toLowerCase();
+  const latinTokens = normalized
+    .split(/[^a-z0-9_./-]+/)
+    .map(token => token.trim())
+    .filter(token => token.length >= 3);
+  const chineseHints = [
+    '用户', '登录', '接口', '文档', '报告', '测试', '验证', '配置', '记忆',
+    '模板', '规则', '组件', '页面', '样式', '数据库', '权限', '安全',
+  ].filter(token => normalized.includes(token));
+  return [...new Set([...latinTokens, ...chineseHints])].slice(0, 12);
+}
+
+function extractSymbolsFromDescription(description: string, index: import('../types.js').ProjectIndex): string[] {
+  const symbols: string[] = [];
+  const words = description.split(/[\s,，。、；;：:]+/);
+  for (const word of words) {
+    const clean = word.replace(/[^a-zA-Z0-9_]/g, '').trim();
+    if (clean.length < 3) continue;
+    // Match against exports in project index
+    for (const mod of index.modules) {
+      for (const exp of mod.exports) {
+        if (exp.name.toLowerCase() === clean.toLowerCase() || exp.name.toLowerCase().includes(clean.toLowerCase())) {
+          symbols.push(exp.name);
+        }
+      }
+    }
+  }
+  return [...new Set(symbols)].slice(0, 8);
+}

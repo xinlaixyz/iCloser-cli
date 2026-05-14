@@ -1,0 +1,11 @@
+{
+  "name": "security-review",
+  "version": "1.0.0",
+  "description": "安全审查：注入检测、敏感数据扫描、权限边界验证、依赖漏洞审计",
+  "triggers": ["安全", "security", "注入", "漏洞", "扫描漏洞", "安全检查", "security audit"],
+  "requires": ["project-index"],
+  "provider": "claude",
+  "author": "iCloser",
+  "license": "MIT",
+  "type": "builtin"
+}

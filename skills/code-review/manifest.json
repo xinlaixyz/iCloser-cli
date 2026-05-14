@@ -1,0 +1,11 @@
+{
+  "name": "code-review",
+  "version": "1.0.0",
+  "description": "代码审查：检查代码质量、风格一致性、潜在 bug、性能问题",
+  "triggers": ["审查", "review", "检查代码", "code quality", "代码质量"],
+  "requires": ["project-index"],
+  "provider": "claude",
+  "author": "iCloser",
+  "license": "MIT",
+  "type": "builtin"
+}
