@@ -40,13 +40,11 @@ export function routeAutopilotIntent(input: string): AutopilotRoute {
     return route('docs', 'high', '用户要补齐缺失文档，需要写入文件前确认。', true);
   }
 
-  if (matches(normalized, [
-    /(分析|检查|扫描|体检).*(整个|当前|这个|项目|工程|目录|代码库)/,
-    /(项目|工程|代码库|目录).*(分析|检查|体检|质量|结构|问题)/,
-    /^分析代码质量(整个目录|当前目录|项目)?$/,
-  ])) {
-    return route('report', 'high', '用户要对当前项目做本地工程分析。', false);
-  }
+  // P7: Analysis queries now go to AI chat with rich context + tool calling,
+  // not the static autopilot. The AI can do iterative exploration and produce
+  // detailed analysis (like identifying tech stack, features, completeness).
+  // Static autopilot is still available via `ic autopilot` CLI command.
+  // (Removed the 'report' intent routing — analysis now goes through AI chat)
 
   return none();
 }

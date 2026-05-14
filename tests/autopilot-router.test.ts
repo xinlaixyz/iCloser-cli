@@ -2,11 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { routeAutopilotIntent } from '../src/core/autopilot-router.js';
 
 describe('autopilot natural language router', () => {
-  it('routes whole-project analysis to report mode', () => {
+  it('routes whole-project analysis to AI chat (not static autopilot)', () => {
+    // P7: Analysis queries now go to AI chat with rich context + tool calling
     const route = routeAutopilotIntent('你分析下项目，并读取 docs 里面的文档');
-
-    expect(route.intent).toBe('report');
-    expect(route.requiresConfirmation).toBe(false);
+    expect(route.intent).toBe('none'); // Falls through to AI chat
   });
 
   it('routes missing documentation requests to confirmed docs write mode', () => {

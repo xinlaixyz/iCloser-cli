@@ -378,55 +378,101 @@ function detectPackageManager(
 // ============================================================
 async function listAllFiles(rootPath: string): Promise<string[]> {
   const result: string[] = [];
-  try {
-    const entries = await fse.readdir(rootPath, { withFileTypes: true });
-    for (const entry of entries) {
-      if (entry.name.startsWith('.') && entry.name !== '.env') continue;
-      if (entry.name === 'node_modules' || entry.name === 'vendor' || entry.name === '__pycache__') continue;
-      result.push(entry.name);
-    }
-  } catch { /* ignore */ }
+  const SKIP_DIRS = new Set(['node_modules', 'vendor', '__pycache__', '.git', '.icloser', 'dist', 'build', '.next', '.nuxt', 'target', 'bin', 'obj']);
+  const MAX_FILES = 3000;
+
+  async function walk(dirPath: string, depth: number): Promise<void> {
+    if (result.length >= MAX_FILES || depth > 5) return;
+    try {
+      const entries = await fse.readdir(dirPath, { withFileTypes: true });
+      for (const entry of entries) {
+        if (result.length >= MAX_FILES) return;
+        if (entry.name.startsWith('.') && entry.name !== '.env' && entry.name !== '.github') continue;
+        if (SKIP_DIRS.has(entry.name)) continue;
+        const relPath = path.relative(rootPath, path.join(dirPath, entry.name)).replace(/\\/g, '/');
+        if (entry.isFile()) {
+          result.push(relPath);
+        } else if (entry.isDirectory()) {
+          result.push(relPath);
+          if (depth < 5) await walk(path.join(dirPath, entry.name), depth + 1);
+        }
+      }
+    } catch { /* best effort */ }
+  }
+
+  await walk(rootPath, 0);
   return result;
 }
 
 async function readJsonFile(rootPath: string, filename: string): Promise<Record<string, unknown> | null> {
-  const filePath = path.join(rootPath, filename);
+  // Try root, then common subdirectories
+  const searchPaths = [rootPath];
   try {
-    const content = await fse.readFile(filePath, 'utf-8');
-    return JSON.parse(content);
-  } catch {
-    return null;
+    const entries = await fse.readdir(rootPath, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isDirectory() && !entry.name.startsWith('.') && entry.name !== 'node_modules' && entry.name !== 'vendor') {
+        searchPaths.push(path.join(rootPath, entry.name));
+      }
+    }
+  } catch { /* keep root only */ }
+
+  for (const dir of searchPaths) {
+    try {
+      const content = await fse.readFile(path.join(dir, filename), 'utf-8');
+      if (filename.endsWith('.json')) return JSON.parse(content);
+      return content as unknown as Record<string, unknown>;
+    } catch { /* continue */ }
   }
+  return null;
 }
 
 async function readGoMod(rootPath: string): Promise<string | null> {
-  try {
-    return await fse.readFile(path.join(rootPath, 'go.mod'), 'utf-8');
-  } catch {
-    return null;
+  // Try root, then platform/, server/, backend/, src/, app/
+  const dirs = ['', 'platform', 'server', 'backend', 'src', 'app', 'cmd'];
+  for (const dir of dirs) {
+    try {
+      const p = dir ? path.join(rootPath, dir, 'go.mod') : path.join(rootPath, 'go.mod');
+      return await fse.readFile(p, 'utf-8');
+    } catch { /* continue */ }
   }
+  return null;
 }
 
 async function readCargoToml(rootPath: string): Promise<string | null> {
-  try {
-    return await fse.readFile(path.join(rootPath, 'Cargo.toml'), 'utf-8');
-  } catch {
-    return null;
+  const dirs = ['', 'rust', 'backend', 'server'];
+  for (const dir of dirs) {
+    try {
+      const p = dir ? path.join(rootPath, dir, 'Cargo.toml') : path.join(rootPath, 'Cargo.toml');
+      return await fse.readFile(p, 'utf-8');
+    } catch { /* continue */ }
   }
+  return null;
 }
 
 async function readRequirements(rootPath: string): Promise<string | null> {
-  try {
-    return await fse.readFile(path.join(rootPath, 'requirements.txt'), 'utf-8');
-  } catch {
-    return null;
+  const dirs = ['', 'python', 'backend', 'server', 'api'];
+  for (const dir of dirs) {
+    try {
+      const p = dir ? path.join(rootPath, dir, 'requirements.txt') : path.join(rootPath, 'requirements.txt');
+      return await fse.readFile(p, 'utf-8');
+    } catch { /* continue */ }
   }
+  return null;
 }
 
 async function fileContent(rootPath: string, filename: string): Promise<string | null> {
+  // Try root, then one level of subdirectories
   try {
     return await fse.readFile(path.join(rootPath, filename), 'utf-8');
-  } catch {
-    return null;
-  }
+  } catch { /* try subdirs */ }
+  try {
+    const entries = await fse.readdir(rootPath, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.name.startsWith('.') || entry.name === 'node_modules') continue;
+      try {
+        return await fse.readFile(path.join(rootPath, entry.name, filename), 'utf-8');
+      } catch { /* continue */ }
+    }
+  } catch { /* ignore */ }
+  return null;
 }

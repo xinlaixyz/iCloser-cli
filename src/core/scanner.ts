@@ -177,25 +177,50 @@ export async function loadProjectIndex(rootPath: string): Promise<ProjectIndex |
 }
 
 // ============================================================
-// File patterns
+// File patterns — always scan for ALL common source types, not just primary language
+// This ensures full-stack projects (Go+React, Python+Vue) don't miss frontend files
 // ============================================================
-function getSourceFilePatterns(language: string): string[] {
-  const patterns: Record<string, string[]> = {
-    typescript: ['**/*.ts', '**/*.tsx', '!**/*.d.ts', '!**/*.test.ts', '!**/*.spec.ts'],
-    javascript: ['**/*.js', '**/*.jsx', '**/*.mjs', '!**/*.test.js', '!**/*.spec.js'],
-    go: ['**/*.go', '!**/*_test.go'],
-    rust: ['**/*.rs'],
-    python: ['**/*.py', '!**/test_*.py', '!**/*_test.py'],
-    java: ['**/*.java', '!**/*Test.java'],
-    kotlin: ['**/*.kt', '**/*.kts', '!**/*Test.kt'],
-    swift: ['**/*.swift'],
-    objc: ['**/*.m', '**/*.mm', '**/*.h'],
-    sql: ['**/*.sql', '**/*.mysql', '**/*.psql'],
-    csharp: ['**/*.cs'],
-    php: ['**/*.php'],
-    ruby: ['**/*.rb'],
-  };
-  return patterns[language] || ['**/*'];
+const ALL_SOURCE_PATTERNS: string[] = [
+  '**/*.ts', '**/*.tsx', '!**/*.d.ts',
+  '**/*.js', '**/*.jsx', '**/*.mjs', '**/*.cjs',
+  '**/*.go',
+  '**/*.py',
+  '**/*.rs',
+  '**/*.java', '**/*.kt', '**/*.kts',
+  '**/*.swift', '**/*.m', '**/*.mm', '**/*.h',
+  '**/*.sql',
+  '**/*.cs',
+  '**/*.php',
+  '**/*.rb',
+  '**/*.css', '**/*.scss', '**/*.less',
+  '**/*.vue', '**/*.svelte',
+  '**/*.proto',
+  '**/*.yaml', '**/*.yml',
+  '**/*.toml',
+  '**/*.xml',
+  '**/*.json',
+];
+const TEST_PATTERNS: RegExp[] = [
+  /\.test\.\w+$/, /\.spec\.\w+$/, /_test\.\w+$/,
+  /\/test_\w+\.\w+$/, /\/\w+_test\.\w+$/, /\/\w+Test\.\w+$/,
+  /\/__tests__\//, /\/tests\//, /\/test\//,
+];
+const GENERATED_PATTERNS: RegExp[] = [
+  /\.d\.ts$/, /\.generated\./, /\.pb\.\w+$/,
+  /\/node_modules\//, /\/vendor\//, /\/\.git\//,
+  /\/dist\//, /\/build\//, /\/target\//, /\/\.next\//, /\/\.nuxt\//,
+  /\/__pycache__\//, /\/\.icloser\//,
+];
+
+function getSourceFilePatterns(_language: string): string[] {
+  return ALL_SOURCE_PATTERNS;
+}
+
+function isTestFile(filePath: string): boolean {
+  return TEST_PATTERNS.some(p => p.test(filePath));
+}
+function isGeneratedFile(filePath: string): boolean {
+  return GENERATED_PATTERNS.some(p => p.test(filePath));
 }
 
 async function filterBySize(

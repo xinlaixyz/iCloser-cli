@@ -2135,6 +2135,25 @@ async function executeTask(
     }
   } catch (err) {
     if (err instanceof AIOutputContractError) {
+      // Analysis-only tasks: AI text response without file changes is valid
+      if (isAnalysisOnlyTask(task.description) && aiContent) {
+        addReasoning(task.id, {
+          file: '(无文件修改 — 纯分析任务)',
+          intent: task.description,
+          reasoning: aiContent,
+          impact: { directlyAffected: [], indirectlyAffected: [], notAffected: [] },
+          riskLevel: 'low',
+        });
+        updateTaskStatus(task.id, 'completed');
+        task.completedAt = new Date().toISOString();
+        await persistTask(rootPath, task);
+        releaseFileLocks(task);
+        setTaskLoopStep(task.id, 'verify-result');
+        await completeTaskLoop(task.id, 'pass');
+        success('分析完成（纯分析任务，无文件修改）');
+        console.log(chalk.dim(aiContent.slice(0, 2000)));
+        return;
+      }
       task.errorLog.push(`AI 输出协议错误: ${err.message}${err.detail ? ` — ${err.detail}` : ''}`);
       updateTaskStatus(task.id, 'failed');
       await persistTask(rootPath, task);

@@ -55,8 +55,8 @@ export async function assembleContext(
   const opts = { ...DEFAULT_OPTIONS, ...options };
   const usableBudget = Math.floor(opts.maxTokens * (1 - opts.bufferReserve));
 
-  // 1. Project meta (~1K tokens)
-  const projectMeta = assembleProjectMeta(identity, index);
+  // 1. Project meta (~1K tokens) — includes README, extension stats, directory overview
+  const projectMeta = await assembleProjectMeta(identity, index);
 
   // 2. Relevant code (remaining budget after meta + memory)
   const codeBudget = Math.max(0, usableBudget - opts.projectMetaBudget - opts.memoryBudget);
@@ -214,7 +214,7 @@ export function summarizeContextDebug(context: ContextPackage, limit = 10): Cont
 // ============================================================
 // Project meta
 // ============================================================
-function assembleProjectMeta(identity: ProjectIdentity, index: ProjectIndex): string {
+async function assembleProjectMeta(identity: ProjectIdentity, index: ProjectIndex): Promise<string> {
   const parts: string[] = [];
 
   parts.push('# 项目元信息');
@@ -229,6 +229,45 @@ function assembleProjectMeta(identity: ProjectIdentity, index: ProjectIndex): st
   }
   parts.push(`- 部署形态: ${identity.deploymentType}`);
   parts.push(`- 架构模式: ${index.architecturePattern}`);
+
+  // P2: File extension distribution
+  const extStats = countFileExtensions(index);
+  if (extStats) {
+    parts.push(`\n## 文件分布`);
+    parts.push(extStats);
+  }
+
+  // P4: Directory structure overview
+  const dirOverview = buildDirectoryOverview(index);
+  if (dirOverview) {
+    parts.push(`\n## 目录结构`);
+    parts.push(dirOverview);
+  }
+
+  // P9: Technology stack details from dependency files
+  const techDetails = await extractTechStackDetails(index);
+  if (techDetails) {
+    parts.push(`\n## 技术栈详情`);
+    parts.push(techDetails);
+  }
+
+  // P10: Vendor/dependency stats (don't parse, just count)
+  const vendorStats = countVendorDeps(index);
+  if (vendorStats) {
+    parts.push(`\n## 第三方依赖`);
+    parts.push(vendorStats);
+  }
+
+  // P3: README content (first 3000 chars)
+  try {
+    const readmePath = [index.rootPath, 'README.md'].join('/').replace(/\/+/g, '/');
+    const { readFile } = await import('../utils/fs.js');
+    const readme = await readFile(readmePath);
+    if (readme && readme.trim()) {
+      const truncated = readme.length > 3000 ? readme.slice(0, 3000) + '\n... (README 过长，已截断)' : readme;
+      parts.push(`\n## README.md 内容\n${truncated}`);
+    }
+  } catch { /* no README */ }
 
   parts.push(`\n## 代码风格指纹`);
   const style = index.styleFingerprint;
@@ -258,6 +297,124 @@ function assembleProjectMeta(identity: ProjectIdentity, index: ProjectIndex): st
     }
   }
 
+  return parts.join('\n');
+}
+
+// ============================================================
+// File extension distribution (P2)
+// ============================================================
+function countFileExtensions(index: ProjectIndex): string {
+  const counts = new Map<string, number>();
+  for (const mod of index.modules) {
+    for (const file of mod.files) {
+      const ext = file.split('.').pop()?.toLowerCase() || 'other';
+      counts.set(ext, (counts.get(ext) || 0) + 1);
+    }
+  }
+  if (counts.size === 0) return '';
+  const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12);
+  const total = [...counts.values()].reduce((s, c) => s + c, 0);
+  return `总文件: ${total} | ${sorted.map(([ext, n]) => `.${ext}: ${n}`).join(' | ')}`;
+}
+
+// ============================================================
+// Directory structure overview (P4)
+// ============================================================
+function buildDirectoryOverview(index: ProjectIndex): string {
+  const dirFiles = new Map<string, number>();
+  for (const mod of index.modules) {
+    for (const file of mod.files) {
+      const dir = file.split('/').slice(0, 2).join('/') || file.split('/')[0] || 'root';
+      dirFiles.set(dir, (dirFiles.get(dir) || 0) + 1);
+    }
+  }
+  if (dirFiles.size === 0) return '';
+  const sorted = [...dirFiles.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 15);
+  return sorted.map(([dir, n]) => `- ${dir}/ (${n} 文件)`).join('\n');
+}
+
+// ============================================================
+// Tech stack details extraction (P9)
+// ============================================================
+async function extractTechStackDetails(index: ProjectIndex): Promise<string> {
+  const parts: string[] = [];
+
+  // Read go.mod for Go dependencies
+  try {
+    const { readFile } = await import('../utils/fs.js');
+    const goModPaths = ['go.mod', 'platform/go.mod', 'server/go.mod', 'backend/go.mod'];
+    for (const p of goModPaths) {
+      try {
+        const content = await readFile([index.rootPath, p].join('/').replace(/\/+/g, '/'));
+        const lines = content.split('\n').filter(l => l.trim() && !l.startsWith('//') && !l.startsWith('module '));
+        const deps = lines.filter(l => !l.startsWith('\t//') && l.trim().startsWith('github.com') || l.trim().startsWith('go.') || l.trim().startsWith('google.') || l.trim().startsWith('k8s.io'));
+        if (deps.length > 0) {
+          parts.push(`**Go 模块依赖 (${p}):** ${deps.slice(0, 20).map(d => d.trim().split(' ')[0]).join(', ')}${deps.length > 20 ? ` ... 共 ${deps.length} 个依赖` : ''}`);
+        }
+        const goVersion = lines.find(l => l.trim().startsWith('go '));
+        if (goVersion) parts.push(`Go 版本: ${goVersion.trim()}`);
+        break;
+      } catch { /* try next path */ }
+    }
+  } catch { /* optional */ }
+
+  // Read package.json for JS dependencies
+  try {
+    const { readFile } = await import('../utils/fs.js');
+    const pkgPaths = ['package.json', 'ui/package.json', 'frontend/package.json', 'web/package.json', 'client/package.json'];
+    for (const p of pkgPaths) {
+      try {
+        const content = await readFile([index.rootPath, p].join('/').replace(/\/+/g, '/'));
+        const pkg = JSON.parse(content);
+        const deps = { ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) };
+        const keys = Object.keys(deps);
+        if (keys.length > 0) {
+          const frameworks = keys.filter((k: string) => ['react', 'vue', 'angular', 'svelte', 'next', 'nuxt', 'express', 'nest', 'webpack', 'vite', 'tailwind'].some(f => k.includes(f)));
+          if (frameworks.length > 0) parts.push(`**前端框架/工具 (${p}):** ${frameworks.join(', ')}`);
+          parts.push(`**JS 依赖 (${p}):** ${keys.slice(0, 15).join(', ')}${keys.length > 15 ? ` ... 共 ${keys.length} 个包` : ''}`);
+        }
+        break;
+      } catch { /* try next path */ }
+    }
+  } catch { /* optional */ }
+
+  // Read requirements.txt for Python
+  try {
+    const { readFile } = await import('../utils/fs.js');
+    const reqPaths = ['requirements.txt', 'python/requirements.txt', 'backend/requirements.txt'];
+    for (const p of reqPaths) {
+      try {
+        const content = await readFile([index.rootPath, p].join('/').replace(/\/+/g, '/'));
+        const lines = content.split('\n').filter(l => l.trim() && !l.startsWith('#'));
+        parts.push(`**Python 依赖 (${p}):** ${lines.slice(0, 15).join(', ')}${lines.length > 15 ? ` ... 共 ${lines.length} 个` : ''}`);
+        break;
+      } catch { /* try next path */ }
+    }
+  } catch { /* optional */ }
+
+  return parts.join('\n');
+}
+
+// ============================================================
+// Vendor dependency stats (P10)
+// ============================================================
+function countVendorDeps(index: ProjectIndex): string {
+  const parts: string[] = [];
+  // Count vendor directories
+  const vendorModules = index.modules.filter(m => m.name === 'vendor');
+  if (vendorModules.length > 0) {
+    const totalVendorFiles = vendorModules.reduce((s, m) => s + m.files.length, 0);
+    parts.push(`vendor 目录: ${totalVendorFiles} 个文件 (已排除扫描，仅统计)`);
+  }
+  // Check for node_modules
+  for (const mod of index.modules) {
+    if (mod.name.includes('node_modules')) {
+      parts.push(`node_modules 存在 (${mod.files.length} 顶层文件)`);
+      break;
+    }
+  }
   return parts.join('\n');
 }
 
@@ -439,6 +596,21 @@ async function scoreFiles(
         results.push({ file: fullPath, score: Math.min(score, 1) });
       }
     }
+  }
+
+  // P5: Boost key entry-point files so they're always included in context
+  const KEY_FILES = [
+    /\/main\.\w+$/, /\/App\.\w+$/, /\/index\.\w+$/, /\/server\.\w+$/,
+    /\/Dockerfile$/, /\/Makefile$/, /\/docker-compose\.ya?ml$/,
+    /\/go\.mod$/, /\/package\.json$/, /\/tsconfig\.json$/,
+    /\/(app|main|server|index)\.(go|py|rb|rs|java|kt|tsx?|jsx?)$/,
+  ];
+  const KEY_DIRS = ['cmd/', 'pkg/', 'internal/', 'src/', 'app/', 'lib/'];
+  for (const r of results) {
+    const fn = r.file.replace(/\\/g, '/').split('/').pop() || '';
+    const dirPath = r.file.replace(/\\/g, '/');
+    if (KEY_FILES.some(p => p.test(dirPath))) r.score = Math.max(r.score, 0.9);
+    else if (KEY_DIRS.some(d => dirPath.includes(d)) && fn.match(/^(main|app|server|index|handler|router|config|db|model)\.\w+$/)) r.score = Math.max(r.score, 0.6);
   }
 
   // Sort by score descending, then take top N
