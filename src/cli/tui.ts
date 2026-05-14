@@ -3,6 +3,75 @@ import chalk from 'chalk';
 import { C, I, B, termWidth, thinDivider } from './theme.js';
 
 // ============================================================
+// Bottom Panel (S20.3)
+// ============================================================
+export interface PanelItem {
+  key?: string;
+  label: string;
+  detail?: string;
+  status?: 'ok' | 'fail' | 'running' | 'pending';
+  checked?: boolean;
+}
+
+export interface PanelAction {
+  key: string;
+  label: string;
+  action: string;
+}
+
+export type PanelType = 'shortcuts' | 'files' | 'status' | 'verify';
+
+export interface BottomPanelState {
+  type: PanelType;
+  title: string;
+  items: PanelItem[];
+  actions: PanelAction[];
+}
+
+export function renderBottomPanel(panel: BottomPanelState): string {
+  const tw = termWidth();
+  const w = tw - 4;
+  let out = '';
+
+  out += `\n  ${C.dim('╭─')} ${C.accent(panel.title)} ${C.dim('─'.repeat(Math.max(0, w - panel.title.length - 5)) + '╮')}\n`;
+
+  // Items
+  for (const item of panel.items) {
+    const marker = item.status === 'ok' ? I.ok : item.status === 'fail' ? I.err :
+      item.status === 'running' ? I.running : item.checked ? I.ok : C.dim('○');
+    out += `  ${C.dim('│')} ${marker} ${C.accent(item.label)}`;
+    if (item.detail) out += ` ${C.dim(item.detail)}`;
+    out += '\n';
+  }
+
+  // Divider + actions
+  if (panel.actions.length > 0) {
+    out += `  ${C.dim('├─')} ${C.dim('操作')} ${C.dim('─'.repeat(Math.max(0, w - 8)) + '┤')}\n`;
+    const actionStr = panel.actions.map(a =>
+      `${C.accent(`[${a.key}]`)} ${C.dim(a.label)}`
+    ).join(`  ${C.dim('│')}  `);
+    out += `  ${C.dim('│')} ${actionStr}${' '.repeat(Math.max(0, w - actionStr.length - 2))} ${C.dim('│')}\n`;
+  }
+
+  out += `  ${C.dim('╰')}${C.dim('─'.repeat(w))}${C.dim('╯')}`;
+  return out;
+}
+
+export const DEFAULT_SHORTCUTS: BottomPanelState = {
+  type: 'shortcuts',
+  title: '操作',
+  items: [],
+  actions: [
+    { key: 'h', label: '帮助 /help', action: 'help' },
+    { key: 's', label: '扫描 /scan', action: 'scan' },
+    { key: 'w', label: '写入 /write', action: 'write' },
+    { key: 'd', label: '预览 /diff', action: 'diff' },
+    { key: 'c', label: '清屏 /clear', action: 'clear' },
+    { key: 'q', label: '退出 /exit', action: 'exit' },
+  ],
+};
+
+// ============================================================
 // Screen layout
 // ============================================================
 export interface TuiLayout {

@@ -22,6 +22,7 @@ import {
   drawWideBox, processStep,
   notification, thinDivider, termWidth,
 } from './theme.js';
+import { renderBottomPanel, DEFAULT_SHORTCUTS, type BottomPanelState } from './tui.js';
 import type { AIConfig, AIProvider, AIPrompt, ContextPackage, ProjectIdentity, ProjectIndex, Task } from '../types.js';
 import type { StreamCallback } from '../ai/provider.js';
 import {
@@ -156,8 +157,38 @@ const SLASH_COMMANDS = [
 function box(content: string, title: string): string { return drawWideBox(content, { title }); }
 function printBottomBlock(): void {
   bottomOptions = [];
-  const tw = Math.min(termWidth() - 4, 70);
-  process.stdout.write(`  ${C.dim('─'.repeat(tw))}\n`);
+  process.stdout.write(buildCurrentPanelStr());
+}
+function buildCurrentPanelStr(): string {
+  const panel = buildCurrentPanel();
+  return '\n' + renderBottomPanel(panel);
+}
+async function executePanelAction(action: string): Promise<void> {
+  switch (action) {
+    case 'help': console.log(commandHelp()); break;
+    case 'scan': await cmdScan(); break;
+    case 'write': await cmdWrite(); break;
+    case 'diff': await cmdDiff(); break;
+    case 'clear': state.conversation = []; state.pendingFiles = []; console.log(`  ${I.ok} 对话历史已清除\n`); break;
+    case 'exit': await shutdownRepl(); break;
+    case 'cancel': state.pendingFiles = []; pendingConfirm = null; console.log(`  ${C.dim('已取消')}\n`); break;
+    case 'interrupt': if (abortController) abortController.abort(); break;
+    default: break;
+  }
+}
+function buildCurrentPanel(): BottomPanelState {
+  if (streamState !== 'idle') {
+    const elapsed = ((Date.now() - waitingStartTime) / 1000).toFixed(1);
+    return { type: 'status', title: `AI 执行中 [${elapsed}s]`, items: [], actions: [{ key: 'Ctrl+C', label: '中断', action: 'interrupt' }] };
+  }
+  if (pendingConfirm === 'write' || state.pendingFiles.length > 0) {
+    return {
+      type: 'files', title: `待处理文件 (${state.pendingFiles.length})`,
+      items: state.pendingFiles.map((f, i) => ({ key: String(i + 1), label: f.path, detail: `+${f.lines}行`, checked: true })),
+      actions: [{ key: 'w', label: '写入全部', action: 'write' }, { key: 'd', label: '预览变更', action: 'diff' }, { key: 'x', label: '取消', action: 'cancel' }],
+    };
+  }
+  return DEFAULT_SHORTCUTS;
 }
 
 function refreshPrompt(): void {
@@ -200,6 +231,16 @@ export async function startRepl(): Promise<void> {
   promptRepl();
   rl.on('line', async (line: string) => {
     pendingExitSince = 0;
+    // S20.3: single-letter panel shortcuts (only when not in choice panel)
+    if (!activeChoicePanel) {
+      const panel = buildCurrentPanel();
+      const action = panel.actions.find(a => a.key === line.trim());
+      if (action && line.trim().length <= 2) {
+        await executePanelAction(action.action);
+        promptRepl();
+        return;
+      }
+    }
     const input = line.trim();
     await recordReplUserInput(input);
     if (await handleInlineConfirm(input)) { printBottomBlock(); if (state.running) promptRepl(); return; }
