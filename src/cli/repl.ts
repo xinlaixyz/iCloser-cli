@@ -276,17 +276,17 @@ export async function startRepl(): Promise<void> {
     // Close input box frame (only for non-empty input)
     if (input) process.stdout.write(`${inputBoxBottom()}\n`);
     // S20.8: history number selection (!1, !2, etc.)
-    if (/^!\d+$/.test(input) && state.conversation.length > 0) {
-      const idx = parseInt(input.substring(1), 10);
+    if (/^!\d+$/.test(input)) {
       const userMsgs = state.conversation.filter(m => m.role === 'user');
-      if (idx > 0 && idx <= userMsgs.length) {
-        const histInput = userMsgs[userMsgs.length - idx].content.trim();
-        console.log(`  ${C.dim('← ' + histInput.substring(0, 80))}\n`);
-        if (histInput.startsWith('/')) await handleSlashCommand(histInput);
-        else if (histInput.startsWith('!') && histInput.length > 1) await cmdHistorySearch(histInput.substring(1));
-        else await handleChat(histInput);
-        printBottomBlock(); if (state.running) promptRepl(); return;
-      }
+      if (userMsgs.length === 0) { console.log(`  ${C.dim('暂无历史')}\n`); promptRepl(); return; }
+      const idx = parseInt(input.substring(1), 10);
+      if (idx < 1 || idx > userMsgs.length) { console.log(`  ${C.dim(`输入 1-${userMsgs.length}`)}\n`); promptRepl(); return; }
+      const histInput = userMsgs[userMsgs.length - idx].content.trim();
+      console.log(`  ${C.dim('← ' + histInput.substring(0, 80))}\n`);
+      if (histInput.startsWith('/')) await handleSlashCommand(histInput);
+      else if (histInput.startsWith('!') && histInput.length > 1) await cmdHistorySearch(histInput.substring(1));
+      else await handleChat(histInput);
+      printBottomBlock(); if (state.running) promptRepl(); return;
     }
     // Panel shortcuts: single-letter input when no active choice panel
     if (!activeChoicePanel) {
@@ -766,7 +766,7 @@ async function handleSlashCommand(input: string): Promise<void> {
   const args = parts.slice(argStart).join(' ');
   switch (cmd) {
     case '/help': case '/h': console.log(commandHelp()); break;
-    case '/?': await cmdCommandPalette(args); break;
+    case '/?': case '/p': await cmdCommandPalette(args); break;
     case '/exit': case '/quit': case '/q': await shutdownRepl(); break;
     case '/clear': case '/c': state.conversation = []; state.pendingFiles = []; console.log(`  ${I.ok} 对话历史已清除\n`); break;
     case '/init': case '/i': await cmdInit(); break;
@@ -911,6 +911,7 @@ async function handleChat(input: string): Promise<void> {
     streamState = 'loading'; streamLineBuf = ''; startWaitingPhase();
     process.stdout.write(`\r  ${C.primary('◉')} ${chalk.bold('AI')} ${C.dim(`正在连接 ${state.aiConfig.provider.toUpperCase()}...`)}`);
     let fullResponse = ''; let firstChunk = true; let inCodeBlock = false; let codeLang = ''; let suppressCodeBlock = false;
+    let codeBlockLines = 0; let codeBlockFolded = false; const FOLD_THRESHOLD = 20; const FOLD_PREVIEW = 5;
     let lineCount = 0; let lastStatusUpdate = 0;
     const aiStartTime = Date.now(); const tw = Math.min(termWidth(), 100); const contentW = tw - 4;
     const provider = createProvider(state.aiConfig);
@@ -922,7 +923,6 @@ async function handleChat(input: string): Promise<void> {
       const lines = streamLineBuf.split('\n'); streamLineBuf = lines.pop() || '';
       for (const line of lines) {
         lineCount++;
-        // Show progress every 10 lines during streaming
         if (lineCount % 10 === 0 && Date.now() - lastStatusUpdate > 2000) {
           const elapsed = ((Date.now() - aiStartTime) / 1000).toFixed(1);
           process.stdout.write(`\r  ${C.primary('◉')} ${C.dim(`输出中 [${elapsed}s] · ${lineCount} 行 · ${streamTokenCount.toLocaleString()} tokens`)}\x1b[K`);
@@ -930,24 +930,42 @@ async function handleChat(input: string): Promise<void> {
         }
         if (line.trim().startsWith('``')) {
           if (!inCodeBlock) {
-            inCodeBlock = true;
+            // Entering code block
+            inCodeBlock = true; codeBlockLines = 0; codeBlockFolded = false;
             codeLang = line.trim().slice(3).trim();
             suppressCodeBlock = shouldHideWriteJsonBlock(input, codeLang);
             if (!suppressCodeBlock) process.stdout.write(`  ${C.dim(codeLang ? '```' + codeLang : '```')}\n`);
-          }
-          else {
+          } else {
+            // Exiting code block
+            if (codeBlockFolded) {
+              process.stdout.write(`  ${C.dim(`… (${codeBlockLines - FOLD_PREVIEW - 2} 行折叠)`)}\n`);
+            }
             if (!suppressCodeBlock) process.stdout.write(`  ${C.dim('```')}\n`);
-            inCodeBlock = false;
-            suppressCodeBlock = false;
+            inCodeBlock = false; suppressCodeBlock = false;
           }
-        } else if (inCodeBlock) { if (!suppressCodeBlock) process.stdout.write(`  ${C.dim(line)}\n`); }
-        else { renderMarkdownLine(line, contentW); }
+        } else if (inCodeBlock) {
+          if (suppressCodeBlock) continue;
+          codeBlockLines++;
+          if (codeBlockLines <= FOLD_PREVIEW) {
+            process.stdout.write(`  ${C.dim(line)}\n`);
+          } else if (codeBlockLines > FOLD_PREVIEW && codeBlockLines <= FOLD_THRESHOLD) {
+            process.stdout.write(`  ${C.dim(line)}\n`);
+          } else if (codeBlockLines === FOLD_THRESHOLD + 1) {
+            codeBlockFolded = true;
+            // Don't print — start folding
+          } else {
+            // Still folding, don't print
+          }
+        } else { renderMarkdownLine(line, contentW); }
       }
     });
     const elapsed = Date.now() - aiStartTime;
     if (signal.aborted) { stopWaitingPhase(); process.stdout.write(`\n  ${C.warn('⚡ 已中断')}\n\n`); streamState = 'idle'; return; }
     if (streamLineBuf) { renderMarkdownLine(streamLineBuf, contentW); lineCount++; }
-    if (inCodeBlock && !suppressCodeBlock) { process.stdout.write(`  ${C.dim('```')}\n`); }
+    if (inCodeBlock && !suppressCodeBlock) {
+      if (codeBlockFolded) process.stdout.write(`  ${C.dim(`… (${codeBlockLines - FOLD_PREVIEW - 2} 行折叠)`)}\n`);
+      process.stdout.write(`  ${C.dim('```')}\n`);
+    }
     // Clear progress line and show final status
     process.stdout.write(`\r\x1b[K  ${C.success('✓')} ${C.dim(`[${(elapsed/1000).toFixed(1)}s]  ${lineCount} 行  ${streamTokenCount.toLocaleString()} tokens`)}\n`);
     stopWaitingPhase(); streamState = 'idle'; streamLineBuf = '';
@@ -956,9 +974,17 @@ async function handleChat(input: string): Promise<void> {
     if (fileBlocks.length === 0 && shouldRepairWriteOutput(input, fullResponse || response.content)) {
       fileBlocks = await repairWriteOutput(provider, prompt, fullResponse || response.content);
     }
-    // S21: show tool activity summary
-    const mentionedFiles = extractMentionedFiles(fullResponse || response.content);
-    const codeBlocks = (fullResponse.match(/```/g) || []).length / 2;
+    // S21: summary-first — show tldr line before full output if response is long
+    const respText = fullResponse || response.content;
+    const responseLines = respText.split('\n').length;
+    if (responseLines > 30) {
+      const firstLine = respText.split('\n').find(l => l.trim() && !l.trim().startsWith('```') && l.trim().length > 10) || '';
+      console.log(`  ${C.primary('◆')} ${C.dim(firstLine.substring(0, 100))}${firstLine.length > 100 ? '…' : ''}`);
+      console.log(`  ${C.dim(`(${responseLines} 行 · 上方滚动查看完整内容)`)}\n`);
+    }
+    // S21: activity summary
+    const mentionedFiles = extractMentionedFiles(respText);
+    const codeBlocks = (respText.match(/```/g) || []).length / 2;
     if (fileBlocks.length > 0) {
       console.log(`  ${C.dim('╭─')} ${C.accent('产出')} ${C.dim('─'.repeat(60))}`);
       for (const fb of fileBlocks) {
