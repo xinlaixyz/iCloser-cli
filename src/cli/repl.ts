@@ -155,18 +155,28 @@ const SLASH_COMMANDS = [
 ];
 
 function box(content: string, title: string): string { return drawWideBox(content, { title }); }
+
+function boxWidth(): number { return Math.max(20, termWidth() - 4); }
+
+function inputBoxTop(): string {
+  const w = boxWidth() - 2; // space for ╭ ╮
+  return `  ${C.accent('╭─')} ${C.accent('输入')} ${C.accent('─'.repeat(Math.max(1, w - 6)) + '╮')}`;
+}
+
+function inputBoxBottom(): string {
+  const w = boxWidth() - 2;
+  return `  ${C.accent('╰')}${C.accent('─'.repeat(w))}${C.accent('╯')}`;
+}
+
 function printBottomBlock(): void {
   bottomOptions = [];
-  const tw = termWidth();
-  const w = tw - 4;
-  // Close the input box frame (opened by refreshPrompt)
-  process.stdout.write(`\n  ${C.accent('╰')}${C.accent('─'.repeat(w))}${C.accent('╯')}`);
-  // Render bottom panel
-  process.stdout.write(buildCurrentPanelStr());
+  // Close input box + render panel + newline for spacing
+  process.stdout.write(`\n${inputBoxBottom()}\n`);
+  process.stdout.write(renderBottomPanel(buildCurrentPanel()) + '\n');
 }
+
 function buildCurrentPanelStr(): string {
-  const panel = buildCurrentPanel();
-  return '\n' + renderBottomPanel(panel);
+  return renderBottomPanel(buildCurrentPanel());
 }
 async function executePanelAction(action: string): Promise<void> {
   switch (action) {
@@ -206,11 +216,10 @@ function refreshPrompt(): void {
     rl.setPrompt(`${C.accent('选择')} ${C.dim('输入选项后回车')} ${C.accent('>')} `);
     return;
   }
-  const tw = termWidth();
-  const w = tw - 4;
-  // Input box frame: top border + content line + bottom border
+  // Input box frame: top border + content line with prompt
+  // \ continuation hint in the prompt line
   rl.setPrompt(
-    `  ${C.accent('╭─')} ${C.accent('输入')} ${C.accent('─'.repeat(Math.max(1, w - 10)))}╮\n` +
+    `${inputBoxTop()}\n` +
     `  ${C.accent('│')} ${C.accent('◇')}  `
   );
 }
@@ -266,10 +275,10 @@ export async function startRepl(): Promise<void> {
   promptRepl();
   rl.on('line', async (line: string) => {
     pendingExitSince = 0;
-    // S20.5: line continuation with trailing backslash
+    // Multi-line: line continuation with trailing backslash
     if (line.endsWith('\\') && !line.startsWith('/')) {
       multiLineBuf += line.slice(0, -1) + '\n';
-      rl.setPrompt(`  ${C.accent('│')} ${C.dim('…')}  `);
+      rl.setPrompt(`  ${C.accent('│')} ${C.dim('↳')}  `);
       rl.prompt();
       return;
     }
