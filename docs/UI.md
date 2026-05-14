@@ -307,4 +307,24 @@
 | `src/cli/repl.ts` | 集成多行输入、底部面板、等待动画 |
 | `src/cli/command-palette.ts` | 新建 — 命令面板实现 |
 | `src/report/generator.ts` | diff 区域改用 diff-renderer |
+
+---
+
+## 9. 完成度 (2026-05-15)
+
+| 功能 | 状态 | 备注 |
+|------|------|------|
+| 输出消毒 (S20.1) | ✅ 100% | sanitizeOutput + stdout monkey-patch |
+| 等待体验 (S20.2) | ✅ 100% | 三阶段计时+脉冲+tokens |
+| 底部面板 (S20.3) | ✅ 85% | 4 状态自适应 + 单键快捷键，非真正固定(终端限制) |
+| Diff 着色 (S20.4) | ✅ 100% | parseDiff/renderDiff 红绿 |
+| 输入框双线 (S20.5) | ✅ 90% | 框顶+输入行+框底，readline 内单行 |
+| Shift+Enter (S20.5) | ❌ 0%   | raw mode 破坏 IME+ANSI，已回退，标记为不可行 |
+| 错误指引 (S20.6) | ✅ 100% | 编译/lint/test/e2e 针对性建议 |
+| 命令面板 (S20.7) | ✅ 80% | `/?` 代替 Ctrl+P(readline 拦截) |
+| 历史搜索 (S20.8) | ✅ 80% | `!query` 代替 Ctrl+R(readline 拦截) |
+| Tab 补全 (S20.9) | ✅ 100% | 文件路径 + 深度子补全 |
+| InputBox 组件 | 🔶 100% | 已实现，因终端兼容性未启用 |
+| 集成验收 (S20.10) | ✅ 100% | 42 files / 413 tests / 0 failed |
+
 | `src/index.ts` | CLI `ic d` 命令改用 diff-renderer |
