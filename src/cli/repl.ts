@@ -170,9 +170,8 @@ function inputBoxBottom(): string {
 
 function printBottomBlock(): void {
   bottomOptions = [];
-  // Close input box + render panel + newline for spacing
-  process.stdout.write(`\n${inputBoxBottom()}\n`);
-  process.stdout.write(renderBottomPanel(buildCurrentPanel()) + '\n');
+  // Render panel only — no orphaned box bottom (it scrolled away during output)
+  process.stdout.write(`\n${renderBottomPanel(buildCurrentPanel())}\n`);
 }
 
 function buildCurrentPanelStr(): string {
@@ -864,6 +863,25 @@ async function handleChat(input: string): Promise<void> {
     return;
   }
   state.aiConfig.apiKey = resolveApiKeyForProvider(state.aiConfig.provider);
+  // AI intent detection — classify user intent before processing
+  let userIntent = '';
+  try {
+    const { classifyIntentRegex } = await import('../core/intent-classifier.js');
+    const intent = classifyIntentRegex(input);
+    if (intent && intent.confidence >= 0.8) {
+      userIntent = intent.category;
+      const intentLabel = intent.category === 'code_change' ? '🔧 代码修改' :
+        intent.category === 'analysis' ? '🔍 项目分析' :
+        intent.category === 'security_review' ? '🛡️ 安全检查' :
+        intent.category === 'refactor' ? '♻️ 重构优化' :
+        intent.category === 'test_gen' ? '🧪 测试生成' :
+        intent.category === 'doc_gen' ? '📝 文档生成' :
+        intent.category === 'question' ? '💡 咨询问答' :
+        intent.category === 'config' ? '⚙️ 系统配置' : '';
+      if (intentLabel) console.log(`  ${C.dim('意图: ' + intentLabel)}`);
+    }
+  } catch { /* intent detection is best-effort */ }
+
   enableOfflineModeIfMissingKey();
   abortController = new AbortController(); const signal = abortController.signal;
   try {
