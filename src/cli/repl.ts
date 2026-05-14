@@ -916,7 +916,7 @@ async function handleChat(input: string): Promise<void> {
     process.stdout.write(`\r  ${C.primary('◉')} ${chalk.bold('AI')} ${C.dim(`正在连接 ${state.aiConfig.provider.toUpperCase()}...`)}`);
     let fullResponse = ''; let firstChunk = true; let inCodeBlock = false; let codeLang = ''; let suppressCodeBlock = false;
     let codeBlockLines = 0; let codeBlockFolded = false; const FOLD_THRESHOLD = 30; const FOLD_PREVIEW = 5;
-    let lineCount = 0; let lastStatusUpdate = 0;
+    let lineCount = 0;
     const aiStartTime = Date.now(); const tw = Math.min(termWidth(), 100); const contentW = tw - 4;
     const provider = createProvider(state.aiConfig);
     const response = await provider.chatStream(prompt, (chunk: string) => {
@@ -927,11 +927,6 @@ async function handleChat(input: string): Promise<void> {
       const lines = streamLineBuf.split('\n'); streamLineBuf = lines.pop() || '';
       for (const line of lines) {
         lineCount++;
-        if (lineCount % 10 === 0 && Date.now() - lastStatusUpdate > 2000) {
-          const elapsed = ((Date.now() - aiStartTime) / 1000).toFixed(1);
-          process.stdout.write(`\r  ${C.primary('◉')} ${C.dim(`输出中 [${elapsed}s] · ${lineCount} 行`)}\x1b[K`);
-          lastStatusUpdate = Date.now();
-        }
         if (line.trim().startsWith('``')) {
           if (!inCodeBlock) {
             // Entering code block
