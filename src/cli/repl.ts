@@ -283,7 +283,9 @@ export async function startRepl(): Promise<void> {
   rl.on('line', async (line: string) => {
     pendingExitSince = 0;
     const input = line.trim();
-    // Close input box frame (only for non-empty input)
+    // During AI execution: block all input — just re-prompt silently, no rendering
+    if (streamState !== 'idle') { promptRepl(); return; }
+    // Close input box frame (only for non-empty input that will be processed)
     if (input) process.stdout.write(`${inputBoxBottom()}\n`);
     // S20.8: history number selection (!1, !2, etc.)
     if (/^!\d+$/.test(input)) {
@@ -313,8 +315,6 @@ export async function startRepl(): Promise<void> {
       printBottomBlock(); if (state.running) promptRepl(); return;
     }
     if (!input) { printBottomBlock(); promptRepl(); return; }
-    // Block input during AI execution (only Ctrl+C interrupt works)
-    if (streamState !== 'idle') { promptRepl(); return; }
     await recordReplUserInput(input);
     if (await handleInlineConfirm(input)) { printBottomBlock(); if (state.running) promptRepl(); return; }
     if (await handleBottomSelection(input)) { printBottomBlock(); if (state.running) promptRepl(); return; }
@@ -2445,9 +2445,9 @@ function extractMentionedFiles(text: string): string[] {
   return [...seen];
 }
 
-function shouldHideWriteJsonBlock(input: string, codeLang: string): boolean {
-  return /(json|icloser-ai-output)/i.test(codeLang) &&
-    isWriteIntendedInput(input);
+function shouldHideWriteJsonBlock(_input: string, codeLang: string): boolean {
+  // JSON output blocks are ALWAYS hidden — they are the AI output contract, not user content
+  return /(json|icloser-ai-output)/i.test(codeLang);
 }
 
 async function repairWriteOutput(
