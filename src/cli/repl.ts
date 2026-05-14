@@ -283,8 +283,8 @@ export async function startRepl(): Promise<void> {
   rl.on('line', async (line: string) => {
     pendingExitSince = 0;
     const input = line.trim();
-    // During AI execution: block all input — just re-prompt silently, no rendering
-    if (streamState !== 'idle') { promptRepl(); return; }
+    // During AI execution: block all input — just re-display cursor, no rendering
+    if (streamState !== 'idle') { rl?.prompt(); return; }
     // Close input box frame (only for non-empty input that will be processed)
     if (input) process.stdout.write(`${inputBoxBottom()}\n`);
     // S20.8: history number selection (!1, !2, etc.)
@@ -1998,11 +1998,8 @@ function renderMarkdownLine(line: string, maxW: number): void {
 }
 function renderInlineFormatting(text: string): string { let t = text; t = t.replace(/\*\*(.+?)\*\*/g, (_, m) => chalk.bold(m)); t = t.replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, (_, m) => chalk.italic(m)); t = t.replace(/`([^`]+)`/g, (_, m) => C.accent(m)); return t; }
 
-function printFooter(hasFiles: boolean): void {
-  bottomOptions = [];
-  if (!hasFiles || state.pendingFiles.length === 0) return;
-  process.stdout.write('\n');
-  printFileConfirm();
+function printFooter(_hasFiles: boolean): void {
+  // S20 panel handles file confirmation — old inline system disabled
 }
 
 function stripAnsiLen(str: string): number { return str.replace(/\x1b\[[0-9;]*m/g, '').length; }
