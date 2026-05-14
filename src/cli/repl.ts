@@ -173,10 +173,11 @@ function printStatusLine(): void {
   }
   if (state.pendingFiles.length > 0) {
     const files = state.pendingFiles.map(f => `${C.accent(f.path)}+${f.lines}`).join(' ');
-    process.stdout.write(`\n  ${C.success('▸')} ${files} ${C.dim('─ /write 写入 /diff 预览 /clear 取消')}\n`);
+    process.stdout.write(`\n  ${C.success('▸')} ${files} ${themeColor(C.dim, chalk.bold)('─ /write 写入 /diff 预览 /clear 取消')}\n`);
     return;
   }
-  process.stdout.write(`\n  ${C.dim(`─ /help /scan /diff /clear · ${(ctxTokens/1000).toFixed(1)}K/${(ctxMax/1000).toFixed(0)}K ─`)}\n`);
+  const ctxInfo = `─ /help /scan /diff /clear · ${(ctxTokens/1000).toFixed(1)}K/${(ctxMax/1000).toFixed(0)}K ─`;
+  process.stdout.write(`\n  ${themeColor(C.dim, chalk.bold)(ctxInfo)}\n`);
 }
 
 function printBottomBlock(): void { printStatusLine(); }
@@ -976,7 +977,11 @@ async function handleChat(input: string): Promise<void> {
     if (responseLines > 30) {
       const firstLine = respText.split('\n').find(l => l.trim() && !l.trim().startsWith('```') && l.trim().length > 10) || '';
       console.log(`  ${C.primary('◆')} ${C.dim(firstLine.substring(0, 100))}${firstLine.length > 100 ? '…' : ''}`);
-      console.log(`  ${C.dim(`(${responseLines} 行 · 上方滚动查看完整内容)`)}\n`);
+      if (responseLines > 80) {
+        console.log(`  ${C.warn(`⚠ ${responseLines} 行 · 上方滚动查看完整内容 · /brief 可折叠`)}\n`);
+      } else {
+        console.log(`  ${C.dim(`(${responseLines} 行 · 上方滚动查看完整内容)`)}\n`);
+      }
     }
     // S21: activity summary
     const mentionedFiles = extractMentionedFiles(respText);
@@ -2223,6 +2228,8 @@ export function replCompleter(line: string): [string[], string] {
     const cmd = parts[0];
     if (cmd === '/config') return [['provider ', 'model '], line];
     if (cmd === '/apikey' || cmd === '/key') return [providerNames.map(p => `${p} `), line];
+    if (cmd === '/export') return [['md ', 'markdown '], line];
+    if (cmd === '/theme') return [['dark ', 'light '], line];
     if (cmd === '/write' || cmd === '/diff' || cmd === '/code') {
       // S20.9: file path completion for file-aware commands
       const hintPart = endsWithSpace ? '' : (parts[1] || '');
@@ -2789,12 +2796,21 @@ async function cmdExport(format: string): Promise<void> {
   console.log(`  ${I.ok} 已导出 ${state.conversation.length} 轮对话 → ${C.accent(filename)}\n`);
 }
 
-// /theme — switch between dark/light color presets
+// /theme — switch dark/light, affects status line + panel colors
 let themeMode: 'dark' | 'light' = 'dark';
+function themeColor(darkColor: (s: string) => string, lightColor: (s: string) => string): (s: string) => string {
+  return themeMode === 'dark' ? darkColor : lightColor;
+}
 async function cmdTheme(mode: string): Promise<void> {
-  if (mode === 'dark') { themeMode = 'dark'; console.log(`  ${I.ok} ${C.dim('暗色主题')}\n`); }
-  else if (mode === 'light') { themeMode = 'light'; console.log(`  ${I.ok} ${C.dim('亮色主题(实验性)')}\n`); }
-  else { console.log(`  ${C.dim('用法: /theme dark|light  (当前: ' + themeMode + ')')}\n`); }
+  if (mode === 'dark') {
+    themeMode = 'dark';
+    console.log(`  ${I.ok} 暗色主题 — 默认终端配色\n`);
+  } else if (mode === 'light') {
+    themeMode = 'light';
+    console.log(`  ${I.ok} 亮色主题 — dim/bright 互换 (浅色终端更清晰)\n`);
+  } else {
+    console.log(`  ${C.dim('用法: /theme dark|light  (当前: ' + themeMode + ')')}\n`);
+  }
 }
 
 async function cmdContext(args: string): Promise<void> {
