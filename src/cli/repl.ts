@@ -272,9 +272,9 @@ export async function startRepl(): Promise<void> {
   promptRepl();
   rl.on('line', async (line: string) => {
     pendingExitSince = 0;
-    // Close input box frame immediately
-    process.stdout.write(`${inputBoxBottom()}\n`);
     const input = line.trim();
+    // Close input box frame (only for non-empty input)
+    if (input) process.stdout.write(`${inputBoxBottom()}\n`);
     // S20.8: history number selection (!1, !2, etc.)
     if (/^!\d+$/.test(input) && state.conversation.length > 0) {
       const idx = parseInt(input.substring(1), 10);
@@ -302,7 +302,9 @@ export async function startRepl(): Promise<void> {
       await cmdHistorySearch(input.substring(1));
       printBottomBlock(); if (state.running) promptRepl(); return;
     }
-    if (!input) { promptRepl(); return; }
+    if (!input) { printBottomBlock(); promptRepl(); return; }
+    // Block input during AI execution (only Ctrl+C interrupt works)
+    if (streamState !== 'idle') { promptRepl(); return; }
     await recordReplUserInput(input);
     if (await handleInlineConfirm(input)) { printBottomBlock(); if (state.running) promptRepl(); return; }
     if (await handleBottomSelection(input)) { printBottomBlock(); if (state.running) promptRepl(); return; }
