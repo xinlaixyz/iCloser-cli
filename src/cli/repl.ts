@@ -242,6 +242,12 @@ export async function startRepl(): Promise<void> {
       }
     }
     const input = line.trim();
+    // S20.8: history search via ! prefix
+    if (input.startsWith('!') && input.length > 1) {
+      await cmdHistorySearch(input.substring(1));
+      printBottomBlock(); if (state.running) promptRepl();
+      return;
+    }
     await recordReplUserInput(input);
     if (await handleInlineConfirm(input)) { printBottomBlock(); if (state.running) promptRepl(); return; }
     if (await handleBottomSelection(input)) { printBottomBlock(); if (state.running) promptRepl(); return; }
@@ -727,7 +733,8 @@ async function handleSlashCommand(input: string): Promise<void> {
   }
   const args = parts.slice(argStart).join(' ');
   switch (cmd) {
-    case '/help': case '/h': case '/?': console.log(commandHelp()); break;
+    case '/help': case '/h': console.log(commandHelp()); break;
+    case '/?': await cmdCommandPalette(''); break;
     case '/exit': case '/quit': case '/q': await shutdownRepl(); break;
     case '/clear': case '/c': state.conversation = []; state.pendingFiles = []; console.log(`  ${I.ok} 对话历史已清除\n`); break;
     case '/init': case '/i': await cmdInit(); break;
@@ -1938,38 +1945,121 @@ export function replCompleter(line: string): [string[], string] {
     const cmd = parts[0];
     if (cmd === '/config') return [['provider ', 'model '], line];
     if (cmd === '/apikey' || cmd === '/key') return [providerNames.map(p => `${p} `), line];
-    // For other commands, show nothing — no sub-completions defined
+    if (cmd === '/write' || cmd === '/diff' || cmd === '/code') {
+      // S20.9: file path completion for file-aware commands
+      const hintPart = endsWithSpace ? '' : (parts[1] || '');
+      try {
+        const fs = require('fs'); const p = require('path');
+        const dir = hintPart ? p.dirname(hintPart) : '.';
+        const prefix = hintPart ? p.basename(hintPart) : '';
+        const entries = fs.readdirSync(dir, { withFileTypes: true });
+        const matches = entries.filter((e: { name: string }) => e.name.startsWith(prefix)).map((e: { name: string }) => `${hintPart ? hintPart.substring(0, hintPart.length - prefix.length) : ''}${e.name} `);
+        return [matches.slice(0, 20), line];
+      } catch { return [[], line]; }
+    }
     return [[], line];
   }
-
-  if (parts[0] === '/config') {
-    if (parts.length === 2 && !endsWithSpace) {
-      const keys = ['provider', 'model'].filter(key => key.startsWith(parts[1]));
-      return [keys.map(key => `/config ${key} `), line];
+  // Multi-part commands — deep sub-completions
+  if (parts.length >= 2) {
+    if (parts[0] === '/config') {
+      if (parts.length === 2 && !endsWithSpace) {
+        const keys = ['provider', 'model'].filter(key => key.startsWith(parts[1]));
+        return [keys.map(key => `/config ${key} `), line];
+      }
+      if (parts[1] === 'provider') {
+        const partial = parts.length >= 3 && !endsWithSpace ? parts[2] : '';
+        const hits = providerNames.filter(p => p.startsWith(partial));
+        return [hits.map(p => `/config provider ${p}`), line];
+      }
+      if (parts[1] === 'model') {
+        const partial = parts.length >= 3 && !endsWithSpace ? parts[2] : '';
+        const info = getProviderInfo(state.aiConfig.provider);
+        const hits = info.availableModels.filter(m => m.startsWith(partial));
+        return [hits.map(m => `/config model ${m}`), line];
+      }
     }
-
-    if (parts[1] === 'provider') {
-      const partial = parts.length >= 3 && !endsWithSpace ? parts[2] : '';
-      const hits = providerNames.filter(provider => provider.startsWith(partial));
-      return [hits.map(provider => `/config provider ${provider}`), line];
+    if (parts[0] === '/apikey' || parts[0] === '/key') {
+      if (parts.length === 2 && !endsWithSpace) {
+        const hits = providerNames.filter(p => p.startsWith(parts[1]));
+        return [hits.map(p => `${parts[0]} ${p} `), line];
+      }
     }
-
-    if (parts[1] === 'model') {
-      const partial = parts.length >= 3 && !endsWithSpace ? parts[2] : '';
-      const models = getProviderInfo(state.aiConfig.provider).availableModels;
-      const hits = models.filter(model => model.startsWith(partial));
-      return [hits.map(model => `/config model ${model}`), line];
-    }
+    return [[], line];
   }
-
-  if (parts[0] === '/apikey' || parts[0] === '/key') {
-    if (parts.length === 2 && !endsWithSpace) {
-      const hits = providerNames.filter(provider => provider.startsWith(parts[1]));
-      return [hits.map(provider => `${parts[0]} ${provider} `), line];
-    }
+  // S20.8: history search — !prefix triggers history search
+  if (line.startsWith('!') && line.length > 1) {
+    const query = line.substring(1).toLowerCase();
+    const hits = state.conversation
+      .filter(m => m.role === 'user' && m.content.toLowerCase().includes(query))
+      .map(m => m.content.substring(0, 80))
+      .slice(-8);
+    return [hits, line];
   }
-
   return [[], line];
+}
+
+// S20.7: command palette
+function renderCommandPalette(filter: string): string {
+  const tw = termWidth(); const w = tw - 4;
+  const all = [
+    { name: '/help', desc: '查看帮助', aliases: '/h /?' },
+    { name: '/scan', desc: '扫描项目并更新索引', aliases: '/s' },
+    { name: '/verify', desc: '验证项目', aliases: '/v' },
+    { name: '/write', desc: '写入待确认文件', aliases: '/w' },
+    { name: '/diff', desc: '预览代码变更', aliases: '/d' },
+    { name: '/undo', desc: '撤销上次写入', aliases: '' },
+    { name: '/test', desc: '生成测试', aliases: '/tt' },
+    { name: '/report', desc: '生成任务报告', aliases: '/rp' },
+    { name: '/commit', desc: '提交 Git', aliases: '' },
+    { name: '/status', desc: '查看状态', aliases: '' },
+    { name: '/doctor', desc: '诊断下一步动作', aliases: '' },
+    { name: '/config', desc: '查看和修改配置', aliases: '/cd' },
+    { name: '/apikey', desc: '输入 API Key', aliases: '/key' },
+    { name: '/run', desc: 'Agent 执行任务', aliases: '' },
+    { name: '/agents', desc: 'Agent 列表', aliases: '/ag' },
+    { name: '/orchestrate', desc: '多 Agent 编排', aliases: '' },
+    { name: '/search', desc: '搜索代码', aliases: '' },
+    { name: '/intel', desc: '代码智能查询', aliases: '/code' },
+    { name: '/context', desc: '查看上下文', aliases: '/ctx' },
+    { name: '/memory', desc: '查看记忆', aliases: '/mem' },
+    { name: '/start', desc: '启动开发服务器', aliases: '/serve' },
+    { name: '/stop', desc: '停止服务', aliases: '' },
+    { name: '/restart', desc: '重启服务', aliases: '' },
+    { name: '/clear', desc: '清空对话历史', aliases: '/c' },
+    { name: '/exit', desc: '退出 REPL', aliases: '/quit /q' },
+  ];
+  const q = filter.toLowerCase();
+  const matched = q ? all.filter(c => c.name.includes(q) || c.desc.includes(q) || c.aliases.includes(q)) : all;
+  let out = `\n  ${C.accent('╭─')} ${C.accent('命令面板')} ${C.accent('─'.repeat(w - 10) + '╮')}\n`;
+  if (q) { out += `  ${C.accent('│')} ${C.dim('> ' + filter)}${' '.repeat(w - 3 - filter.length)}${C.accent('│')}\n`; }
+  out += `  ${C.accent('│')} ${C.dim('─'.repeat(w - 2))} ${C.accent('│')}\n`;
+  for (const c of matched.slice(0, 20)) {
+    const line = `${C.accent(c.name.padEnd(16))} ${C.dim(c.desc)}`;
+    out += `  ${C.accent('│')} ${line}${' '.repeat(Math.max(0, w - 2 - line.replace(/\x1b\[[0-9;]*m/g, '').length))}${C.accent('│')}\n`;
+  }
+  out += `  ${C.accent('╰')}${C.accent('─'.repeat(w))}${C.accent('╯')}`;
+  return out;
+}
+
+async function cmdCommandPalette(query: string): Promise<void> {
+  console.log(renderCommandPalette(query));
+  console.log(`  ${C.dim('输入完整命令或 /? 返回')}\n`);
+}
+
+// S20.8: history search via ! prefix
+async function cmdHistorySearch(query: string): Promise<void> {
+  const q = query.toLowerCase();
+  const hits = state.conversation
+    .filter(m => m.role === 'user' && m.content.toLowerCase().includes(q))
+    .slice(-10);
+  if (hits.length === 0) { console.log(`  ${C.dim('无匹配历史')}\n`); return; }
+  console.log(`\n  ${C.accent('╭─')} ${C.accent('历史搜索: ' + query)} ${C.accent('─'.repeat(40)) + '╮'}`);
+  for (let i = 0; i < hits.length; i++) {
+    const display = hits[i].content.length > 70 ? hits[i].content.substring(0, 67) + '…' : hits[i].content;
+    console.log(`  ${C.accent('│')} ${C.dim(String(i + 1).padStart(2))} ${C.dim('│')} ${display}`);
+  }
+  console.log(`  ${C.accent('╰')}${C.accent('─'.repeat(50))}${C.accent('╯')}`);
+  console.log(`  ${C.dim('输入数字选择历史，或输入任意内容继续')}\n`);
 }
 
 function resolveApiKeyForProvider(provider: AIProvider): string {
