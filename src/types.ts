@@ -192,6 +192,9 @@ export interface Task {
   maxRetries: number;
   loopState?: import('./core/task-loop.js').TaskLoopState;
   agentExecutions: AgentExecutionRecord[];
+  milestone?: string;           // PM1: version milestone (e.g. "V0.7", "V1.0")
+  storyPoints?: number;         // PM7: complexity estimate
+  blockedBy?: string[];         // PM6: task IDs that block this one
 }
 
 export interface TaskPlan {
@@ -616,6 +619,73 @@ export interface AgentMessage {
   content: string;
   timestamp: string;
   type: 'command' | 'query' | 'response' | 'notification';
+}
+
+// ============================================================
+// AI Intent Recognition
+// ============================================================
+export type UserIntentCategory =
+  | 'analysis'        // 分析项目/代码质量/结构
+  | 'code_change'     // 修改/创建/删除代码
+  | 'security_review' // 安全检查/漏洞扫描
+  | 'refactor'        // 重构/优化/拆分
+  | 'test_gen'        // 生成/补充测试
+  | 'doc_gen'         // 生成/补充文档
+  | 'question'        // 问答/咨询/求助
+  | 'config'          // 配置/设置/API Key
+  | 'chat'            // 闲聊/无明确工程意图
+  | 'unknown';        // 无法识别
+
+export interface UserIntent {
+  category: UserIntentCategory;
+  confidence: number;            // 0-1
+  method: 'regex' | 'ai';       // how was it classified
+  reasoning: string;            // why this category
+  requiresConfirmation: boolean; // should the system confirm before acting
+  suggestedAction?: string;     // e.g. "ic t '...' --go" or "/scan"
+  extractedTask?: string;       // the actual task description extracted from input
+}
+
+export interface IntentClassifyOptions {
+  useAI?: boolean;              // default true — fall back to AI if regex misses
+  timeout?: number;             // max ms for AI classification
+}
+
+// ============================================================
+// Document Generation (D1-D4)
+// ============================================================
+export type DocType =
+  | 'PRD' | 'USER_GUIDE' | 'API' | 'ARCHITECTURE'
+  | 'TESTING' | 'DEPLOYMENT' | 'CHANGELOG' | 'FAQ' | 'CONTRIBUTING';
+
+export interface DocTemplate {
+  type: DocType;
+  filename: string;
+  title: string;
+  description: string;
+  required: boolean;
+}
+
+export interface DocGenerationResult {
+  type: DocType;
+  filename: string;
+  status: 'generated' | 'skipped' | 'failed';
+  content?: string;
+  error?: string;
+  qualityScore?: number;
+}
+
+export interface DocsContext {
+  projectName: string;
+  description: string;
+  techStack: string[];
+  features: string[];
+  apiRoutes: { method: string; path: string; handler: string }[];
+  configKeys: string[];
+  deployInfo: { docker: boolean; makefile: boolean; envVars: string[] };
+  errorPatterns: string[];
+  existingDocs: DocType[];
+  missingDocs: DocType[];
 }
 
 // ============================================================

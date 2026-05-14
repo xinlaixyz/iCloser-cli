@@ -439,10 +439,15 @@ function formatBeginnerSuggestion(error: NormalizedExecError): string | null {
     if (text.includes('tsc') || text.includes('eslint') || text.includes('vitest') || text.includes('jest')) {
       return '项目依赖可能还没安装。请先在项目目录运行 npm install，然后重新执行 ic t 或 ic verify。';
     }
+    if (text.includes('go ')) return 'Go 工具链未安装或不在 PATH 中。请从 https://go.dev/dl/ 下载安装 Go，然后将 go/bin 加入 PATH。';
+    if (text.includes('python') || text.includes('pytest')) return 'Python 未安装或不在 PATH 中。请从 https://python.org 下载安装，并确保 pip 可用。';
+    if (text.includes('java') || text.includes('mvn') || text.includes('gradle')) return 'JDK/Maven/Gradle 未安装或不在 PATH 中。请安装 JDK 17+ 并配置 JAVA_HOME。';
+    return '命令未找到。请检查对应工具是否已安装并加入 PATH 环境变量。';
   }
   if (text.includes('cannot find module') || text.includes('module not found')) {
     return '项目依赖可能缺失。请先运行 npm install；如果仍失败，检查 package.json 是否缺少对应依赖。';
   }
+  if (text.includes('analysis-only')) return null; // Analysis tasks don't need verification
   return null;
 }
 

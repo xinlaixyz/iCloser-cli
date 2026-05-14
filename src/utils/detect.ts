@@ -304,6 +304,11 @@ function detectBuildSystem(
   if (files.includes('pom.xml')) return 'maven';
   if (files.includes('requirements.txt') || files.includes('setup.py')) return 'pip';
   if (files.includes('poetry.lock') || files.includes('pyproject.toml')) return 'poetry';
+  // iOS build systems
+  if (files.some(f => f.includes('.xcodeproj') || f.includes('.xcworkspace'))) return 'xcode';
+  if (files.includes('Podfile')) return 'cocoapods';
+  if (files.includes('Package.swift')) return 'spm';
+  if (files.includes('Cartfile')) return 'carthage';
 
   return 'unknown';
 }

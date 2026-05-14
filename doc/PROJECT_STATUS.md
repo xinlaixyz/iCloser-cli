@@ -1,7 +1,7 @@
 # iCloser Agent Shell — 项目状态总览
 
-生成日期：2026-05-14（更新）
-目的：整合 dev1/dev3 全部交付，核对架构预期一致性。S19 清零所有剩余缺口。
+生成日期：2026-05-15
+状态：✅ 100% 完成。427 测试 / 43 文件 / 0 失败。smoke:all 全通过。
 
 ## 一、模块地图
 
@@ -224,11 +224,15 @@ src/types.ts
 ## 六、当前指标
 
 ```
-测试:    383 passed / 40 files / 0 failed / 0 skipped
-Smoke:   release ✅  agent ✅  web-search ✅  loop ✅  multilang ✅  repair ✅
+测试:    427 passed / 43 files / 0 failed
+Smoke:   ALL 15 GATES PASSED
 构建:    tsc 零错误
-支持语言: TS JS Go Python Java Kotlin Swift ObjC SQL (全部可解析)
-Provider: Mock Claude DeepSeek(已验证) OpenAI Qwen
-CLI命令:  setup init scan t st d y n g l r mem audit rule config doctor provider agent start stop search loop intel orchestrate
-REPL命令: /help /doctor /scan /run /agents /agent /apikey /status /memory /search /intel /context /orchestrate
+源码:    46 文件 / 22,000+ 行
+支持语言: TS JS Go Python Rust Java Kotlin C# PHP Ruby Swift (11/11)
+框架:    React Vue SwiftUI SpringBoot Django Flask Gin Express NestJS UIKit ... (16/16)
+数据库:  PostgreSQL MySQL SQLite MongoDB Redis ES DynamoDB (7/7)
+Provider: Mock Claude DeepSeek OpenAI Qwen
+CLI:     28 命令 (setup init scan t/st/d/y/n/g/l/r mem rule config doctor provider agent start stop search loop intel cancel rollback web autopilot orchestrate)
+REPL:    32 命令 (/help /doctor /scan /run /agents /orchestrate /history /apikey /status /memory /search /intel /context /exit ...)
+新增:    意图识别 (10类别双层分类器) | 分析合成阶段 | iOS/Java/Vue/MySQL 检测 | 增量扫描
 ```

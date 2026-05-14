@@ -71,11 +71,13 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
   // Phase 2: File discovery
   const sourcePatterns = getSourceFilePatterns(identity.language);
   const sourceFiles = await findFiles(rootPath, sourcePatterns);
+  if (sourceFiles.length > 500) process.stdout.write(`  发现 ${sourceFiles.length} 个源文件，正在分析...\n`);
   const filteredFiles = await filterBySize(rootPath, sourceFiles, options.maxFileSize);
 
   // Phase 2.5: Incremental scan — compute fingerprints, skip unchanged files
   const oldFingerprints = await loadPreviousFingerprints(rootPath);
   const { currentFingerprints, changedFiles, skippedCount } = await computeFingerprints(filteredFiles, oldFingerprints);
+  if (skippedCount > 100) process.stdout.write(`  增量扫描：跳过 ${skippedCount} 个未变更文件\n`);
 
   const isIncremental = changedFiles.length > 0 && changedFiles.length < filteredFiles.length * 0.8;
 
@@ -188,6 +190,12 @@ const ALL_SOURCE_PATTERNS: string[] = [
   '**/*.rs',
   '**/*.java', '**/*.kt', '**/*.kts',
   '**/*.swift', '**/*.m', '**/*.mm', '**/*.h',
+  // Extensionless project files
+  '**/Podfile', '**/Makefile', '**/Dockerfile', '**/Cartfile', '**/Gemfile',
+  '**/Rakefile', '**/Package.swift', '**/Brewfile',
+  // iOS bundle directories are nested, but their contents can be globbed
+  '**/*.xcdatamodeld/*', '**/*.xcodeproj/*', '**/*.xcworkspace/*',
+  '**/*.storyboard', '**/*.xib', '**/*.plist',
   '**/*.sql',
   '**/*.cs',
   '**/*.php',

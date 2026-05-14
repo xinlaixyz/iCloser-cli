@@ -244,6 +244,13 @@ async function assembleProjectMeta(identity: ProjectIdentity, index: ProjectInde
     parts.push(dirOverview);
   }
 
+  // B1: File manifest — list key files from each module so AI knows what to explore
+  const fileManifest = buildFileManifest(index);
+  if (fileManifest) {
+    parts.push(`\n## 关键文件清单（可用 read_file 读取）`);
+    parts.push(fileManifest);
+  }
+
   // P9: Technology stack details from dependency files
   const techDetails = await extractTechStackDetails(index);
   if (techDetails) {
@@ -257,6 +264,56 @@ async function assembleProjectMeta(identity: ProjectIdentity, index: ProjectInde
     parts.push(`\n## 第三方依赖`);
     parts.push(vendorStats);
   }
+
+  // G1: Quantitative project metrics
+  const metrics = await collectProjectMetrics(index);
+  if (metrics) {
+    parts.push(`\n## 量化指标`);
+    parts.push(metrics);
+  }
+
+  // G2+G3: Engineering health check — CI/lint/test/config/build artifacts
+  const health = await checkEngineeringHealth(index);
+  if (health) {
+    parts.push(`\n## 工程健康检查`);
+    parts.push(health);
+  }
+
+  // G2: Task/report status from .icloser/tasks
+  const taskStatus = await readTaskStatusSummary(index);
+  if (taskStatus) {
+    parts.push(`\n## 任务/报告状态`);
+    parts.push(taskStatus);
+  }
+
+  // G6: Inject previous analysis conclusions for incremental improvement
+  try {
+    const { readFile } = await import('../utils/fs.js');
+    const prevReport = await readFile([index.rootPath, '.icloser', 'analysis-report.md'].join('/')).catch(() => '');
+    if (prevReport && prevReport.length > 50) {
+      const keyLines = prevReport.split('\n')
+        .filter(l => l.includes('|') || l.includes('✅') || l.includes('❌') || l.includes('评分') || l.includes('%') || l.includes('阻塞'))
+        .slice(0, 15);
+      if (keyLines.length > 0) {
+        parts.push(`\n## 上次分析结论（增量参考）`);
+        parts.push(keyLines.join('\n'));
+      }
+    }
+  } catch { /* no previous analysis */ }
+
+  // PM5: PRD/Roadmap documents — extract feature lists and milestones
+  try {
+    const pmDocs = ['docs/PRD.md', 'docs/ROADMAP.md', 'ROADMAP.md', 'CHANGELOG.md', 'RELEASE_NOTES.md'];
+    for (const doc of pmDocs) {
+      try {
+        const content = await (await import('../utils/fs.js')).readFile([index.rootPath, doc].join('/'));
+        if (content && content.trim()) {
+          const truncated = content.length > 2000 ? content.slice(0, 2000) + '\n...(已截断)' : content;
+          parts.push(`\n## PM 文档: ${doc}\n${truncated}`);
+        }
+      } catch { /* try next */ }
+    }
+  } catch { /* no PM docs */ }
 
   // P3: README content (first 3000 chars)
   try {
@@ -322,17 +379,89 @@ function countFileExtensions(index: ProjectIndex): string {
 // ============================================================
 function buildDirectoryOverview(index: ProjectIndex): string {
   const dirFiles = new Map<string, number>();
+  const rootFiles: string[] = [];
+
   for (const mod of index.modules) {
     for (const file of mod.files) {
-      const dir = file.split('/').slice(0, 2).join('/') || file.split('/')[0] || 'root';
-      dirFiles.set(dir, (dirFiles.get(dir) || 0) + 1);
+      const parts = file.split('/');
+      if (parts.length === 1) {
+        rootFiles.push(parts[0]);
+      } else {
+        const dir = parts.slice(0, 2).join('/');
+        dirFiles.set(dir, (dirFiles.get(dir) || 0) + 1);
+      }
     }
   }
-  if (dirFiles.size === 0) return '';
-  const sorted = [...dirFiles.entries()]
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 15);
-  return sorted.map(([dir, n]) => `- ${dir}/ (${n} 文件)`).join('\n');
+
+  const lines: string[] = [];
+
+  // Root-level key files
+  const KEY_ROOT_FILES = ['README.md', 'Makefile', 'Dockerfile', 'LICENSE', 'go.mod', 'package.json'];
+  const keyRoot = rootFiles.filter(f => KEY_ROOT_FILES.some(k => f.toLowerCase().includes(k.toLowerCase())));
+  if (keyRoot.length > 0) {
+    lines.push(`根目录关键文件: ${keyRoot.join(', ')}`);
+  }
+
+  // Directory tree
+  if (dirFiles.size > 0) {
+    lines.push('');
+    const sorted = [...dirFiles.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 15);
+    for (const [dir, n] of sorted) {
+      // Sample a few filenames from this directory
+      const sampleFiles: string[] = [];
+      for (const mod of index.modules) {
+        for (const file of mod.files) {
+          if (file.startsWith(dir + '/') || file.startsWith(dir)) {
+            const name = file.split('/').pop() || file;
+            if (sampleFiles.length < 3 && !sampleFiles.includes(name)) sampleFiles.push(name);
+          }
+        }
+      }
+      const sample = sampleFiles.length > 0 ? ` (例: ${sampleFiles.join(', ')})` : '';
+      lines.push(`- ${dir}/ (${n} 文件)${sample}`);
+    }
+  }
+
+  return lines.join('\n');
+}
+
+// ============================================================
+// File manifest for AI exploration (B1)
+// ============================================================
+function buildFileManifest(index: ProjectIndex): string {
+  const lines: string[] = [];
+  const totalFiles = index.modules.reduce((s, m) => s + m.files.length, 0);
+  lines.push(`共 ${totalFiles} 个文件，${index.modules.length} 个模块。以下为各模块代表性文件：\n`);
+
+  for (const mod of index.modules) {
+    // Prioritize: non-test files, entry-point-like names, then alphabetical
+    const sourceFiles = mod.files
+      .filter(f => !f.match(/(_test\.|\.test\.|\.spec\.|test\/|tests\/|vendor\/)/))
+      .sort((a, b) => {
+        const aKey = a.match(/(main|app|server|index|config|router|handler|model|api|cmd)\./) ? 0 : 1;
+        const bKey = b.match(/(main|app|server|index|config|router|handler|model|api|cmd)\./) ? 0 : 1;
+        return aKey - bKey || a.localeCompare(b);
+      });
+
+    const MAX_PER_MODULE = 25;
+    const shown = sourceFiles.slice(0, MAX_PER_MODULE);
+    const suffix = sourceFiles.length > MAX_PER_MODULE ? ` ... 共 ${sourceFiles.length} 个源文件` : '';
+
+    lines.push(`\n### ${mod.name}/ (${mod.files.length} 文件)`);
+    for (const f of shown) {
+      // Extract just the filename for readability
+      const name = f.replace(/\\/g, '/').split('/').pop() || f;
+      // Mark key files
+      const isKey = /^(main|app|server|index|config|router|handler|Makefile|Dockerfile)\./.test(name);
+      const prefix = isKey ? '★ ' : '  ';
+      lines.push(`${prefix}${name}`);
+    }
+    if (suffix) lines.push(suffix);
+  }
+
+  return lines.join('\n');
 }
 
 // ============================================================
@@ -419,6 +548,144 @@ function countVendorDeps(index: ProjectIndex): string {
 }
 
 // ============================================================
+// ============================================================
+// Quantitative metrics (G1)
+// ============================================================
+async function collectProjectMetrics(index: ProjectIndex): Promise<string> {
+  const parts: string[] = [];
+  const totalFiles = index.modules.reduce((s, m) => s + m.files.length, 0);
+  const totalExports = index.modules.reduce((s, m) => s + m.exports.length, 0);
+  const totalImports = index.modules.reduce((s, m) => s + m.imports.length, 0);
+  parts.push(`| 指标 | 数值 |`);
+  parts.push(`|------|------|`);
+  parts.push(`| 源文件 | ${totalFiles} |`);
+  parts.push(`| 模块 | ${index.modules.length} |`);
+  parts.push(`| 导出符号 | ${totalExports} |`);
+  parts.push(`| 导入引用 | ${totalImports} |`);
+
+  // Count test files
+  const testFiles = index.modules.flatMap(m => m.files).filter(f =>
+    /(\.test\.|\.spec\.|_test\.|test\/|tests\/|__tests__\/)/i.test(f)
+  );
+  parts.push(`| 测试文件 | ${testFiles.length} |`);
+
+  // Read package.json for version and scripts
+  try {
+    const { readFile } = await import('../utils/fs.js');
+    const pkgPaths = ['package.json', 'ui/package.json', 'client/package.json'];
+    for (const p of pkgPaths) {
+      try {
+        const content = await readFile([index.rootPath, p].join('/').replace(/\/+/g, '/'));
+        const pkg = JSON.parse(content);
+        if (pkg.version) parts.push(`| 版本 (${p}) | ${pkg.version} |`);
+        if (pkg.scripts) {
+          const scriptNames = Object.keys(pkg.scripts);
+          parts.push(`| npm scripts | ${scriptNames.length} 个: ${scriptNames.slice(0, 8).join(', ')}${scriptNames.length > 8 ? '...' : ''} |`);
+        }
+        break;
+      } catch { /* try next */ }
+    }
+  } catch { /* optional */ }
+
+  // Call graph stats
+  if (index.callGraph) {
+    parts.push(`| 调用图边 | ${index.callGraph.length} |`);
+  }
+
+  return parts.join('\n');
+}
+
+// ============================================================
+// Engineering health check (G2+G3)
+// ============================================================
+async function checkEngineeringHealth(index: ProjectIndex): Promise<string> {
+  const parts: string[] = [];
+  const allFiles = index.modules.flatMap(m => m.files.map(f => f.replace(/\\/g, '/')));
+  const allPaths = allFiles.join(' ').toLowerCase();
+
+  // CI/CD
+  const hasCI = allFiles.some(f => f.includes('.github/workflows') || f.includes('.gitlab-ci') || f.includes('Jenkinsfile'));
+  parts.push(`| CI/CD | ${hasCI ? '✅ 已配置' : '❌ 未配置'} | ${hasCI ? '' : '建议添加 GitHub Actions'} |`);
+
+  // Linter
+  const hasLint = allFiles.some(f => /\.eslintrc|eslint\.config|\.prettierrc|prettier\.config/.test(f));
+  parts.push(`| Lint/Format | ${hasLint ? '✅ 已配置' : '❌ 未配置'} | ${hasLint ? '' : '建议添加 ESLint + Prettier'} |`);
+
+  // Test framework in package.json
+  let hasTestFramework = false;
+  try {
+    const { readFile } = await import('../utils/fs.js');
+    for (const p of ['package.json', 'ui/package.json']) {
+      try {
+        const pkg = JSON.parse(await readFile([index.rootPath, p].join('/').replace(/\/+/g, '/')));
+        const deps = { ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) };
+        if (Object.keys(deps).some((k: string) => /jest|vitest|mocha|ava|jasmine|pytest|go-test|junit/.test(k))) {
+          hasTestFramework = true;
+        }
+        if (pkg.scripts?.test) hasTestFramework = true;
+        break;
+      } catch { /* next */ }
+    }
+  } catch { /* optional */ }
+  parts.push(`| 测试框架 | ${hasTestFramework ? '✅ 已配置' : '❌ 未检测到'} | ${hasTestFramework ? '' : '建议添加 vitest/jest'} |`);
+
+  // Build artifacts in repo
+  const hasArtifacts = allFiles.some(f => /^(dist|build|release|out)\//.test(f));
+  parts.push(`| 构建产物 | ${hasArtifacts ? '⚠️ 存在于仓库中' : '✅ 已排除'} | ${hasArtifacts ? '建议加入 .gitignore' : ''} |`);
+
+  // Git repo
+  let isGit = false;
+  try {
+    const { isGitRepo } = await import('../utils/git.js');
+    isGit = await isGitRepo(index.rootPath);
+  } catch { /* optional */ }
+  parts.push(`| Git 仓库 | ${isGit ? '✅' : '⚠️ 非 Git 仓库'} | ${isGit ? '' : '建议 git init'} |`);
+
+  // TypeScript strictness
+  const hasTsconfig = allFiles.some(f => f === 'tsconfig.json');
+  if (hasTsconfig) {
+    try {
+      const { readFile } = await import('../utils/fs.js');
+      const tsconfig = JSON.parse(await readFile([index.rootPath, 'tsconfig.json'].join('/').replace(/\/+/g, '/')));
+      const strict = tsconfig.compilerOptions?.strict;
+      parts.push(`| TypeScript | ${strict ? '✅ strict 模式' : '⚠️ strict 未开启'} | |`);
+    } catch { /* optional */ }
+  }
+
+  return `| 检查项 | 状态 | 建议 |\n|------|------|------|\n${parts.join('\n')}`;
+}
+
+// ============================================================
+// Task/report status (G2)
+// ============================================================
+async function readTaskStatusSummary(index: ProjectIndex): Promise<string> {
+  try {
+    const taskDir = [index.rootPath, '.icloser', 'tasks'].join('/').replace(/\/+/g, '/');
+    const { readFile } = await import('../utils/fs.js');
+    const fs = await import('fs/promises');
+    const entries = await fs.readdir(taskDir).catch(() => [] as string[]);
+    if (entries.length === 0) return '';
+
+    const parts: string[] = [];
+    parts.push(`| 任务ID | 描述 | 状态 |`);
+    parts.push(`|--------|------|------|`);
+    let blocked = 0; let completed = 0; let failed = 0;
+    for (const entry of entries.slice(-10)) {
+      try {
+        const taskJson = JSON.parse(await readFile([taskDir, entry, 'task.json'].join('/')));
+        const status = taskJson.status || 'unknown';
+        if (status === 'completed') completed++;
+        else if (status === 'failed') failed++;
+        else if (status === 'blocked') blocked++;
+        const desc = (taskJson.description || '').slice(0, 40);
+        parts.push(`| ${entry} | ${desc} | ${status} |`);
+      } catch { /* skip */ }
+    }
+    if (blocked > 0) parts.push(`\n⚠️ ${blocked} 个阻塞任务，${failed} 个失败，${completed} 个已完成`);
+    return parts.join('\n');
+  } catch { return ''; }
+}
+
 // Relevant code assembly with compression
 // ============================================================
 async function assembleRelevantCode(

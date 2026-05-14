@@ -1572,33 +1572,121 @@ async function cmdStartProject(): Promise<void> {
   try {
     const fsp = await import('fs/promises');
     const path = await import('path');
-    const pkgPath = path.join(cwd, 'package.json');
-    let pkg: { scripts?: Record<string, string>; dependencies?: Record<string, string>; devDependencies?: Record<string, string> };
+
+    // Detect project type and find startup command
+    let startInfo: { type: string; command: string; args: string[]; label: string; needsInstall: boolean } | null = null;
+
+    // 1. npm/Node.js project
     try {
-      pkg = JSON.parse(await fsp.readFile(pkgPath, 'utf-8'));
-    } catch {
-      console.log(drawWideBox(`当前目录没有 package.json\n${C.accent(cwd)}\n\n先用 ${C.accent(`/cd ${EXAMPLE_PROJECT_PATH}`)} 切到项目根目录，再输入 ${C.accent('启动项目')}`, { title: '启动项目' }) + '\n');
+      const pkgPath = path.join(cwd, 'package.json');
+      const pkg = JSON.parse(await fsp.readFile(pkgPath, 'utf-8'));
+      const scripts = pkg.scripts || {};
+      const scriptName = ['dev', 'start', 'serve', 'preview'].find(name => scripts[name]);
+      if (scriptName) {
+        const pm = await detectPackageManager(cwd);
+        const nmMissing = !(await pathExists(path.join(cwd, 'node_modules')));
+        const hasDeps = Object.keys({ ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) }).length > 0;
+        const cmd = pm === 'yarn' ? 'yarn' : pm === 'pnpm' ? 'pnpm' : 'npm';
+        startInfo = {
+          type: `Node.js (${pm})`,
+          command: cmd,
+          args: scriptName === 'dev' ? ['run', 'dev'] : ['run', scriptName],
+          label: `${cmd} run ${scriptName}`,
+          needsInstall: nmMissing && hasDeps,
+        };
+      }
+    } catch {}
+
+    // 2. Go project
+    if (!startInfo) {
+      try {
+        const goMod = await fsp.readFile(path.join(cwd, 'go.mod'), 'utf-8').catch(() => null);
+        const hasMain = await fsp.readFile(path.join(cwd, 'main.go'), 'utf-8').catch(() => null)
+          || await fsp.readFile(path.join(cwd, 'cmd', 'main.go'), 'utf-8').catch(() => null);
+        if (goMod && hasMain) {
+          const makefile = await fsp.readFile(path.join(cwd, 'Makefile'), 'utf-8').catch(() => null);
+          if (makefile) {
+            startInfo = { type: 'Go (Makefile)', command: 'make', args: ['run'], label: 'make run', needsInstall: false };
+          } else {
+            startInfo = { type: 'Go', command: 'go', args: ['run', '.'], label: 'go run .', needsInstall: false };
+          }
+        }
+      } catch {}
+    }
+
+    // 3. Python project
+    if (!startInfo) {
+      try {
+        const pyproject = await fsp.readFile(path.join(cwd, 'pyproject.toml'), 'utf-8').catch(() => null);
+        const mainPy = await fsp.readFile(path.join(cwd, 'main.py'), 'utf-8').catch(() => null);
+        const appPy = await fsp.readFile(path.join(cwd, 'app.py'), 'utf-8').catch(() => null);
+        if (pyproject || mainPy || appPy) {
+          const entry = mainPy ? 'main.py' : appPy ? 'app.py' : '.';
+          startInfo = { type: 'Python', command: 'python', args: [entry], label: `python ${entry}`, needsInstall: false };
+        }
+      } catch {}
+    }
+
+    // 4. Rust project
+    if (!startInfo) {
+      try {
+        const cargoToml = await fsp.readFile(path.join(cwd, 'Cargo.toml'), 'utf-8').catch(() => null);
+        if (cargoToml) {
+          startInfo = { type: 'Rust', command: 'cargo', args: ['run'], label: 'cargo run', needsInstall: false };
+        }
+      } catch {}
+    }
+
+    // 5. Docker project
+    if (!startInfo) {
+      try {
+        const dc = await fsp.readFile(path.join(cwd, 'docker-compose.yml'), 'utf-8').catch(() => null)
+          || await fsp.readFile(path.join(cwd, 'docker-compose.yaml'), 'utf-8').catch(() => null);
+        if (dc) {
+          startInfo = { type: 'Docker Compose', command: 'docker-compose', args: ['up'], label: 'docker-compose up', needsInstall: false };
+        } else {
+          const df = await fsp.readFile(path.join(cwd, 'Dockerfile'), 'utf-8').catch(() => null);
+          if (df) {
+            startInfo = { type: 'Docker', command: 'docker', args: ['build', '-t', 'app', '.', '&&', 'docker', 'run', 'app'], label: 'docker build && run', needsInstall: false };
+          }
+        }
+      } catch {}
+    }
+
+    // 6. Generic Makefile
+    if (!startInfo) {
+      try {
+        const mf = await fsp.readFile(path.join(cwd, 'Makefile'), 'utf-8').catch(() => null);
+        if (mf) {
+          startInfo = { type: 'Makefile', command: 'make', args: [], label: 'make', needsInstall: false };
+        }
+      } catch {}
+    }
+
+    if (!startInfo) {
+      console.log(drawWideBox(`未找到可启动配置\n${C.accent(cwd)}\n\n支持的启动方式:\n- package.json (dev/start/serve/preview)\n- go.mod + main.go\n- pyproject.toml / main.py\n- Cargo.toml\n- Makefile\n- Dockerfile / docker-compose.yml\n\n切换到项目根目录后再试: ${C.accent('/cd <目录>')}`, { title: '启动项目' }) + '\n');
       return;
     }
 
-    const scripts = pkg.scripts || {};
-    const scriptName = ['dev', 'start', 'serve', 'preview'].find(name => scripts[name]);
-    if (!scriptName) {
-      const available = Object.keys(scripts);
-      console.log(drawWideBox(`没有找到可启动脚本\n可用 scripts: ${available.length ? available.join(', ') : '无'}\n\n请在 package.json 添加 dev/start 脚本，或直接输入要执行的命令。`, { title: '启动项目' }) + '\n');
-      return;
-    }
+    // Show what we found and how we'll start
+    printLoopStatus('take-action', '启动项目');
+    console.log(drawWideBox(
+      `检测到 ${C.accent(startInfo.type)} 项目\n${C.accent(cwd)}\n\n启动命令: ${C.accent(startInfo.label)}${startInfo.needsInstall ? '\n\n⚠ 需要先安装依赖' : ''}\n\n输入 ${C.accent('1')} 确认执行  ${C.accent('2')} 记住  ${C.accent('3')} 取消`,
+      { title: '启动项目' }
+    ) + '\n');
 
-    const packageManager = await detectPackageManager(cwd);
-    const nodeModulesMissing = !(await pathExists(path.join(cwd, 'node_modules')));
-
-    pendingSystemOperation = createStartProjectOperation({
+    pendingSystemOperation = {
+      title: '启动项目',
+      reason: `启动${startInfo.type}项目: ${startInfo.label}`,
+      impact: startInfo.label,
       cwd,
-      pkg,
-      packageManager,
-      scriptName,
-      nodeModulesMissing,
-    });
+      approvalKey: `start:${cwd}:${startInfo.label}`,
+      steps: startInfo.needsInstall
+        ? [{ label: '安装依赖', command: startInfo.command, args: ['install'], display: `${startInfo.command} install` },
+           { label: startInfo.label, command: startInfo.command, args: startInfo.args, display: startInfo.label, background: true }]
+        : [{ label: startInfo.label, command: startInfo.command, args: startInfo.args, display: startInfo.label, background: true }],
+    };
+
     if (approvedSystemOperations.has(pendingSystemOperation.approvalKey)) {
       const operation = pendingSystemOperation;
       pendingSystemOperation = null;

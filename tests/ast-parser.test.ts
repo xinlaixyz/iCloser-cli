@@ -515,4 +515,40 @@ describe('AST parser — SQL', () => {
     const orders = result.exports.find(e => e.name === 'orders')!;
     expect(orders).toBeDefined();
   });
+
+  // Java/Kotlin regex fallback tests (S9 complete)
+  it('parses Java class and method via regex fallback', () => {
+    const src = 'import java.util.List;\nimport static org.junit.Assert.*;\n\npublic class UserService {\n  public User findById(Long id) { return null; }\n  public static void main(String[] args) {}\n}';
+    const result = parseSourceText(src, { language: 'java' });
+    expect(result.exports.some(e => e.name === 'UserService')).toBe(true);
+    expect(result.imports.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('parses Java interface via regex fallback', () => {
+    const src = 'public interface Repository<T> { T save(T entity); }\npublic enum Status { ACTIVE, INACTIVE }';
+    const result = parseSourceText(src, { language: 'java' });
+    const names = result.exports.map(e => e.name);
+    expect(names).toContain('Repository');
+    expect(names.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('parses Kotlin class and fun via regex fallback', () => {
+    const src = 'import kotlinx.coroutines.*\n\ndata class User(val id: Long, val name: String)\n\nfun main() { println("Hello") }\nsuspend fun fetchData(): String = "data"';
+    const result = parseSourceText(src, { language: 'kotlin' });
+    expect(result.exports.some(e => e.name === 'User')).toBe(true);
+    expect(result.exports.some(e => e.name === 'main')).toBe(true);
+    expect(result.exports.some(e => e.name === 'fetchData')).toBe(true);
+  });
+
+  it('parses Kotlin interface via regex fallback', () => {
+    const src = 'interface Clickable { fun onClick() }';
+    const result = parseSourceText(src, { language: 'kotlin' });
+    expect(result.exports.some(e => e.name === 'Clickable')).toBe(true);
+  });
+
+  it('Java regex fallback returns empty results for unparseable input', () => {
+    const result = parseSourceText('invalid java syntax {{{', { language: 'java' });
+    expect(result.exports).toEqual([]);
+    expect(result.imports).toEqual([]);
+  });
 });

@@ -25,8 +25,10 @@ export function success(msg: string): void {
 }
 
 export function fail(msg: string): never {
-  process.stdout.write(`${ICONS.fail} ${msg}\n`);
-  process.exit(1);
+  console.log(`${ICONS.fail} ${msg}`);
+  process.exitCode = 1;
+  // Throw to stop execution; Commander or Node will exit with code 1 after flushing
+  throw new Error(msg);
 }
 
 export function progress(msg: string): void {

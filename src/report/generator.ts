@@ -107,6 +107,14 @@ export async function generateTaskReport(
     sections.push('');
   }
 
+  // Analysis-only tasks: no file changes, just report findings
+  if (task.changes.length === 0 && task.reasoning.length > 0 && task.reasoning[0].file === '(无文件修改 — 纯分析任务)') {
+    sections.push('## 分析结论');
+    sections.push('');
+    sections.push(task.reasoning[0].reasoning.slice(0, 5000));
+    sections.push('');
+  }
+
   // File changes
   if (task.changes.length > 0) {
     sections.push('## 修改文件清单');
