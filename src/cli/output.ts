@@ -23,8 +23,9 @@ export function success(msg: string): void {
   console.log(`${ICONS.success} ${msg}`);
 }
 
-export function fail(msg: string): void {
-  console.log(`${ICONS.fail} ${msg}`);
+export function fail(msg: string): never {
+  process.stdout.write(`${ICONS.fail} ${msg}\n`);
+  process.exit(1);
 }
 
 export function progress(msg: string): void {
@@ -204,24 +205,50 @@ export function printError(err: Error | string): void {
 
 export function printHelp(): void {
   console.log(`
-${chalk.bold.blue('iCloser Agent Shell')} ${chalk.dim('— AI 工程执行 CLI')}
+${chalk.bold.blue('ic — iCloser Agent Shell')} ${chalk.dim('AI 工程执行 CLI')}
 
 ${chalk.bold('首次使用')}
-  ${chalk.cyan('iCloser setup')}             配置 AI 服务和环境
+  ${chalk.cyan('ic setup')}                 配置 AI 服务和环境
+  ${chalk.cyan('ic init')}                  初始化项目（自动识别语言/框架/DB）
+  ${chalk.cyan('ic doctor')}                检查项目是否就绪
 
 ${chalk.bold('核心命令')}
-  ${chalk.cyan('iCloser init')}              初始化项目（自动识别语言/框架/DB）
-  ${chalk.cyan('iCloser t "<描述>"')}         创建并执行任务
-  ${chalk.cyan('iCloser t "<描述>" --go')}    直接执行，跳过预览
-  ${chalk.cyan('iCloser st')}                当前任务状态一览
-  ${chalk.cyan('iCloser d <task-id>')}       查看 diff
+  ${chalk.cyan('ic t "<描述>"')}             创建并执行任务
+  ${chalk.cyan('ic t "<描述>" --go')}        直接执行，跳过预览
+  ${chalk.cyan('ic st [task-id]')}          查看任务状态
+  ${chalk.cyan('ic r')}                     查看最近任务报告
+  ${chalk.cyan('ic g <task-id>')}           门禁检查（6 道门禁）
+  ${chalk.cyan('ic d <task-id>')}           查看代码 diff
 
-${chalk.bold('更多命令')}
-  ${chalk.cyan('iCloser gate <id>')}   iCloser log          iCloser mem
-  ${chalk.cyan('iCloser rule')}        iCloser config       iCloser scan
-  ${chalk.cyan('iCloser agent')}       iCloser skill        iCloser r
+${chalk.bold('项目管理')}
+  ${chalk.cyan('ic scan')}                  扫描项目并更新索引
+  ${chalk.cyan('ic search <pattern>')}      搜索代码
+  ${chalk.cyan('ic intel <symbol>')}        代码智能：查符号定义、调用关系
+  ${chalk.cyan('ic autopilot')}             自动分析项目结构/文档/测试缺口
+  ${chalk.cyan('ic overview')}              项目健康总览
+  ${chalk.cyan('ic loop')}                  查看三步循环状态和工具矩阵
 
-${chalk.dim('输入 iCloser <命令> --help 查看命令详情')}
+${chalk.bold('任务管理')}
+  ${chalk.cyan('ic y <task-id>')}           确认并执行任务
+  ${chalk.cyan('ic n <task-id>')}           拒绝任务
+  ${chalk.cyan('ic cancel <task-id>')}      取消排队中的任务
+  ${chalk.cyan('ic rollback <task-id>')}    回滚任务修改
+
+${chalk.bold('记忆与配置')}
+  ${chalk.cyan('ic mem')}                   查看和管理项目记忆
+  ${chalk.cyan('ic rule <描述>')}           添加架构约束
+  ${chalk.cyan('ic config')}                查看和修改配置
+  ${chalk.cyan('ic audit')}                 查看 Agent 审计日志
+
+${chalk.bold('AI 管理')}
+  ${chalk.cyan('ic provider')}              管理 AI Provider / 模型 / API Key
+  ${chalk.cyan('ic agent')}                 管理 AI Agent（创建/启停/编排）
+
+${chalk.bold('服务管理')}
+  ${chalk.cyan('ic start')}                 启动项目 dev server
+  ${chalk.cyan('ic stop')}                  停止后台服务
+
+${chalk.dim('输入 ic <命令> --help 查看命令详情')}
 `);
 }
 

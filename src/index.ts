@@ -122,12 +122,15 @@ program.command('setup')
 program.command('init')
   .description('初始化项目配置（自动识别项目类型）')
   .option('-f, --force', '强制重新初始化')
+  .option('--json', 'JSON 格式输出')
   .action(async (options) => {
     const rootPath = process.cwd();
+    const { jsonEnvelope } = await import('./cli/json.js');
     try {
       progress('正在分析项目...');
       const existing = await loadConfig(rootPath);
       if (existing && !options.force) {
+        if (options.json) { console.log(JSON.stringify(jsonEnvelope('init', { initialized: true, identity: existing.project.identity }))); return; }
         warn('项目已初始化，使用 --force 强制重新扫描');
         printProjectIdentity(existing.project.identity);
         return;
@@ -151,15 +154,19 @@ program.command('init')
       } catch { /* best effort */ }
 
       success('项目初始化完成\n');
-      console.log(`  ╭ 项目识别 ${'─'.repeat(20)}`);
-      console.log(`  │ 名称    ${config.project.name}`);
-      console.log(`  │ 语言    ${identity.language}  ${identity.languageVersion !== 'unknown' ? identity.languageVersion : ''}`);
-      console.log(`  │ 框架    ${identity.framework !== 'unknown' ? identity.framework : '—'}`);
-      console.log(`  │ 数据库  ${identity.database !== 'unknown' ? identity.database : '—'}`);
-      console.log(`  │ 构建    ${identity.buildSystem !== 'unknown' ? identity.buildSystem : '—'}`);
-      console.log(`  │ 测试    ${identity.testFramework !== 'unknown' ? identity.testFramework : '—'}`);
-      console.log(`  ╰${'─'.repeat(28)}`);
-      if (isGitRepo(rootPath)) info('Git 仓库已检测');
+      if (options.json) {
+        console.log(JSON.stringify(jsonEnvelope('init', { initialized: true, identity: config.project.identity, name: config.project.name })));
+      } else {
+        console.log(`  ╭ 项目识别 ${'─'.repeat(20)}`);
+        console.log(`  │ 名称    ${config.project.name}`);
+        console.log(`  │ 语言    ${identity.language}  ${identity.languageVersion !== 'unknown' ? identity.languageVersion : ''}`);
+        console.log(`  │ 框架    ${identity.framework !== 'unknown' ? identity.framework : '—'}`);
+        console.log(`  │ 数据库  ${identity.database !== 'unknown' ? identity.database : '—'}`);
+        console.log(`  │ 构建    ${identity.buildSystem !== 'unknown' ? identity.buildSystem : '—'}`);
+        console.log(`  │ 测试    ${identity.testFramework !== 'unknown' ? identity.testFramework : '—'}`);
+        console.log(`  ╰${'─'.repeat(28)}`);
+        if (isGitRepo(rootPath)) info('Git 仓库已检测');
+      }
     } catch (err) { printError(err as Error); process.exit(1); }
   });
 
@@ -168,20 +175,23 @@ program.command('init')
 // ============================================================
 program.command('scan')
   .description('扫描项目并更新索引')
-  .action(async () => {
+  .option('--json', 'JSON 格式输出')
+  .action(async (options) => {
     const rootPath = process.cwd();
+    const { jsonEnvelope } = await import('./cli/json.js');
     try {
       const config = await loadConfig(rootPath);
-      if (!config) { fail('项目未初始化，请先运行 ic init'); return; }
-      const spin = (await import('ora')).default('正在扫描项目...').start();
+      if (!config) { fail('项目未初始化，请先运行 ic init'); }
+      const spin = options.json ? null : (await import('ora')).default('正在扫描项目...').start();
       const identity = await detectProject(rootPath);
       const { scanProject, saveProjectIndex } = await import('./core/scanner.js');
       const result = await scanProject({ rootPath, deep: true, includeTests: true, maxFileSize: 500 * 1024 });
-      spin.succeed(`扫描完成：${result.fileCount} 文件，${result.moduleCount} 模块，${result.apiCount} 接口`);
+      if (spin) spin.succeed(`扫描完成：${result.fileCount} 文件，${result.moduleCount} 模块，${result.apiCount} 接口`);
+      else console.log(JSON.stringify(jsonEnvelope('scan', { fileCount: result.fileCount, moduleCount: result.moduleCount, apiCount: result.apiCount, identity })));
       await saveProjectIndex(rootPath, result.index);
       config.project.identity = identity;
       await saveConfig(config);
-    } catch (err) { printError(err as Error); }
+    } catch (err) { printError(err as Error); if (!options.json) process.exit(1); }
   });
 
 
@@ -471,11 +481,27 @@ program.command('t')
   .argument('<descriptions...>', '任务描述（支持多个独立任务）')
   .option('--go', '跳过预览，直接执行')
   .option('--priority <level>', '优先级：high | normal | low', 'normal')
+  .option('--retry <task-id>', '重试失败的任务')
   .action(async (descriptions: string[], options) => {
     const rootPath = process.cwd();
     try {
       const config = await loadConfig(rootPath);
-      if (!config) { fail('项目未初始化，请先运行 ic init'); return; }
+      if (!config) { fail('项目未初始化，请先运行 ic init'); }
+
+      // --retry: re-run a failed task
+      if (options.retry) {
+        const { loadTask } = await import('./core/task-engine.js');
+        const task = await loadTask(rootPath, options.retry);
+        if (!task) { fail(`任务 ${chalk.cyan(options.retry)} 不存在`); }
+        if (task.status !== 'failed') { fail(`任务状态为 ${task.status}，只有 failed 状态的任务可以重试。运行 ic st 查看`); }
+        progress(`重试任务：${chalk.cyan(task.description)}`);
+        task.status = 'queued';
+        task.retryCount++;
+        task.errorLog = [];
+        const index = await (await import('./core/scanner.js')).loadProjectIndex(rootPath);
+        await executeRetryTask(task, config, rootPath, index);
+        return;
+      }
 
       const description = descriptions.join(' ');
       progress(`解析任务：${chalk.cyan(description)}`);
@@ -601,10 +627,10 @@ program.command('y')
     const rootPath = process.cwd();
     try {
       const config = await loadConfig(rootPath);
-      if (!config) { fail('项目未初始化'); return; }
+      if (!config) { fail('项目未初始化'); }
       const { loadTask } = await import('./core/task-engine.js');
       const task = await loadTask(rootPath, taskId);
-      if (!task) { fail(`任务 ${chalk.cyan(taskId)} 不存在`); return; }
+      if (!task) { fail(`任务 ${chalk.cyan(taskId)} 不存在`); }
       if (task.status !== 'queued' && task.status !== 'running') {
         warn(`任务状态为 ${statusLabel(task.status)}，无法执行`); return;
       }
@@ -658,10 +684,10 @@ program.command('g')
     const rootPath = process.cwd();
     try {
       const config = await loadConfig(rootPath);
-      if (!config) { fail('项目未初始化'); return; }
+      if (!config) { fail('项目未初始化'); }
       const { loadTask, persistTask } = await import('./core/task-engine.js');
       const task = await loadTask(rootPath, taskId);
-      if (!task) { fail(`任务 ${chalk.cyan(taskId)} 不存在`); return; }
+      if (!task) { fail(`任务 ${chalk.cyan(taskId)} 不存在`); }
 
       if (!options.json) progress('执行门禁检查...');
       const { runGateCheck } = await import('./gate/checker.js');
@@ -719,14 +745,21 @@ program.command('r')
   .alias('report')
   .description('查看最近一次任务报告')
   .option('--regenerate', '强制重新生成报告')
+  .option('--json', 'JSON 格式输出任务数据')
   .action(async (options) => {
     const rootPath = process.cwd();
+    const { jsonEnvelope } = await import('./cli/json.js');
     try {
       const { listTasks } = await import('./core/task-engine.js');
       const tasks = await listTasks(rootPath);
-      if (tasks.length === 0) { info('暂无任务记录'); return; }
+      if (tasks.length === 0) { info('还没有任务。运行 ic t "你的任务描述" 创建第一个任务'); return; }
       const latest = tasks.find(t => t.status === 'completed' || t.status === 'failed');
-      if (!latest) { info('无已完成的任务'); return; }
+      if (!latest) { info('没有已完成或失败的任务。当前任务可能还在执行中，运行 ic st 查看'); return; }
+
+      if (options.json) {
+        console.log(JSON.stringify(jsonEnvelope('report', { taskId: latest.id, status: latest.status, description: latest.description, changes: latest.changes, agentExecutions: latest.agentExecutions, verifyResult: latest.verifyResult })));
+        return;
+      }
 
       const reportPath = path.join(rootPath, '.icloser', 'tasks', latest.id, 'report.md');
       const hasReport = await fileExists(reportPath);
@@ -763,6 +796,18 @@ program.command('mem')
     try {
       const [verb, ...rest] = args;
       const query = args.join(' ').trim();
+      if (!verb || verb === 'help') {
+        console.log(`\n${chalk.bold('ic mem — 项目记忆管理')}\n`);
+        console.log(`  ${chalk.cyan('ic mem')}                      查看记忆摘要`);
+        console.log(`  ${chalk.cyan('ic mem events')}              查看用户输入事件`);
+        console.log(`  ${chalk.cyan('ic mem candidates')}          查看记忆候选`);
+        console.log(`  ${chalk.cyan('ic mem review')}              待确认记忆审查`);
+        console.log(`  ${chalk.cyan('ic mem approve <序号|id>')}    批准记忆候选`);
+        console.log(`  ${chalk.cyan('ic mem reject <序号|id>')}     拒绝记忆候选`);
+        console.log(`  ${chalk.cyan('ic mem global')}              查看全局记忆`);
+        console.log(`  ${chalk.cyan('ic mem <关键词>')}             搜索记忆\n`);
+        return;
+      }
       if (verb === 'events') {
         await printMemoryEvents(rootPath);
       } else if (verb === 'candidates') {
@@ -1075,7 +1120,7 @@ program.command('intel')
     try {
       const { loadProjectIndex } = await import('./core/scanner.js');
       const index = await loadProjectIndex(rootPath);
-      if (!index) { fail('项目未扫描，先运行 ic scan'); return; }
+      if (!index) { fail('项目未扫描，先运行 ic scan'); }
 
       // Symbol search
       const symbolHits = index.modules.flatMap(m =>
@@ -1237,7 +1282,7 @@ program.command('config')
     try {
       const config = await loadConfig(rootPath);
       if (jsonMode && !key) {
-        if (!config) { fail('项目未初始化'); return; }
+        if (!config) { fail('项目未初始化'); }
         console.log(JSON.stringify(jsonEnvelope('config', serializeConfig(config)), null, 2));
         return;
       }
@@ -1389,7 +1434,7 @@ program.command('provider')
     const rootPath = process.cwd();
     try {
       const config = await loadConfig(rootPath);
-      if (!config) { fail('项目未初始化，请先运行 ic init'); return; }
+      if (!config) { fail('项目未初始化，请先运行 ic init'); }
 
       if (!subcommand || subcommand === 'list' || subcommand === 'ls') {
         printProviderList(config, options?.json);
@@ -1515,10 +1560,10 @@ program.command('start')
     try {
       const { readFile } = await import('./utils/fs.js');
       let pkg: Record<string, unknown> = {};
-      try { pkg = JSON.parse(await readFile(path.join(cwd, 'package.json'))); } catch { fail('未找到 package.json'); return; }
+      try { pkg = JSON.parse(await readFile(path.join(cwd, 'package.json'))); } catch { fail('未找到 package.json'); }
       const scripts = (pkg.scripts || {}) as Record<string, string>;
       const scriptName = Object.keys(scripts).find(k => /^(dev|start|serve|preview)$/.test(k));
-      if (!scriptName) { fail('未找到 dev/start/serve/preview 脚本'); return; }
+      if (!scriptName) { fail('未找到 dev/start/serve/preview 脚本'); }
 
       progress(`启动 npm run ${scriptName}...`);
       const { spawn } = await import('child_process');
@@ -1549,9 +1594,10 @@ program.command('stop')
 // ============================================================
 program.command('search')
   .description('搜索代码（ripgrep）')
+  .alias('find')
   .argument('<pattern>', '搜索模式')
   .option('--json', 'JSON 格式输出')
-  .option('--web', '启用网络搜索')
+  .option('--web', '改用网络搜索（等同于 ic web）')
   .action(async (pattern: string, options?: { json?: boolean; web?: boolean }) => {
     if (options?.web) {
       try {
@@ -1590,6 +1636,27 @@ program.command('search')
     } catch { info('搜索不可用（需要安装 ripgrep）'); }
   });
 
+program.command('web')
+  .description('网络搜索（DuckDuckGo，免费无 API Key）')
+  .argument('<query>', '搜索关键词')
+  .option('--json', 'JSON 格式输出')
+  .action(async (query: string, options?: { json?: boolean }) => {
+    try {
+      const { searchWeb } = await import('./core/web-search.js');
+      const results = await searchWeb(query);
+      if (options?.json) {
+        console.log(JSON.stringify(jsonEnvelope('web-search', { query, results }), null, 2));
+      } else {
+        section(`网络搜索: ${chalk.cyan(query)}`);
+        for (const r of results.slice(0, 5)) {
+          console.log(`  ${chalk.cyan(r.title || r.url)}`);
+          if (r.snippet) console.log(`  ${chalk.dim(r.snippet.substring(0, 120))}`);
+        }
+        if (results.length === 0) info('未找到结果');
+      }
+    } catch (err) { fail(`网络搜索失败: ${(err as Error).message}`); }
+  });
+
 program.command('cancel')
   .description('取消排队中的任务')
   .argument('<task-id>', '任务 ID')
@@ -1617,7 +1684,7 @@ program.command('rollback')
   .action(async (taskId: string) => {
     const rootPath = process.cwd();
     try {
-      if (!isGitRepo(rootPath)) { fail('需要 Git 仓库'); return; }
+      if (!isGitRepo(rootPath)) { fail('需要 Git 仓库'); }
       const { loadTask, updateTaskStatus, releaseFileLocks, persistTask } =
         await import('./core/task-engine.js');
       const task = await loadTask(rootPath, taskId);
@@ -1660,7 +1727,7 @@ program.command('agent')
       const rootPath = process.cwd();
       const config = await loadConfig(rootPath);
 
-      if (!config) { fail('项目未初始化，请先运行 ic init'); return; }
+      if (!config) { fail('项目未初始化，请先运行 ic init'); }
 
       const mgr = new AgentManager(config.ai, 3);
 
@@ -1683,7 +1750,7 @@ program.command('agent')
       if (subcommand === 'create') {
         const name = args[0];
         const type = args.includes('--type') ? args[args.indexOf('--type') + 1] : 'task';
-        if (!name) { fail('用法: ic agent create <name> [--type task|review|verify|orchestrator]'); return; }
+        if (!name) { fail('用法: ic agent create <name> [--type task|review|verify|orchestrator]'); }
 
         const agent = mgr.create({ name, type: (type as AgentType) || 'task', model: args.includes('--model') ? args[args.indexOf('--model') + 1] : undefined });
 
@@ -1698,7 +1765,7 @@ program.command('agent')
       if (subcommand === 'start') {
         const agentId = args[0];
         const task = args.slice(1).join(' ');
-        if (!agentId) { fail('用法: ic agent start <agent-id> [task]'); return; }
+        if (!agentId) { fail('用法: ic agent start <agent-id> [task]'); }
 
         const started = await mgr.start(agentId, task || undefined);
         if (started) {
@@ -1714,7 +1781,7 @@ program.command('agent')
 
       if (subcommand === 'stop') {
         const agentId = args[0];
-        if (!agentId) { fail('用法: ic agent stop <agent-id>'); return; }
+        if (!agentId) { fail('用法: ic agent stop <agent-id>'); }
         if (mgr.stop(agentId)) success(`Agent ${chalk.cyan(agentId.substring(0, 8))} 已停止`);
         else fail(`Agent ${agentId} 不存在`);
         return;
@@ -1722,9 +1789,9 @@ program.command('agent')
 
       if (subcommand === 'status') {
         const agentId = args[0];
-        if (!agentId) { fail('用法: ic agent status <agent-id>'); return; }
+        if (!agentId) { fail('用法: ic agent status <agent-id>'); }
         const agent = mgr.get(agentId);
-        if (!agent) { fail(`Agent ${agentId} 不存在`); return; }
+        if (!agent) { fail(`Agent ${agentId} 不存在`); }
 
         if (args.includes('--json')) {
           console.log(JSON.stringify(jsonEnvelope('agent-status', { id: agent.id, name: agent.name, type: agent.type, status: agent.status, model: agent.model, children: agent.childIds, result: agent.result }), null, 2));
@@ -1738,7 +1805,7 @@ program.command('agent')
 
       if (subcommand === 'children') {
         const parentId = args[0];
-        if (!parentId) { fail('用法: ic agent children <agent-id>'); return; }
+        if (!parentId) { fail('用法: ic agent children <agent-id>'); }
         const children = mgr.list({ parentId });
         if (children.length === 0) { info('无子 Agent'); return; }
         for (const c of children) {
@@ -1750,7 +1817,7 @@ program.command('agent')
       if (subcommand === 'message') {
         const agentId = args[0];
         const content = args.slice(1).join(' ');
-        if (!agentId || !content) { fail('用法: ic agent message <agent-id> <content>'); return; }
+        if (!agentId || !content) { fail('用法: ic agent message <agent-id> <content>'); }
         const msg = mgr.sendMessage({ from: 'cli', to: agentId, content, type: 'command' });
         success(`消息已发送 (${msg.id})`);
         return;
@@ -1758,7 +1825,7 @@ program.command('agent')
 
       if (subcommand === 'orchestrate') {
         const taskDesc = args.join(' ');
-        if (!taskDesc) { fail('用法: ic agent orchestrate <任务描述>'); return; }
+        if (!taskDesc) { fail('用法: ic agent orchestrate <任务描述>'); }
         progress('编排任务...');
         const result = await mgr.orchestrate(taskDesc);
         if (result.success) {
@@ -1878,6 +1945,17 @@ async function runAutopilotRepairLoop(options: {
 }
 
 // ════════════════════════════════════════════════════════════
+// Retry a previously failed task
+async function executeRetryTask(
+  task: Task,
+  config: ICloserConfig,
+  rootPath: string,
+  index: import('./types.js').ProjectIndex | null,
+): Promise<void> {
+  info(`第 ${task.retryCount} 次重试任务 ${task.id}`);
+  await executeTask(task, config, rootPath, index);
+}
+
 // CORE: executeTask — full pipeline
 // ════════════════════════════════════════════════════════════
 async function executeTask(
@@ -1965,7 +2043,6 @@ async function executeTask(
   }
 
   // 5. AI call with tool-calling loop (S18) — Agent drives execution
-  progress('AI 执行中...');
   let aiContent = '';
   let aiOutput: ReturnType<typeof parseAIOutput> | null = null;
   const aiCallStarted = Date.now();
@@ -1980,6 +2057,8 @@ async function executeTask(
     const MAX_TOOL_ROUNDS = 5;
 
     while (toolRound < MAX_TOOL_ROUNDS) {
+      const roundLabel = toolRound === 0 ? '' : chalk.dim(` (第 ${toolRound + 1}/${MAX_TOOL_ROUNDS} 轮)`);
+      progress(`AI 执行中...${roundLabel}`);
       const response = await provider.chat({
         systemPrompt: buildSystemPrompt(config, index),
         context: contextPkg || { projectMeta: '', relevantCode: [], relevantMemory: '', totalTokens: 0, budgetUsed: 0 },
@@ -2016,7 +2095,8 @@ async function executeTask(
       aiContent = 'AI 未返回有效响应（可能超出工具调用轮次）';
     }
     if (!aiOutput) aiOutput = parseAIOutput(aiContent);
-    detail('Token 用量', `${totalTokensUsed.toLocaleString()}`);
+    const elapsedSec = ((Date.now() - aiCallStarted) / 1000).toFixed(1);
+    success(`AI 执行完成 — ${totalTokensUsed.toLocaleString()} tokens / ${elapsedSec}s${toolRound > 1 ? ` / ${toolRound} 轮工具调用` : ''}`);
     await appendAuditEvent(rootPath, 'agent', 'ai-called', config.ai.provider, 'success', { taskId: task.id, tokensUsed: totalTokensUsed, durationMs: Date.now() - aiCallStarted, payload: { model: config.ai.model } });
 
     // S15: Record Agent execution in task
@@ -2053,9 +2133,8 @@ async function executeTask(
       updateTaskStatus(task.id, 'failed');
       await persistTask(rootPath, task);
       releaseFileLocks(task);
-      fail(`AI 输出协议错误: ${err.message}`);
       if (err.detail) info(err.detail);
-      return;
+      fail(`AI 输出协议错误: ${err.message}`);
     }
     const ae = err instanceof AICallError
       ? err
@@ -2702,7 +2781,7 @@ async function printProviderTest(config: ICloserConfig, jsonMode = false): Promi
   if (result.ok) {
     success(`Provider 连通正常，tokens: ${result.tokensUsed}`);
   } else {
-    fail('Provider 连通失败');
+    console.error(`${ICONS.fail} Provider 连通失败`);
     const status = getProviderStatuses(config.ai).find(item => item.current);
     if (status && status.keySource === 'missing' && status.envVars.length > 0) {
       console.log();
@@ -2712,6 +2791,7 @@ async function printProviderTest(config: ICloserConfig, jsonMode = false): Promi
     } else if (result.error) {
       console.log(`  ${chalk.red(result.error)}`);
     }
+    process.exit(1);
   }
   console.log();
 }

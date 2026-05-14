@@ -702,6 +702,7 @@ async function handleSlashCommand(input: string): Promise<void> {
     case '/stop': await cmdStopProject(); break;
     case '/restart': await cmdRestartProject(); break;
     case '/config': await cmdConfig(args); break;
+    case '/history': case '/hist': cmdHistory(); break;
     case '/status': await cmdReplStatus(); break;
     case '/doctor': await cmdDoctor(); break;
     case '/run': if (args) await cmdRunAgent(args); else console.log(`  ${C.dim('用法: /run <Agent描述>')}\n`); break;
@@ -1662,6 +1663,20 @@ async function cmdRunAgent(description: string): Promise<void> {
   if (final?.status === 'done') { console.log(`  ${I.ok} Agent 完成 ${C.dim('(' + (final.result?.tokensUsed || 0) + ' tokens)')}\n`); }
   else if (final?.status === 'failed') { console.log(`  ${I.err} Agent 失败: ${final.result?.error || '未知错误'}\n`); }
   else { console.log(`  ${I.running} Agent 仍在运行中\n`); }
+}
+
+function cmdHistory(): void {
+  const count = state.conversation.length;
+  if (count === 0) { console.log(`  ${C.dim('暂无对话历史')}\n`); return; }
+  console.log(`  ${C.accent(`对话历史 (${count} 条)`)}`);
+  const recent = state.conversation.slice(-20);
+  for (const m of recent) {
+    const role = m.role === 'user' ? `${C.accent('◇ You')}` : `${C.primary('◆ AI')}`;
+    const preview = m.content.length > 80 ? m.content.slice(0, 80) + '...' : m.content;
+    console.log(`  ${role}  ${preview}`);
+  }
+  if (count > 20) console.log(`  ${C.dim(`... 还有 ${count - 20} 条`)}\n`);
+  else console.log();
 }
 
 function cmdListAgents(): void {

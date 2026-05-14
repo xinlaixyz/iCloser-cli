@@ -95,9 +95,11 @@ export function commandHelp(): string {
     ['/help', '查看帮助'], ['/init', '初始化项目'], ['/scan', '扫描项目'],
     ['/verify', '验证项目'], ['/write', '写入待确认文件'], ['/diff', '预览变更'],
     ['/undo', '撤销上次写入'], ['/test', '生成测试'], ['/report', '生成报告'],
-    ['/commit', '提交 Git'], ['/status', '查看状态'], ['/doctor', '诊断下一步'], ['/config', '查看配置'],
-    ['/apikey', '输入 API Key'], ['/start', '启动项目'],
-    ['/stop', '停止项目'], ['/restart', '重启项目'],
+    ['/commit', '提交 Git'], ['/status', '查看状态'], ['/doctor', '诊断下一步'],
+    ['/config', '查看配置'], ['/apikey', '输入 API Key'],
+    ['/run', 'Agent 执行任务'], ['/agents', 'Agent 列表'], ['/orchestrate', '多 Agent 编排'],
+    ['/search', '搜索代码'], ['/intel', '代码智能'], ['/context', '查看上下文'],
+    ['/history', '对话历史'], ['/start', '启动项目'], ['/stop', '停止项目'],
     ['/clear', '清空对话'], ['/exit', '退出'],
   ];
   const tw = termWidth(); const w = Math.min(tw - 4, 60);

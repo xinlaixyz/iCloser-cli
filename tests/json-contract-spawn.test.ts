@@ -184,8 +184,8 @@ describe('JSON contract spawn tests', () => {
   });
 
   it('ic config security disable rejects unknown ruleId', () => {
-    const { stdout } = ic(['config', 'security', 'disable', 'nonexistent-rule'], tmpDir);
-    expect(stdout).toContain('未知安全规则');
+    const { stdout, stderr } = ic(['config', 'security', 'disable', 'nonexistent-rule'], tmpDir);
+    expect(stdout + stderr).toContain('未知安全规则');
   });
 });
 
