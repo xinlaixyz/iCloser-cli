@@ -96,10 +96,14 @@ command -v npm &>/dev/null && ok "npm v$(npm --version)" || err "npm 不可用"
 step "检查 Git..."
 command -v git &>/dev/null && ok "Git 已安装" || info "Git 未安装 (可选)"
 
-# 4. Install dependencies
-step "安装依赖..."
-npm install --no-audit --no-fund --loglevel=error
-ok "依赖安装完成"
+# 4. Install dependencies (skip if offline package)
+if [ -d "node_modules" ]; then
+    ok "依赖已打包 (离线模式)"
+else
+    step "安装依赖..."
+    npm install --no-audit --no-fund --loglevel=error
+    ok "依赖安装完成"
+fi
 
 # 5. Build
 step "编译 TypeScript..."

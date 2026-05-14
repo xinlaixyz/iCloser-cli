@@ -86,10 +86,14 @@ try {
     Write-INFO "Git 未安装 (可选, 仅影响 git diff/commit 功能)"
 }
 
-# 4. Install dependencies
-Write-Step "安装依赖..."
-npm install --no-audit --no-fund --loglevel=error
-Write-OK "依赖安装完成"
+# 4. Install dependencies (skip if offline package)
+if (Test-Path "node_modules") {
+    Write-OK "依赖已打包 (离线模式)"
+} else {
+    Write-Step "安装依赖..."
+    npm install --no-audit --no-fund --loglevel=error
+    Write-OK "依赖安装完成"
+}
 
 # 5. Build
 Write-Step "编译 TypeScript..."
