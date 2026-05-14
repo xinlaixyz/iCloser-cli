@@ -22,7 +22,7 @@ import {
   drawWideBox, processStep,
   notification, thinDivider, termWidth,
 } from './theme.js';
-import { renderBottomPanel, DEFAULT_SHORTCUTS, type BottomPanelState, InputBox, setupRawInput } from './tui.js';
+import { renderBottomPanel, DEFAULT_SHORTCUTS, type BottomPanelState } from './tui.js';
 import type { AIConfig, AIProvider, AIPrompt, ContextPackage, ProjectIdentity, ProjectIndex, Task } from '../types.js';
 import type { StreamCallback } from '../ai/provider.js';
 import {
@@ -192,17 +192,19 @@ function buildCurrentPanel(): BottomPanelState {
 }
 
 function refreshPrompt(): void {
-  // Raw mode renders input via InputBox — readline prompt is decorative only
   if (!rl) return;
+  if (activeChoicePanel) {
+    rl.setPrompt(choicePrompt(activeChoicePanel));
+    return;
+  }
+  if (pendingConfirm || state.pendingFiles.length > 0) {
+    rl.setPrompt(`${C.accent('选择')} ${C.dim('输入选项后回车')} ${C.accent('>')} `);
+    return;
+  }
   rl.setPrompt(`${C.accent('◇')}  `);
 }
 
 function promptRepl(): void {
-  // Raw input mode handles rendering via startRawInputLoop
-  // No-op: keep for backward compat with choice panel / inline confirm
-}
-
-function promptLegacy(): void {
   refreshPrompt();
   rl?.prompt();
 }
@@ -224,7 +226,9 @@ export async function startRepl(): Promise<void> {
   if (resumed) { console.log(notification(`已恢复上次会话 (${state.conversation.length} 条记录)`, 'info')); }
   if (state.context.projectName) { console.log(''); console.log(statusBar([{ label: 'PROJECT', value: state.context.projectName, color: 'accent' }, { label: 'LANG', value: state.context.language || '—', color: 'primary' }, { label: 'FRAMEWORK', value: state.context.framework || '—', color: 'primary' }, { label: 'AI', value: state.aiConfig.provider.toUpperCase(), color: 'success' }])); }
   printFirstRunGuide(Boolean(offlineReason));
-  rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: false });
+  printBottomBlock();
+  // Use readline for proper IME/composition support (raw mode breaks CJK input)
+  rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: true, historySize: 1000, completer: replCompleter });
   rl.on('close', () => { void shutdownRepl(); });
   rl.on('SIGINT', () => {
     if (shuttingDown) return;
@@ -247,127 +251,31 @@ export async function startRepl(): Promise<void> {
     console.log(chalk.dim('\n  再次 Ctrl+C 或 /exit 退出'));
     promptRepl();
   });
-  startRawInputLoop();
-}
-
-// S20.5: raw input loop with InputBox + fixed bottom panel
-function startRawInputLoop(): void {
-  const box = new InputBox();
-  box.history = state.conversation.filter(m => m.role === 'user').map(m => m.content);
-  let prevRenderLines = 0;
-  let cursorLinesAboveBottom = 0; // how many lines the cursor was positioned above the render bottom
-  let isFirstRender = true;
-
-  function countLines(s: string): number {
-    const n = s.split('\n').length;
-    return s.endsWith('\n') ? n - 1 : n;
-  }
-
-  function renderInput(): void {
-    const tw = termWidth();
-    const inputStr = box.render(tw);
-    const panelStr = buildCurrentPanelStr();
-    const newContent = inputStr + '\n' + panelStr + '\n';
-    const newLines = countLines(newContent);
-
-    let out = '';
-    if (!isFirstRender && prevRenderLines > 0) {
-      // Phase 1: move cursor down to the BOTTOM of the previous render
-      // (the cursor was left inside the box, cursorLinesAboveBottom from the bottom)
-      if (cursorLinesAboveBottom > 0) {
-        out += `\x1b[${cursorLinesAboveBottom}B`;
-      }
-      // Phase 2: now at the bottom, move up to the start of the render area
-      out += `\x1b[${prevRenderLines}A`;
-      out += '\r';
-      out += '\x1b[0J'; // clear from cursor to end of screen
-    }
-    out += newContent;
-
-    // Position cursor on the correct input box content line
-    const panelLines = countLines(panelStr);
-    const cursorRowInBox = Math.min(box.cursorRow - box.scrollOffset, box.maxHeight - 1);
-    const inputContentH = Math.min(box.lines.length, box.maxHeight);
-    const hintLines = (box.scrollOffset > 0 ? 1 : 0) + (box.lines.length > box.scrollOffset + inputContentH ? 1 : 0);
-    // Lines from the end of the output up to the cursor row inside the box
-    const cursorUp = panelLines + 1 + hintLines + inputContentH - cursorRowInBox;
-    if (cursorUp > 0 && cursorUp < newLines) {
-      out += `\x1b[${cursorUp}A`;
-      out += `\x1b[${box.cursorCol + 3}C`;
-      out += '\x1b[?25h'; // show cursor
-    }
-    cursorLinesAboveBottom = cursorUp > 0 ? cursorUp : 0;
-
-    process.stdout.write(out);
-    prevRenderLines = newLines;
-    isFirstRender = false;
-  }
-
-  const cleanup = setupRawInput(
-    (ev) => {
-      if (!state.running) return;
-      switch (ev.type) {
-        case 'char':
-          if (ev.char === '\n') box.handleShiftEnter();
-          else if (ev.char) box.insertChar(ev.char);
-          break;
-        case 'enter': submitLine(); return;
-        case 'backspace': box.handleBackspace(); break;
-        case 'up': box.handleUp(); break;
-        case 'down': box.handleDown(); break;
-        case 'left': box.handleLeft(); break;
-        case 'right': box.handleRight(); break;
-        case 'ctrl_c':
-          if (box.text.trim()) { box.reset(); }
-          else if (abortController) { abortController.abort(); }
-          break;
-        default: break;
-      }
-      renderInput();
-    },
-    () => {}
-  );
-
-  async function submitLine(): Promise<void> {
-    const text = box.text.trim();
-    box.reset();
-    // Clear old render
-    if (prevRenderLines > 0) {
-      process.stdout.write(`\x1b[${prevRenderLines}A\r\x1b[0J`);
-    }
-    prevRenderLines = 0;
-    isFirstRender = true;
-    // Hide cursor during output
-    process.stdout.write('\x1b[?25l');
-
-    if (!text) { renderInput(); return; }
-    box.addToHistory(text);
-    if (state.running) await processRawInput(text);
-    box.history = state.conversation.filter(m => m.role === 'user').map(m => m.content);
-    if (state.running) renderInput();
-  }
-
-  async function processRawInput(input: string): Promise<void> {
-    if (input.startsWith('!') && input.length > 1) {
-      await cmdHistorySearch(input.substring(1));
-      printBottomBlock(); return;
-    }
-    const panel = buildCurrentPanel();
-    if (!panel.items.length) {
+  promptRepl();
+  rl.on('line', async (line: string) => {
+    pendingExitSince = 0;
+    const input = line.trim();
+    // Panel shortcuts: single-letter input when no active choice panel
+    if (!activeChoicePanel) {
+      const panel = buildCurrentPanel();
       const action = panel.actions.find(a => a.key === input);
       if (action && input.length <= 2) {
         await executePanelAction(action.action);
-        return;
+        printBottomBlock(); if (state.running) promptRepl(); return;
       }
     }
+    // History search via ! prefix
+    if (input.startsWith('!') && input.length > 1) {
+      await cmdHistorySearch(input.substring(1));
+      printBottomBlock(); if (state.running) promptRepl(); return;
+    }
+    if (!input) { promptRepl(); return; }
     await recordReplUserInput(input);
-    if (await handleInlineConfirm(input)) { printBottomBlock(); return; }
-    if (await handleBottomSelection(input)) { printBottomBlock(); return; }
+    if (await handleInlineConfirm(input)) { printBottomBlock(); if (state.running) promptRepl(); return; }
+    if (await handleBottomSelection(input)) { printBottomBlock(); if (state.running) promptRepl(); return; }
     if (input.startsWith('/')) { await handleSlashCommand(input); } else { await handleChat(input); }
-    printBottomBlock();
-  }
-
-  renderInput();
+    printBottomBlock(); if (state.running) promptRepl();
+  });
 }
 
 async function shutdownRepl(): Promise<void> {
