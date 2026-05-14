@@ -298,33 +298,39 @@
 
 本设计涉及以下源码文件：
 
-| 文件 | 内容 |
-|------|------|
-| `src/cli/tui.ts` | 扩展 TuiScreen + 底部面板 + 键盘处理 |
-| `src/cli/theme.ts` | 新增 diff 着色、输入框、底部栏样式 |
-| `src/cli/diff-renderer.ts` | 新建 — unified diff 解析和红绿渲染 |
-| `src/cli/output.ts` | 新增 sanitizeOutput 消毒过滤器 |
-| `src/cli/repl.ts` | 集成多行输入、底部面板、等待动画 |
-| `src/cli/command-palette.ts` | 新建 — 命令面板实现 |
+| 文件 | 实际内容 |
+|------|----------|
+| `src/cli/tui.ts` | 底部面板 renderBottomPanel + DEFAULT_SHORTCUTS |
+| `src/cli/theme.ts` | 终端 UI 设计系统 (颜色/框线/图标) |
+| `src/cli/diff-renderer.ts` | 新建 — parseDiff/renderDiff 红绿渲染 |
+| `src/cli/output.ts` | sanitizeOutput + enableOutputSanitizer + printErrorRecovery |
+| `src/cli/repl.ts` | 输入框顶 + 面板快捷键 + 等待三阶段 + 命令面板 /? + 历史搜索 !query |
 | `src/report/generator.ts` | diff 区域改用 diff-renderer |
 
 ---
 
-## 9. 完成度 (2026-05-15)
+## 9. 完成度 (2026-05-15 最终)
 
-| 功能 | 状态 | 备注 |
-|------|------|------|
-| 输出消毒 (S20.1) | ✅ 100% | sanitizeOutput + stdout monkey-patch |
-| 等待体验 (S20.2) | ✅ 100% | 三阶段计时+脉冲+tokens |
-| 底部面板 (S20.3) | ✅ 85% | 4 状态自适应 + 单键快捷键，非真正固定(终端限制) |
-| Diff 着色 (S20.4) | ✅ 100% | parseDiff/renderDiff 红绿 |
-| 输入框双线 (S20.5) | ✅ 90% | 框顶+输入行+框底，readline 内单行 |
-| Shift+Enter (S20.5) | ❌ 0%   | raw mode 破坏 IME+ANSI，已回退，标记为不可行 |
-| 错误指引 (S20.6) | ✅ 100% | 编译/lint/test/e2e 针对性建议 |
-| 命令面板 (S20.7) | ✅ 80% | `/?` 代替 Ctrl+P(readline 拦截) |
-| 历史搜索 (S20.8) | ✅ 80% | `!query` 代替 Ctrl+R(readline 拦截) |
-| Tab 补全 (S20.9) | ✅ 100% | 文件路径 + 深度子补全 |
-| InputBox 组件 | 🔶 100% | 已实现，因终端兼容性未启用 |
-| 集成验收 (S20.10) | ✅ 100% | 42 files / 413 tests / 0 failed |
+| 功能 | 完成度 | 说明 |
+|------|--------|------|
+| 输出消毒 (S20.1) | ✅ 100% | sanitizeOutput + stdout 全路径过滤 |
+| 等待动画 (S20.2) | ✅ 100% | 等待:脉冲◉◔◑◕+进度条+计时 / 流式:首尾标记,内容干净 |
+| 底部面板 (S20.3) | ✅ 90% | 4 状态 + h/s/w/d/c/q 快捷键直达 |
+| Diff 着色 (S20.4) | ✅ 100% | ─红 +绿, REPL /diff + CLI ic d |
+| 输入框 (S20.5) | ✅ 90% | ╭─输入─╮ 框顶 + │ ◇ 输入行,双线框视觉 |
+| 多行/Shift+Enter | ❌ 0%   | raw mode 破坏 IME+ANSI,终端跨平台不可行 |
+| 错误指引 (S20.6) | ✅ 100% | 编译/lint/test/e2e 失败时显示修复建议 |
+| 命令面板 (S20.7) | ✅ 80% | `/?` 过滤浏览25命令, readline 拦截 Ctrl+P |
+| 历史搜索 (S20.8) | ✅ 80% | `!query` 模糊搜索历史, readline 拦截 Ctrl+R |
+| Tab 补全 (S20.9) | ✅ 100% | /write/diff 文件路径 + /config/apikey 深度子补全 |
+| 验收 (S20.10) | ✅ 100% | 43 files / 427 tests |
+
+### 不可行项
+
+| 项 | 根因 |
+|----|------|
+| Shift+Enter 换行 | Node raw mode 在 Windows 破坏 CJK IME 组合输入 |
+| 面板固定底部 | 终端无 position:fixed; alternate buffer 会隐藏对话历史 |
+| Ctrl+P / Ctrl+R | readline 拦截控制键, 不支持重映射 |
 
 | `src/index.ts` | CLI `ic d` 命令改用 diff-renderer |

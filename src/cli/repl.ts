@@ -163,11 +163,6 @@ function inputBoxTop(): string {
   return `  ${C.accent('╭─')} ${C.accent('输入')} ${C.accent('─'.repeat(Math.max(1, w - 6)) + '╮')}`;
 }
 
-function inputBoxBottom(): string {
-  const w = boxWidth() - 2;
-  return `  ${C.accent('╰')}${C.accent('─'.repeat(w))}${C.accent('╯')}`;
-}
-
 function printBottomBlock(): void {
   bottomOptions = [];
   // Render panel only — no orphaned box bottom (it scrolled away during output)
