@@ -254,27 +254,52 @@ export async function startRepl(): Promise<void> {
 function startRawInputLoop(): void {
   const box = new InputBox();
   box.history = state.conversation.filter(m => m.role === 'user').map(m => m.content);
-  let lastInputLines = 0;
-  let lastPanelLines = 0;
+  let prevRenderLines = 0;
+  let isFirstRender = true;
 
-  function renderInput(clearPrevious: boolean): void {
+  // Count lines in a string (excluding trailing empty)
+  function countLines(s: string): number {
+    const n = s.split('\n').length;
+    return s.endsWith('\n') ? n - 1 : n;
+  }
+
+  function renderInput(): void {
     const tw = termWidth();
     const inputStr = box.render(tw);
     const panelStr = buildCurrentPanelStr();
+    const newContent = inputStr + '\n' + panelStr + '\n';
+    const newLines = countLines(newContent);
+
+    let out = '';
+    if (!isFirstRender && prevRenderLines > 0) {
+      // Move cursor up to the start of the previous render area
+      out += `\x1b[${prevRenderLines}A`;
+      out += '\r';
+      out += '\x1b[0J'; // clear from cursor to end of screen
+    }
+    out += newContent;
+
+    // Position cursor inside the input box (first content line, after "  │ " prefix)
+    // Cursor goes to: start of input box content + column offset
     const inputLines = inputStr.split('\n').length;
     const panelLines = panelStr.split('\n').length;
-    const totalLines = lastInputLines + lastPanelLines;
-
-    if (clearPrevious && totalLines > 0) {
-      // Move cursor up to erase previous render
-      process.stdout.write(`\x1b[${totalLines}A`);
-      process.stdout.write('\x1b[0J'); // clear from cursor to end of screen
+    // How far from end of output to go up: panel + bottom border + (input height - cursor row)
+    const cursorRowInBox = Math.min(box.cursorRow - box.scrollOffset, box.maxHeight - 1);
+    const inputContentHeight = Math.min(box.lines.length, box.maxHeight);
+    const scrollHintLines = box.scrollOffset > 0 ? 1 : 0;
+    const remainingHintLines = (box.lines.length > box.scrollOffset + inputContentHeight) ? 1 : 0;
+    // Lines from end of output to cursor position:
+    // panel + bottom input border + (input content height - cursor row)
+    const linesUp = panelLines + 1 + (inputContentHeight + scrollHintLines + remainingHintLines - cursorRowInBox);
+    if (linesUp > 0 && linesUp < newLines) {
+      out += `\x1b[${linesUp}A`; // move up to cursor row
+      out += `\x1b[${box.cursorCol + 3}C`; // move right to cursor column ("  │ " = 3 chars)
+      out += '\x1b[?25h'; // show cursor
     }
 
-    process.stdout.write(inputStr + '\n');
-    process.stdout.write(panelStr + '\n');
-    lastInputLines = inputLines + 1;
-    lastPanelLines = panelLines + 1;
+    process.stdout.write(out);
+    prevRenderLines = newLines;
+    isFirstRender = false;
   }
 
   const cleanup = setupRawInput(
@@ -297,7 +322,7 @@ function startRawInputLoop(): void {
           break;
         default: break;
       }
-      renderInput(true);
+      renderInput();
     },
     () => {}
   );
@@ -305,19 +330,20 @@ function startRawInputLoop(): void {
   async function submitLine(): Promise<void> {
     const text = box.text.trim();
     box.reset();
-    // Clear input area entirely
-    if (lastInputLines + lastPanelLines > 0) {
-      process.stdout.write(`\x1b[${lastInputLines + lastPanelLines}A`);
-      process.stdout.write('\x1b[0J');
+    // Clear old render
+    if (prevRenderLines > 0) {
+      process.stdout.write(`\x1b[${prevRenderLines}A\r\x1b[0J`);
     }
-    lastInputLines = 0;
-    lastPanelLines = 0;
+    prevRenderLines = 0;
+    isFirstRender = true;
+    // Hide cursor during output
+    process.stdout.write('\x1b[?25l');
 
-    if (!text) { renderInput(false); return; }
+    if (!text) { renderInput(); return; }
     box.addToHistory(text);
     if (state.running) await processRawInput(text);
     box.history = state.conversation.filter(m => m.role === 'user').map(m => m.content);
-    if (state.running) renderInput(false);
+    if (state.running) renderInput();
   }
 
   async function processRawInput(input: string): Promise<void> {
@@ -340,7 +366,7 @@ function startRawInputLoop(): void {
     printBottomBlock();
   }
 
-  renderInput(false);
+  renderInput();
 }
 
 async function shutdownRepl(): Promise<void> {
