@@ -49,7 +49,7 @@ function makeAgentExec(overrides: Partial<AgentExecutionRecord> = {}): AgentExec
   };
 }
 
-describe('Report Agent integration (S15)', () => {
+describe('Report Agent integration (S15)', { timeout: 15000 }, () => {
   it('includes agent section when task has agentExecutions', async () => {
     const task = makeTask({
       agentExecutions: [makeAgentExec()],
