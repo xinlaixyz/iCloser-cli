@@ -925,7 +925,7 @@ async function handleChat(input: string): Promise<void> {
         lineCount++;
         if (lineCount % 10 === 0 && Date.now() - lastStatusUpdate > 2000) {
           const elapsed = ((Date.now() - aiStartTime) / 1000).toFixed(1);
-          process.stdout.write(`\r  ${C.primary('◉')} ${C.dim(`输出中 [${elapsed}s] · ${lineCount} 行 · ${streamTokenCount.toLocaleString()} tokens`)}\x1b[K`);
+          process.stdout.write(`\r  ${C.primary('◉')} ${C.dim(`输出中 [${elapsed}s] · ${lineCount} 行`)}\x1b[K`);
           lastStatusUpdate = Date.now();
         }
         if (line.trim().startsWith('``')) {
@@ -967,7 +967,7 @@ async function handleChat(input: string): Promise<void> {
       process.stdout.write(`  ${C.dim('```')}\n`);
     }
     // Clear progress line and show final status
-    process.stdout.write(`\r\x1b[K  ${C.success('✓')} ${C.dim(`[${(elapsed/1000).toFixed(1)}s]  ${lineCount} 行  ${streamTokenCount.toLocaleString()} tokens`)}\n`);
+    process.stdout.write(`\r\x1b[K  ${C.success('✓')} ${C.dim(`[${(elapsed/1000).toFixed(1)}s]  ${lineCount} 行`)}\n`);
     stopWaitingPhase(); streamState = 'idle'; streamLineBuf = '';
     state.conversation.push({ role: 'assistant', content: fullResponse || response.content, timestamp: new Date().toISOString() });
     let fileBlocks = extractFileBlocks(fullResponse || response.content, input);
@@ -2030,10 +2030,7 @@ function startStreamingPhase(): void {
 
 function stopWaitingPhase(): void {
   if (spinnerTimer) { clearInterval(spinnerTimer); spinnerTimer = null; }
-  if (streamState === 'streaming') {
-    const elapsed = ((Date.now() - waitingStartTime) / 1000).toFixed(1);
-    process.stdout.write(`\n  ${C.success('✓')} ${C.dim(`[${elapsed}s]  ${streamTokenCount.toLocaleString()} tokens`)}\n`);
-  }
+  // Status line printed by stream handler or startStreamingPhase — no duplicate here
 }
 
 function startSpinner(): void { startWaitingPhase(); }
