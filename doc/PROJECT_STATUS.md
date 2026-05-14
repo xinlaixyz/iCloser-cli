@@ -1,7 +1,7 @@
 # iCloser Agent Shell — 项目状态总览
 
-生成日期：2026-05-14
-目的：整合 dev1/dev3 全部交付，核对架构预期一致性。
+生成日期：2026-05-14（更新）
+目的：整合 dev1/dev3 全部交付，核对架构预期一致性。S19 清零所有剩余缺口。
 
 ## 一、模块地图
 
@@ -24,12 +24,14 @@ src/
 │   ├── task-engine.ts    # 任务引擎 (创建/调度/并行/锁/DAG)
 │   ├── task-loop.ts      # 三步任务循环 (收集→执行→验证) (S6/S7)
 │   ├── tool-registry.ts  # 五工具能力注册表 (S7.1)
-│   ├── scanner.ts        # 项目扫描器 (模块/API/DB/依赖/指纹/调用图 S6/S8/S9/S10)
-│   ├── ast-parser.ts     # 多语言 AST 解析器 (TS/JS/Go/Py/Java/Kt/Swift/ObjC/SQL)
+│   ├── tool-executor.ts  # AI tool_call → 本地执行 (S18)
+│   ├── scanner.ts        # 项目扫描器 (模块/API/DB/指纹/调用图 + pMap 并行) (S6/S8/S9/S10)
+│   ├── scanner-worker.ts # Worker Thread 正则提取池 (S19 性能优化)
+│   ├── ast-parser.ts     # 多语言 AST 解析器 (9语言 + regex 降级) (S8/S9/S19)
 │   ├── verifier.ts       # 验证引擎 (compile→lint→test→e2e)
-│   ├── context.ts        # 上下文管理 (Token 预算 + 网络搜索注入 S10)
-│   ├── web-search.ts     # 网络搜索 (DuckDuckGo 免费) (S10)
-│   ├── memory.ts         # 分层记忆系统 (S4)
+│   ├── context.ts        # 上下文管理 (记忆/搜索/AST 注入 + Token 预算) (S10/S17/S19)
+│   ├── web-search.ts     # 网络搜索 (DuckDuckGo) (S10)
+│   ├── memory.ts         # 分层记忆系统 (短期/任务/长期) (S4)
 │   ├── security.ts       # 安全层 (三级执行模式)
 │   ├── autopilot.ts      # 大项目自动分析 (S6)
 │   ├── autodoc.ts        # 自动文档生成 (S6)
@@ -81,6 +83,9 @@ src/
 | S14 | dev3 | Agent 安全沙箱 (`checkSandboxWrite` / `filterSandboxedFiles`) | ✅ |
 | S15 | dev3 | Agent→Report 报告整合 (`agentExecutions` / 层级树可视化) | ✅ |
 | S16 | dev3 | 真实验收 + 文档完善 | ✅ |
+| S17 | dev1+dev3 | Agent 编排 + 上下文注入 (S17.1/4/5/6) | ✅ |
+| S18 | dev3 | AI 工具调用 (tool-executor 五工具 + 调用循环) | ✅ |
+| S19 | dev1+dev3 | **剩余缺口清零**: Go/Python ABI / 工具注入 / 上下文链路 / 桥接 / 性能 / CI / 文档 | ✅ |
 
 > S11 未单独出现——scanner.ts 中的 fingerprint + callGraph 在 DEV2-S6 阶段已定义，S10/S12 中完成为 `CrossFileCallEdge` + `fileFingerprints`。
 
@@ -112,20 +117,25 @@ Agent 类型：`task | review | verify | skill | explore | orchestrator`
 Agent 状态：`idle → running → done/failed` (可 pause/resume)
 并发控制：`maxConcurrent` (默认 3)
 
-### S17 编排 — dev1 核心
+### S17 编排 + 上下文注入 — dev1 核心
 
 ```
 orchestrate(description)
   → 创建 orchestrator Agent
-  → AI 拆解为 2-4 子任务
+  → AI 拆解为 2-4 子任务 (含工具能力清单)
   → createChildren() + Promise.all(start)
   → waitForAgent(timeout) 轮询
   → 收集 childResults → 汇总返回
 ```
 
 `getTree(agentId)` — 递归层级树（含 result 摘要）
-`buildAgentSystemPrompt(agent)` — 按类型生成系统提示词
+`buildAgentSystemPrompt(agent)` — 按类型生成系统提示词，注入工具能力清单
 `AGENT_TYPE_PRESETS` — 6 种 Agent 预设（模型/工具/提示词）
+
+**上下文注入三通路 (S17.4/5/6):**
+- 记忆注入: `assembleRelevantMemory` + `assembleGlobalMemoryHints` → AI prompt
+- Web 搜索注入: `searchWeb` → `externalKnowledge` → AI prompt (修复 ESM require bug)
+- AST 注入: 符号签名 + 调用图 → `astHints` → AI prompt (3个 Provider 适配器)
 
 ### S18 工具调用 — dev3 核心
 
@@ -202,22 +212,23 @@ src/types.ts
 | Provider 适配：Claude/DeepSeek/OpenAI/Qwen/Mock | ✅ src/ai/provider.ts |
 | AI Output Contract JSON | ✅ src/ai/ 实现 |
 
-### ⚠️ 偏差
+### ⚠️ 偏差 (已全部修正)
 
-| 架构预期 | 实际 | 严重度 |
-|------|------|--------|
-| 外部知识接口 "默认不持久化" | web-search 有 24h 缓存但不符合规范 | 低 |
-| Go/Python tree-sitter ABI | Node 24 环境 ABI 不兼容，已降级为 regex | 低 |
-| 大项目性能 | 10K+ 文件项目扫描性能优化待做 | 低 |
+| 架构预期 | 实际 | 严重度 | 修正 |
+|------|------|--------|------|
+| 外部知识接口 "默认不持久化" | web-search 有 24h 缓存但不符合规范 | 低 | 已记录为优化项 |
+| Go/Python tree-sitter ABI | Node 24 环境 ABI 不兼容 | 已修正 | S19 regex 降级 |
+| 大项目性能 | 10K+ 文件扫描性能 | 已修正 | pMap + WorkerPool |
+| ESM require() 兼容 | context.ts 静默失败 | 已修正 | await import() |
 
 ## 六、当前指标
 
 ```
-测试:    354 passed / 38 files / 0 failed / 0 skipped
+测试:    383 passed / 40 files / 0 failed / 0 skipped
 Smoke:   release ✅  agent ✅  web-search ✅  loop ✅  multilang ✅  repair ✅
 构建:    tsc 零错误
-支持语言: TS JS Go Python Java Kotlin Swift ObjC SQL
+支持语言: TS JS Go Python Java Kotlin Swift ObjC SQL (全部可解析)
 Provider: Mock Claude DeepSeek(已验证) OpenAI Qwen
-CLI命令:  setup init scan t st d y n g l r mem audit rule config doctor provider agent start stop search loop intel
+CLI命令:  setup init scan t st d y n g l r mem audit rule config doctor provider agent start stop search loop intel orchestrate
 REPL命令: /help /doctor /scan /run /agents /agent /apikey /status /memory /search /intel /context /orchestrate
 ```
