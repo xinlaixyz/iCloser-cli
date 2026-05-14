@@ -266,7 +266,53 @@ A: 启动 REPL 后输入 `/apikey`, 或运行 `ic setup`。
 
 ---
 
-## 9. 变更日志
+## 9. 打包与分发
+
+### 一键安装
+
+```bash
+# Windows (PowerShell 管理员)
+powershell -ExecutionPolicy Bypass -File install.ps1
+
+# macOS / Linux
+chmod +x install.sh && ./install.sh
+```
+
+**install.ps1 / install.sh 自动完成:**
+1. 检测/安装 Node.js >= 18 (winget / brew / nvm)
+2. `npm install` 安装依赖
+3. `npx tsc` 编译 TypeScript
+4. 运行测试验证
+5. `npm link` 全局注册 `ic` 命令
+6. 显示快速开始指南
+
+### 卸载
+
+```bash
+# Windows
+.\install.ps1 -Uninstall
+
+# macOS / Linux
+./install.sh --uninstall
+```
+
+### NPM 包分发
+
+```bash
+npm pack                           # → icloser-agent-shell-0.1.0.tgz
+npm install -g ./icloser-agent-shell-0.1.0.tgz  # 离线安装
+npm publish                        # 发布到 npm registry
+```
+
+### 发布前检查
+
+```bash
+npm run build && npm test && npm run smoke
+```
+
+---
+
+## 10. 变更日志
 
 | 日期 | 版本 | 内容 |
 |------|------|------|
