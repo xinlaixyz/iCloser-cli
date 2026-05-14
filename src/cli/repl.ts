@@ -2274,71 +2274,67 @@ export function replCompleter(line: string): [string[], string] {
   return [[], line];
 }
 
-// S20.7: command palette
-function renderCommandPalette(filter: string): string {
-  const tw = termWidth(); const w = tw - 4;
-  const all = [
-    { name: '/help', desc: '查看帮助', aliases: '/h /?' },
-    { name: '/scan', desc: '扫描项目并更新索引', aliases: '/s' },
-    { name: '/verify', desc: '验证项目', aliases: '/v' },
-    { name: '/write', desc: '写入待确认文件', aliases: '/w' },
-    { name: '/diff', desc: '预览代码变更', aliases: '/d' },
-    { name: '/undo', desc: '撤销上次写入', aliases: '' },
-    { name: '/test', desc: '生成测试', aliases: '/tt' },
-    { name: '/report', desc: '生成任务报告', aliases: '/rp' },
-    { name: '/commit', desc: '提交 Git', aliases: '' },
-    { name: '/status', desc: '查看状态', aliases: '' },
-    { name: '/doctor', desc: '诊断下一步动作', aliases: '' },
-    { name: '/config', desc: '查看和修改配置', aliases: '/cd' },
-    { name: '/apikey', desc: '输入 API Key', aliases: '/key' },
-    { name: '/run', desc: 'Agent 执行任务', aliases: '' },
-    { name: '/agents', desc: 'Agent 列表', aliases: '/ag' },
-    { name: '/orchestrate', desc: '多 Agent 编排', aliases: '' },
-    { name: '/search', desc: '搜索代码', aliases: '' },
-    { name: '/intel', desc: '代码智能查询', aliases: '/code' },
-    { name: '/context', desc: '查看上下文', aliases: '/ctx' },
-    { name: '/memory', desc: '查看记忆', aliases: '/mem' },
-    { name: '/start', desc: '启动开发服务器', aliases: '/serve' },
-    { name: '/stop', desc: '停止服务', aliases: '' },
-    { name: '/docs', desc: '文档操作: ask/summarize/review/rewrite/changelog', aliases: '' },
-    { name: '/restart', desc: '重启服务', aliases: '' },
-    { name: '/brief', desc: '简洁模式(折叠代码块)', aliases: '' },
-    { name: '/full', desc: '详细模式(完整输出)', aliases: '' },
-    { name: '/clear', desc: '清空对话历史', aliases: '/c' },
-    { name: '/exit', desc: '退出 REPL', aliases: '/quit /q' },
-  ];
-  const q = filter.toLowerCase();
-  const matched = q ? all.filter(c => c.name.includes(q) || c.desc.includes(q) || c.aliases.includes(q)) : all;
-  let out = `\n  ${C.accent('╭─')} ${C.accent('命令面板')} ${C.accent('─'.repeat(w - 10) + '╮')}\n`;
-  if (q) { out += `  ${C.accent('│')} ${C.dim('> ' + filter)}${' '.repeat(w - 3 - filter.length)}${C.accent('│')}\n`; }
-  out += `  ${C.accent('│')} ${C.dim('─'.repeat(w - 2))} ${C.accent('│')}\n`;
-  for (const c of matched.slice(0, 20)) {
-    const line = `${C.accent(c.name.padEnd(16))} ${C.dim(c.desc)}`;
-    out += `  ${C.accent('│')} ${line}${' '.repeat(Math.max(0, w - 2 - line.replace(/\x1b\[[0-9;]*m/g, '').length))}${C.accent('│')}\n`;
-  }
-  out += `  ${C.accent('╰')}${C.accent('─'.repeat(w))}${C.accent('╯')}`;
-  return out;
-}
+// S20.7: full command palette
+const ALL_PALETTE = [
+  { name: '/help', desc: '查看帮助', aliases: '/h' },
+  { name: '/scan', desc: '扫描项目并更新索引', aliases: '/s' },
+  { name: '/init', desc: '初始化项目配置', aliases: '/i' },
+  { name: '/verify', desc: '验证项目(编译/lint/test)', aliases: '/v' },
+  { name: '/write', desc: '写入待确认文件', aliases: '/w' },
+  { name: '/diff', desc: '预览代码变更', aliases: '/d' },
+  { name: '/undo', desc: '撤销上次写入', aliases: '' },
+  { name: '/test', desc: '生成测试', aliases: '/tt' },
+  { name: '/report', desc: '生成任务报告', aliases: '/rp' },
+  { name: '/commit', desc: '提交 Git', aliases: '' },
+  { name: '/status', desc: '查看会话状态', aliases: '' },
+  { name: '/doctor', desc: '诊断下一步动作', aliases: '' },
+  { name: '/config', desc: '查看和修改配置', aliases: '/cd' },
+  { name: '/apikey', desc: '输入 API Key', aliases: '/key' },
+  { name: '/run', desc: 'Agent 执行任务', aliases: '' },
+  { name: '/agents', desc: 'Agent 列表', aliases: '/ag' },
+  { name: '/docs', desc: '文档操作(ask/summarize/review...)', aliases: '' },
+  { name: '/orchestrate', desc: '多 Agent 编排', aliases: '' },
+  { name: '/search', desc: '代码搜索', aliases: '' },
+  { name: '/intel', desc: '代码智能(符号/调用图)', aliases: '/code' },
+  { name: '/context', desc: '查看 AI 上下文', aliases: '/ctx' },
+  { name: '/memory', desc: '查看会话记忆', aliases: '/mem' },
+  { name: '/start', desc: '启动项目 dev server', aliases: '/serve' },
+  { name: '/stop', desc: '停止后台服务', aliases: '' },
+  { name: '/restart', desc: '重启后台服务', aliases: '' },
+  { name: '/brief', desc: '简洁模式(折叠代码块)', aliases: '' },
+  { name: '/full', desc: '详细模式(完整输出)', aliases: '' },
+  { name: '/clear', desc: '清空对话历史', aliases: '/c' },
+  { name: '/exit', desc: '退出 REPL', aliases: '/quit /q' },
+];
 
 async function cmdCommandPalette(query: string): Promise<void> {
-  console.log(renderCommandPalette(query));
-  console.log(`  ${C.dim('输入完整命令或 /? 返回')}\n`);
+  const filtered = query ? ALL_PALETTE.filter(c => c.name.includes(query) || c.desc.includes(query) || c.aliases.includes(query)) : ALL_PALETTE;
+  console.log(`\n  ${C.accent('╭─')} ${C.accent('命令面板')} ${C.dim(`(${filtered.length} 个)`)} ${C.accent('─'.repeat(50)) + '╮'}`);
+  if (query) console.log(`  ${C.accent('│')} ${C.dim('搜索:')} ${C.accent(query)}`);
+  console.log(`  ${C.accent('│')}`);
+  for (const c of filtered.slice(0, 16)) {
+    const aliasStr = c.aliases ? ` ${C.dim(c.aliases)}` : '';
+    console.log(`  ${C.accent('│')} ${C.accent(c.name.padEnd(16))} ${C.dim(c.desc)}${aliasStr}`);
+  }
+  if (filtered.length > 16) console.log(`  ${C.accent('│')} ${C.dim(`... 还有 ${filtered.length - 16} 个命令`)}`);
+  console.log(`  ${C.accent('╰')}${C.accent('─'.repeat(68))}${C.accent('╯')}`);
+  console.log(`  ${C.dim('/? <关键词> 过滤  |  输入完整命令执行')}\n`);
 }
 
-// S20.8: history search via ! prefix
+// S20.8: history search
 async function cmdHistorySearch(query: string): Promise<void> {
   const q = query.toLowerCase();
-  const hits = state.conversation
-    .filter(m => m.role === 'user' && m.content.toLowerCase().includes(q))
-    .slice(-10);
+  const userMsgs = state.conversation.filter(m => m.role === 'user');
+  const hits = userMsgs.filter(m => m.content.toLowerCase().includes(q)).slice(-10).reverse();
   if (hits.length === 0) { console.log(`  ${C.dim('无匹配历史')}\n`); return; }
-  console.log(`\n  ${C.accent('╭─')} ${C.accent('历史搜索: ' + query)} ${C.accent('─'.repeat(40)) + '╮'}`);
+  console.log(`\n  ${C.accent('╭─')} ${C.accent(`历史: ${query}`)} ${C.dim(`(${hits.length} 条)`)} ${C.accent('─'.repeat(40)) + '╮'}`);
   for (let i = 0; i < hits.length; i++) {
-    const display = hits[i].content.length > 70 ? hits[i].content.substring(0, 67) + '…' : hits[i].content;
-    console.log(`  ${C.accent('│')} ${C.dim(String(i + 1).padStart(2))} ${C.dim('│')} ${display}`);
+    const num = hits.length - i;
+    const display = hits[i].content.length > 72 ? hits[i].content.substring(0, 69) + '…' : hits[i].content;
+    console.log(`  ${C.accent('│')} ${C.primary(`!${num}`.padStart(3))} ${C.dim('│')} ${display}`);
   }
-  console.log(`  ${C.accent('╰')}${C.accent('─'.repeat(50))}${C.accent('╯')}`);
-  console.log(`  ${C.dim('输入数字选择历史，或输入任意内容继续')}\n`);
+  console.log(`  ${C.accent('╰')}${C.accent('─'.repeat(60))}${C.accent('╯')}`);
+  console.log(`  ${C.dim('输入 !数字 复用历史  |  输入其他内容继续对话')}\n`);
 }
 
 function resolveApiKeyForProvider(provider: AIProvider): string {
