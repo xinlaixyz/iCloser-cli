@@ -153,7 +153,7 @@ const SLASH_COMMANDS = [
   '/diff', '/d', '/undo', '/test', '/tt', '/report', '/rp', '/apikey', '/key',
   '/commit', '/config', '/cd', '/pwd', '/start', '/serve', '/stop', '/restart', '/status', '/doctor', '/run', '/agents', '/ag',
   '/global', '/gm', '/memory', '/mem', '/search', '/context', '/ctx', '/intel', '/code',
-  '/brief', '/full', '/p', '/orchestrate',
+  '/brief', '/full', '/p', '/orchestrate', '/docs',
 ];
 
 function box(content: string, title: string): string { return drawWideBox(content, { title }); }
@@ -787,6 +787,7 @@ async function handleSlashCommand(input: string): Promise<void> {
     case '/search': if (args) await cmdSearch(args); break;
     case '/intel': case '/code': if (args) await cmdIntel(args); else console.log(`  ${C.dim('用法: /intel <函数名 | 文件 | 依赖>')}\n`); break;
     case '/context': case '/ctx': await cmdContext(args); break;
+    case '/docs': await cmdDocsSlash(args); break;
     default: console.log(`  ${C.warn('?')} 未知命令: ${cmd}\n`);
     }
     }
@@ -2295,6 +2296,7 @@ function renderCommandPalette(filter: string): string {
     { name: '/memory', desc: '查看记忆', aliases: '/mem' },
     { name: '/start', desc: '启动开发服务器', aliases: '/serve' },
     { name: '/stop', desc: '停止服务', aliases: '' },
+    { name: '/docs', desc: '文档操作: ask/summarize/review/rewrite/changelog', aliases: '' },
     { name: '/restart', desc: '重启服务', aliases: '' },
     { name: '/brief', desc: '简洁模式(折叠代码块)', aliases: '' },
     { name: '/full', desc: '详细模式(完整输出)', aliases: '' },
@@ -2738,6 +2740,60 @@ async function cmdIntel(query: string): Promise<void> {
 
 async function cmdContext(args: string): Promise<void> {
   try { const { listTasks } = await import('../core/task-engine.js'); const tasks = await listTasks(process.cwd()); if (tasks.length === 0) { console.log(`  ${C.dim('无任务')}\n`); return; } if (args) { const t = tasks.find(t2 => t2.id.startsWith(args)); if (t) console.log(drawWideBox('ID ' + C.accent(t.id) + '\n状态 ' + C.accent(t.status) + '\n描述 ' + t.description, { title: '任务' }) + '\n'); else console.log(`  ${C.dim('未找到')}\n`); } else console.log(`  任务数: ${C.accent(String(tasks.length))}\n`); } catch { console.log(`  ${C.dim('无法加载')}\n`); }
+}
+
+// /docs sub-commands in REPL
+async function cmdDocsSlash(args: string): Promise<void> {
+  if (!args) { console.log(`  ${C.dim('用法: /docs ask|summarize|review|rewrite|changelog <参数>')}\n`); return; }
+  const parts = args.split(/\s+/);
+  const sub = parts[0];
+  const rest = parts.slice(1).join(' ');
+  try {
+    const config = await loadConfig(process.cwd());
+    if (!config) { console.log(`  ${C.warn('!')} 项目未初始化\n`); return; }
+    const { askDocs, summarizeDoc, reviewDoc, rewriteDoc, generateChangelog, readFileContent } = await import('../core/docs-generator.js');
+
+    if (sub === 'ask' || sub === 'a') {
+      if (!rest) { console.log(`  ${C.dim('用法: /docs ask 你的问题')}\n`); return; }
+      console.log(`  ${C.primary('◉')} ${C.dim('查询文档中...')}`);
+      const index = state.projectIndex as unknown as import('../types.js').ProjectIndex || { modules: [], identity: { language: 'unknown', framework: 'unknown', database: 'unknown', buildSystem: 'unknown', testFramework: 'unknown', runtime: 'node', languageVersion: 'unknown', deploymentType: 'unknown', packageManager: 'npm' } };
+      const answer = await askDocs(process.cwd(), rest, index, { ai: config.ai });
+      console.log(`\n  ${answer}\n`);
+    } else if (sub === 'summarize' || sub === 's') {
+      if (!rest) { console.log(`  ${C.dim('用法: /docs summarize <文件路径>')}\n`); return; }
+      console.log(`  ${C.primary('◉')} ${C.dim('生成摘要...')}`);
+      const content = await readFileContent(process.cwd(), rest);
+      const summary = await summarizeDoc(content, { ai: config.ai });
+      console.log(`\n  ${C.dim('─── ' + rest + ' ───')}\n  ${summary}\n`);
+    } else if (sub === 'review' || sub === 'r') {
+      if (!rest) { console.log(`  ${C.dim('用法: /docs review <文件路径>')}\n`); return; }
+      console.log(`  ${C.primary('◉')} ${C.dim('审查文档...')}`);
+      const content = await readFileContent(process.cwd(), rest);
+      const issues = await reviewDoc(content, { ai: config.ai });
+      console.log(`\n  ${C.accent('质量审查: ' + rest)}\n`);
+      for (const issue of issues) {
+        const icon = issue.severity === 'high' ? I.err : issue.severity === 'medium' ? I.warn : I.ok;
+        console.log(`  ${icon} ${issue.section}: ${issue.description}`);
+        if (issue.suggestion) console.log(`    ${C.dim('→ ' + issue.suggestion)}`);
+      }
+      console.log();
+    } else if (sub === 'rewrite' || sub === 'w') {
+      const forIdx = rest.indexOf('--for');
+      const file = forIdx > 0 ? rest.slice(0, forIdx).trim() : rest;
+      const audience = forIdx > 0 ? rest.slice(forIdx + 5).trim() : 'beginner';
+      if (!file) { console.log(`  ${C.dim('用法: /docs rewrite <文件> --for beginner|developer|manager')}\n`); return; }
+      console.log(`  ${C.primary('◉')} ${C.dim(`改写为 ${audience} 版本...`)}`);
+      const content = await readFileContent(process.cwd(), file);
+      const rewritten = await rewriteDoc(content, audience, { ai: config.ai });
+      console.log(`\n  ${C.dim('─── ' + file + ' → ' + audience + ' ───')}\n  ${rewritten}\n`);
+    } else if (sub === 'changelog' || sub === 'c') {
+      console.log(`  ${C.primary('◉')} ${C.dim('生成 CHANGELOG...')}`);
+      const changelog = await generateChangelog(process.cwd(), { ai: config.ai });
+      console.log(`\n${changelog}\n`);
+    } else {
+      console.log(`  ${C.dim('用法: /docs ask|summarize|review|rewrite|changelog <参数>')}\n`);
+    }
+  } catch (err) { console.log(`  ${I.err} ${(err as Error).message}\n`); }
 }
 
 
