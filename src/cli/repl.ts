@@ -22,7 +22,7 @@ import {
   drawWideBox, processStep,
   notification, thinDivider, termWidth,
 } from './theme.js';
-import { renderBottomPanel, DEFAULT_SHORTCUTS, type BottomPanelState } from './tui.js';
+import { renderBottomPanel, DEFAULT_SHORTCUTS, contextMeterItem, type BottomPanelState } from './tui.js';
 import type { AIConfig, AIProvider, AIPrompt, ContextPackage, ProjectIdentity, ProjectIndex, Task } from '../types.js';
 import type { StreamCallback } from '../ai/provider.js';
 import {
@@ -153,6 +153,7 @@ const SLASH_COMMANDS = [
   '/diff', '/d', '/undo', '/test', '/tt', '/report', '/rp', '/apikey', '/key',
   '/commit', '/config', '/cd', '/pwd', '/start', '/serve', '/stop', '/restart', '/status', '/doctor', '/run', '/agents', '/ag',
   '/global', '/gm', '/memory', '/mem', '/search', '/context', '/ctx', '/intel', '/code',
+  '/brief', '/full', '/p', '/orchestrate',
 ];
 
 function box(content: string, title: string): string { return drawWideBox(content, { title }); }
@@ -210,7 +211,7 @@ function buildCurrentPanel(): BottomPanelState {
       actions: [{ key: 'w', label: '写入全部', action: 'write' }, { key: 'd', label: '预览变更', action: 'diff' }, { key: 'x', label: '取消', action: 'cancel' }],
     };
   }
-  return DEFAULT_SHORTCUTS;
+  return { ...DEFAULT_SHORTCUTS, items: [contextMeterItem(ctxTokens, ctxMax)] };
 }
 
 function refreshPrompt(): void {
@@ -2153,6 +2154,8 @@ function renderCommandPalette(filter: string): string {
     { name: '/start', desc: '启动开发服务器', aliases: '/serve' },
     { name: '/stop', desc: '停止服务', aliases: '' },
     { name: '/restart', desc: '重启服务', aliases: '' },
+    { name: '/brief', desc: '简洁模式(折叠代码块)', aliases: '' },
+    { name: '/full', desc: '详细模式(完整输出)', aliases: '' },
     { name: '/clear', desc: '清空对话历史', aliases: '/c' },
     { name: '/exit', desc: '退出 REPL', aliases: '/quit /q' },
   ];
