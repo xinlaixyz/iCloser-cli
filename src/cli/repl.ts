@@ -76,6 +76,9 @@ interface SessionState {
   lastWrittenFiles: PendingFile[];
   _retryCount: number;
   _pendingKeyProvider: AIProvider | null;
+  convPhase: 'idle' | 'task_created' | 'task_running' | 'task_completed';
+  currentTaskId?: string;
+  taskBoundaries: number[];  // conversation indices where tasks ended
 }
 
 interface ProjectIndexSummary {
@@ -105,6 +108,7 @@ let state: SessionState = {
   projectIndex: null,
   aiConfig: { provider: 'deepseek', model: 'deepseek-v4-pro', apiKey: '', maxTokens: 4096, temperature: 0.7 },
   running: true, pendingFiles: [], lastWrittenFiles: [], _retryCount: 0, _pendingKeyProvider: null,
+  convPhase: 'idle', taskBoundaries: [],
 };
 
 let rl: readline.Interface;
@@ -896,7 +900,7 @@ async function handleChat(input: string): Promise<void> {
   try {
     const history = state.conversation.slice(-6).map(m => `${m.role}: ${m.content}`).join('\n');
     const richContext = await buildRichContext(input);
-    const prompt: AIPrompt = { systemPrompt: buildSystemPrompt(), context: richContext, task: input, history };
+    const prompt: AIPrompt = { systemPrompt: await buildSystemPrompt(), context: richContext, task: input, history };
     printToolDegradationNotice();
     console.log(`\n  ${C.accent('◇')} ${chalk.bold('You')}  ${input}`);
     state.conversation.push({ role: 'user', content: input, timestamp: new Date().toISOString() });
@@ -1952,16 +1956,16 @@ async function cmdCommit(msg: string): Promise<void> {
 import type { AgentManager } from '../agent/manager.js';
 let _agentManager: AgentManager | null = null;
 
-function getAgentManager(): AgentManager {
+async function getAgentManager(): Promise<AgentManager> {
   if (!_agentManager) {
-    const { AgentManager: AM } = require('../agent/manager.js');
+    const { AgentManager: AM } = await import('../agent/manager.js');
     _agentManager = new AM(state.aiConfig, 3);
   }
   return _agentManager!;
 }
 
 async function cmdOrchestrate(description: string): Promise<void> {
-  const mgr = getAgentManager();
+  const mgr = await getAgentManager();
   console.log(`\n  ${I.running} ${chalk.bold('编排')} ${C.dim('拆解任务 → 并行执行 → 汇总')}`);
   console.log(`  ${C.dim('╭─')} ${C.accent(description.substring(0, 60))}`);
   const result = await mgr.orchestrate(description);
@@ -1979,7 +1983,7 @@ async function cmdOrchestrate(description: string): Promise<void> {
   }
 }
 async function cmdRunAgent(description: string): Promise<void> {
-  const mgr = getAgentManager();
+  const mgr = await getAgentManager();
   const agent = mgr.create({ name: description, type: 'task' });
   console.log(`  ${I.ok} Agent ${C.accent(agent.id.substring(0, 10))} 已启动\n`);
   const started = await mgr.start(agent.id, description);
@@ -2023,7 +2027,7 @@ function cmdListAgents(): void {
 async function cmdAgentSlash(args: string): Promise<void> {
   const parts = args.trim().split(/\s+/);
   const sub = parts[0]; const rest = parts.slice(1).join(' ');
-  const mgr = getAgentManager();
+  const mgr = await getAgentManager();
   if (sub === 'stop' && rest) {
     if (mgr.stop(rest)) console.log(`  ${I.ok} Agent 已停止\n`);
     else console.log(`  ${C.warn('!')} Agent 不存在\n`);
@@ -2134,18 +2138,22 @@ function renderMarkdownLine(line: string, maxW: number): void {
   // Table rows
   if (line.trim().startsWith('|') && line.trim().endsWith('|')) {
     const cells = line.trim().split('|').filter(c => c.trim()).map(c => c.trim());
+    if (cells.length === 0) { tableHeaderSeen = false; process.stdout.write('\n'); return; }
     // Separator row: |---|----|
     if (cells.every(c => /^:?-{3,}:?$/.test(c))) {
       tableHeaderSeen = true;
-      process.stdout.write(`  ${C.dim('├─' + cells.map(() => '─'.repeat(10)).join('─┼─') + '─┤')}\n`);
+      const colW = Math.max(8, Math.floor((maxW - 4 - cells.length * 3) / cells.length));
+      process.stdout.write(`  ${C.dim('├' + cells.map(() => '─'.repeat(colW + 2)).join('┼') + '┤')}\n`);
       return;
     }
     const isHeader = !tableHeaderSeen && cells.length > 0;
     if (isHeader) tableHeaderSeen = true;
-    const maxCellW = Math.min(26, Math.floor((maxW - 4) / Math.max(cells.length, 1)));
-    const rendered = cells.map((c, i) => {
-      const display = c.length > maxCellW ? c.substring(0, maxCellW - 1) + '…' : c;
-      return isHeader ? chalk.bold(display) : C.dim(display);
+    // Calculate cell width based on terminal width and column count
+    const colW = Math.max(8, Math.floor((maxW - 4 - cells.length * 3) / cells.length));
+    const rendered = cells.map((_c, i) => {
+      const c = cells[i];
+      const display = c.length > colW ? c.substring(0, colW - 1) + '…' : c.padEnd(colW);
+      return isHeader ? chalk.bold(display) : renderInlineFormatting(display);
     }).join(C.dim(' │ '));
     process.stdout.write(`  ${C.dim('│')} ${rendered} ${C.dim('│')}\n`);
     return;
@@ -2203,7 +2211,7 @@ function stopWaitingPhase(): void {
 function startSpinner(): void { startWaitingPhase(); }
 function stopSpinner(): void { stopWaitingPhase(); }
 
-export function replCompleter(line: string): [string[], string] {
+export async function replCompleter(line: string): Promise<[string[], string]> {
   if (!line.startsWith('/')) return [[], line];
 
   const providerNames = getAvailableProviders().map(provider => provider.name);
@@ -2234,10 +2242,10 @@ export function replCompleter(line: string): [string[], string] {
       // S20.9: file path completion for file-aware commands
       const hintPart = endsWithSpace ? '' : (parts[1] || '');
       try {
-        const fs = require('fs'); const p = require('path');
-        const dir = hintPart ? p.dirname(hintPart) : '.';
-        const prefix = hintPart ? p.basename(hintPart) : '';
-        const entries = fs.readdirSync(dir, { withFileTypes: true });
+        const { readdirSync } = await import('fs'); const { dirname, basename } = await import('path');
+        const dir = hintPart ? dirname(hintPart) : '.';
+        const prefix = hintPart ? basename(hintPart) : '';
+        const entries = readdirSync(dir, { withFileTypes: true });
         const matches = entries.filter((e: { name: string }) => e.name.startsWith(prefix)).map((e: { name: string }) => `${hintPart ? hintPart.substring(0, hintPart.length - prefix.length) : ''}${e.name} `);
         return [matches.slice(0, 20), line];
       } catch { return [[], line]; }
@@ -2420,7 +2428,7 @@ async function detectProjectContext(): Promise<void> {
     }
   } catch {}
 }
-function buildSystemPrompt(): string {
+async function buildSystemPrompt(): Promise<string> {
   const ctx = state.context;
   const idx = state.projectIndex;
   const cwd = process.cwd();
@@ -2432,10 +2440,10 @@ function buildSystemPrompt(): string {
 
   // S17.1: Tool capability injection
   try {
-    const { buildToolCapabilitySnapshot } = require('../core/tool-registry.js');
-    const snapshot = buildToolCapabilitySnapshot();
+    let capabilities: { name: string; status: string; purpose: string; fallback: string }[] = [];
+    try { const mod = await import('../core/tool-registry.js'); capabilities = mod.buildToolCapabilitySnapshot().capabilities; } catch {}
     p += '\n\n## 本地工具能力（S17.1）';
-    p += '\n' + snapshot.capabilities.map((c: { name: string; status: string; purpose: string; fallback: string }) => {
+    p += '\n' + capabilities.map(c => {
       if (c.status === 'available') return `- ${c.name}：${c.purpose}`;
       return `- ${c.name}（降级）：${c.fallback}`;
     }).join('\n');
