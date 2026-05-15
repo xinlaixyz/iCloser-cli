@@ -82,12 +82,82 @@ const FAST_RULES: RegexRule[] = [
     requiresConfirmation: false,
     reasoning: '闲聊或问候，无工程意图',
   },
+  // ── DevOps intents (E1-E6) ──
+  {
+    patterns: [
+      /(启动|运行|start|serve).*(项目|服务|后端|前端|server|dev)/i,
+      /(停止|停掉|关掉|kill|stop).*(项目|服务|进程|server|dev)/i,
+      /(重启|重新启动|restart).*(项目|服务|server)/i,
+      /(跑|运行|执行).*(测试|test|spec)/i,
+      /(构建|build|编译|compile).*(项目|代码)/i,
+      /(部署|deploy|发布|release).*(项目|上线|生产)/i,
+    ],
+    category: 'devops',
+    confidence: 0.85,
+    requiresConfirmation: true,
+    reasoning: '用户要求执行 DevOps 操作（启动/停止/测试/构建/部署）',
+  },
+  // ── PM intents (I1-I6) ──
+  {
+    patterns: [
+      /(能|可以|能不能|可否).*(发布|上线|release|ship|deploy)/i,
+      /(发布|release).*(卡关|阻塞|检查|状态)/i,
+      /(路线图|roadmap|里程碑|milestone).*(进度|完成|状态)/i,
+      /(有什么|哪些|有什么).*(风险|risk|问题|隐患)/i,
+      /(评估|估算|estimate).*(复杂度|工作量|工期|时间|effort)/i,
+      /(生成|写|给我).*(周报|日报|月报|报告|report|summary)/i,
+      /(谁|什么|哪个).*(阻塞|block).*(发布|release|上线)/i,
+    ],
+    category: 'pm',
+    confidence: 0.85,
+    requiresConfirmation: false,
+    reasoning: '用户需要 PM 视角的信息（发布状态/路线图/风险/估算）',
+  },
+  // ── Plan intent: large multi-step requests ──
+  {
+    patterns: [
+      /(做|开发|实现|搭建|建一个|构建|创建|写一个).*(系统|平台|后台|项目|工程|应用|app|网站|服务)/,
+      /(完整的|整套|整个|全栈|前后端).*(系统|项目|功能|模块)/,
+      /(帮我|给我).*(设计|规划|计划|方案|架构)/,
+      /(implement|build|create|develop).*(system|platform|project|application|service)/i,
+      /(包含|包括).{2,30}(注册|登录|认证|权限|管理|支付|通知|搜索|上传)/,
+    ],
+    category: 'plan',
+    confidence: 0.85,
+    requiresConfirmation: false,
+    reasoning: '用户提出大型/多步骤需求，应先生成开发计划',
+  },
+  // ── Code fix intent ──
+  {
+    patterns: [
+      /(修复|修|fix|解决|处理).*(错误|bug|报错|异常|崩溃|失败|问题)/i,
+      /(这个|有个).*(错误|bug|报错|异常).*(帮我|修|修复|看)/,
+      /(fix|resolve|patch).*(error|bug|issue|crash|fail|problem)/i,
+    ],
+    category: 'code_fix',
+    confidence: 0.85,
+    requiresConfirmation: true,
+    reasoning: '用户要求修复代码错误或bug',
+  },
+  // ── Code complete intent ──
+  {
+    patterns: [
+      /(补全|补齐|补完|完成|实现).*(函数|方法|类|接口|代码|功能)/,
+      /(这个|这些|文件|代码).*(没写完|不完整|空的|缺失|缺少)/,
+      /(complete|finish|fill).*(function|method|class|code|implementation)/i,
+      /(TODO|FIXME|未完成).*(帮我|补全|实现)/,
+    ],
+    category: 'code_complete',
+    confidence: 0.85,
+    requiresConfirmation: true,
+    reasoning: '用户要求补全未完成的代码',
+  },
   // ── Broad intents second ──
   {
     patterns: [
       new RegExp('(修改|改|更新|添加|新增|创建|删除|移除|替换|rename|move).*(文件|代码|函数|方法|类|模块|组件|接口)'),
       new RegExp('(帮我|给我|请|麻烦).*(写|改|加|删|修|建|弄|实现|开发)'),
-      /(add|create|write|delete|remove|update|change|fix|implement)/i,
+      /(add|create|write|delete|remove|update|change|implement)/i,
       /(加个|加一个|写个|写一个|改下|改一下)/,
     ],
     category: 'code_change',

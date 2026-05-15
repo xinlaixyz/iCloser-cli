@@ -42,6 +42,16 @@ const DEFAULT_OPTIONS: ContextOptions = {
   bufferReserve: 0.1,             // 10% reserved for AI response + tool calls
 };
 
+// M8: Context component priority weights (higher = more token budget)
+const CONTEXT_PRIORITY: Record<string, number> = {
+  current_task: 100,       // highest priority
+  recent_conversation: 90,
+  project_code: 80,
+  relevant_memory: 50,
+  task_history: 40,
+  global_memory: 20,       // lowest — only when relevant
+};
+
 // ============================================================
 // Main context assembly
 // ============================================================
@@ -1059,6 +1069,7 @@ function assembleGlobalMemoryHints(
   identity: ProjectIdentity
 ): string {
   const parts: string[] = [];
+  parts.push('⚠️ 以下为历史记忆，仅供参考。如果没有相关信息，请如实说"无历史记录"，不要编造。');
 
   // User preferences
   const prefs = globalMem.preferences;
@@ -1115,7 +1126,7 @@ function assembleGlobalMemoryHints(
 function assembleRelevantMemory(
   task: Task,
   memory: ProjectMemory,
-  _budget: number
+  budget: number
 ): string {
   const parts: string[] = [];
 
@@ -1157,7 +1168,7 @@ function assembleRelevantMemory(
       candidate.suggestedScope !== 'task-only'
     )
     .filter(candidate => isMemoryCandidateRelevant(task.description, candidate.summary, candidate.content))
-    .slice(0, 8);
+    .slice(0, 5);  // M2: limit to 5 most relevant
 
   if (approvedCandidates.length > 0) {
     parts.push('\n## 已确认可复用记忆');
@@ -1179,14 +1190,21 @@ function assembleRelevantMemory(
     }
   }
 
-  return parts.join('\n');
+  // M2: Enforce token budget — truncate if exceeds (rough: 4 chars ≈ 1 token)
+  let result = parts.join('\n');
+  if (budget > 0 && result.length > budget * 4) {
+    result = result.slice(0, budget * 4);
+  }
+  return result;
 }
 
 function isMemoryCandidateRelevant(taskDescription: string, summary: string, content: string): boolean {
   const taskTokens = extractMemoryMatchTokens(taskDescription);
   const memoryText = `${summary} ${content}`.toLowerCase();
   if (taskTokens.length === 0) return true;
-  return taskTokens.some(token => memoryText.includes(token));
+  // M2: Require at least 2 token overlap to filter out weakly-relevant memories
+  const overlapCount = taskTokens.filter(token => memoryText.includes(token)).length;
+  return overlapCount >= 2;
 }
 
 function extractMemoryMatchTokens(text: string): string[] {

@@ -108,12 +108,44 @@ export async function stopStartedProcess(proc: StartedProcess): Promise<void> {
       return;
     }
   } catch {}
+  // S3: Graceful shutdown — SIGTERM first, wait 5s, then SIGKILL
   try { proc.child.kill('SIGTERM'); } catch {}
+  await new Promise<void>(resolve => setTimeout(resolve, 5000));
+  if (isProcessRunning(proc)) {
+    try { proc.child.kill('SIGKILL'); } catch {}
+  }
+}
+
+// S3: Health check — poll process liveness with timeout
+export async function healthCheckProcess(
+  proc: StartedProcess,
+  timeoutMs = 30000,
+  pollIntervalMs = 1000,
+): Promise<boolean> {
+  const startTime = Date.now();
+  while (Date.now() - startTime < timeoutMs) {
+    if (!isProcessRunning(proc)) return false;
+    if (proc.url) {
+      try {
+        const resp = await fetch(proc.url, { signal: AbortSignal.timeout(2000) });
+        if (resp.ok || resp.status < 500) return true;
+      } catch {}
+    }
+    await new Promise(r => setTimeout(r, pollIntervalMs));
+  }
+  return isProcessRunning(proc);
 }
 
 export function extractLocalUrl(output: string): string | null {
-  const match = output.match(/https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]):\d+[^\s)]*/i);
-  return match?.[0] || null;
+  // S4: Enhanced URL pattern — more host patterns, multiple matches
+  const pattern = /https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|\[::\]|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+):\d+[^\s),\]>]*/gi;
+  const matches = [...output.matchAll(pattern)];
+  return matches.length > 0 ? matches[0][0] : null;
+}
+
+export function extractAllUrls(output: string): string[] {
+  const pattern = /https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|\[::\]|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+):\d+[^\s),\]>]*/gi;
+  return [...new Set([...output.matchAll(pattern)].map(m => m[0]))];
 }
 
 export function formatCommandChunk(text: string, maxLines = 12): string[] {

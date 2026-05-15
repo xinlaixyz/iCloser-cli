@@ -111,6 +111,49 @@ let state: SessionState = {
   convPhase: 'idle', taskBoundaries: [],
 };
 
+// M1+M3: Conversation state machine and task boundary tracking
+function transitionPhase(phase: SessionState['convPhase'], taskId?: string) {
+  state.convPhase = phase;
+  if (taskId) state.currentTaskId = taskId;
+  else if (phase === 'idle') state.currentTaskId = undefined;
+}
+
+function conversationCheckpoint(completedTaskId?: string) {
+  if (state.convPhase === 'idle') return;
+  const marker = `--- 任务边界: ${completedTaskId || state.currentTaskId || 'unknown'} 完成, tokens: ~${estimateContextTokens()}, 消息: ${state.conversation.length} ---`;
+  state.conversation.push({ role: 'system', content: marker, timestamp: new Date().toISOString() });
+  state.taskBoundaries.push(state.conversation.length - 1);
+  transitionPhase('idle');
+}
+
+// M4: Conversation summary compression — keep last 10, summarize 11-30, discard older
+function compressConversation() {
+  const MAX_FULL = 10;
+  const MAX_ARCHIVE = 30;
+  if (state.conversation.length <= MAX_ARCHIVE) return;
+  const userAgentPairs: { user?: string; assistant?: string }[] = [];
+  let currentPair: { user?: string; assistant?: string } = {};
+  for (let i = MAX_FULL; i < state.conversation.length - MAX_FULL && i < MAX_ARCHIVE; i++) {
+    const msg = state.conversation[i];
+    if (msg.role === 'user') {
+      if (currentPair.user) { userAgentPairs.push(currentPair); currentPair = {}; }
+      currentPair.user = msg.content.slice(0, 200);
+    } else if (msg.role === 'assistant') {
+      currentPair.assistant = msg.content.slice(0, 300);
+    }
+  }
+  if (currentPair.user) userAgentPairs.push(currentPair);
+  if (userAgentPairs.length === 0) return;
+  const summary = userAgentPairs.map(p => `Q: ${(p.user || '').slice(0, 80)} -> A: ${(p.assistant || '').slice(0, 120)}`).join('\n');
+  const keepRecent = state.conversation.slice(-MAX_FULL);
+  const keepOld = state.conversation.slice(0, MAX_FULL);
+  state.conversation = [
+    ...keepOld,
+    { role: 'system', content: `[对话摘要: ${userAgentPairs.length} 轮历史]\n${summary}`, timestamp: new Date().toISOString() },
+    ...keepRecent,
+  ];
+}
+
 let rl: readline.Interface;
 let spinnerIdx = 0;
 let spinnerTimer: ReturnType<typeof setInterval> | null = null;
@@ -892,6 +935,10 @@ async function handleChat(input: string): Promise<void> {
         intent.category === 'question' ? '💡 咨询问答' :
         intent.category === 'config' ? '⚙️ 系统配置' : '';
       if (intentLabel) console.log(`  ${C.dim('意图: ' + intentLabel)}`);
+      // M1: Track conversation phase based on detected intent
+      if (['code_change', 'code_fix', 'code_complete', 'refactor', 'test_gen', 'doc_gen'].includes(intent.category)) {
+        transitionPhase('task_created');
+      }
     }
   } catch { /* intent detection is best-effort */ }
 
@@ -971,6 +1018,11 @@ async function handleChat(input: string): Promise<void> {
     process.stdout.write(`\r\x1b[K  ${C.success('✓')} ${C.dim(`[${(elapsed/1000).toFixed(1)}s]  ${lineCount} 行  ${tokens.toLocaleString()} tokens`)}\n`);
     stopWaitingPhase(); streamState = 'idle'; streamLineBuf = '';
     state.conversation.push({ role: 'assistant', content: fullResponse || response.content, timestamp: new Date().toISOString() });
+    // M3+M4: Task boundary checkpoint + conversation compression
+    if (state.convPhase !== 'idle') {
+      conversationCheckpoint(state.currentTaskId);
+    }
+    compressConversation();
     let fileBlocks = extractFileBlocks(fullResponse || response.content, input);
     if (fileBlocks.length === 0 && shouldRepairWriteOutput(input, fullResponse || response.content)) {
       fileBlocks = await repairWriteOutput(provider, prompt, fullResponse || response.content);
@@ -1351,13 +1403,33 @@ async function scanForSubProjects(
   cwd: string, fsp: any, path: any
 ): Promise<{ type: string; command: string; args: string[]; label: string; needsInstall: boolean; cwd: string; dir: string }[]> {
   const results: { type: string; command: string; args: string[]; label: string; needsInstall: boolean; cwd: string; dir: string }[] = [];
+  // S2: Also check workspace config at root level
+  try {
+    const rootPkg = await fsp.readFile(path.join(cwd, 'package.json'), 'utf-8').catch(() => null);
+    if (rootPkg) {
+      const pkg = JSON.parse(rootPkg);
+      if (Array.isArray(pkg.workspaces) || Array.isArray(pkg.workspaces?.packages)) {
+        // npm/yarn/pnpm workspace — don't return root, will be discovered as sub-projects
+      }
+    }
+  } catch {}
   try {
     const entries = await fsp.readdir(cwd, { withFileTypes: true });
     for (const entry of entries) {
       if (!entry.isDirectory() || entry.name.startsWith('.') || entry.name === 'node_modules') continue;
       const subDir = path.join(cwd, entry.name);
       const info = await detectProjectStartInfo(subDir, fsp, path);
-      if (info) results.push({ ...info, cwd: subDir, dir: entry.name });
+      if (info) { results.push({ ...info, cwd: subDir, dir: entry.name }); continue; }
+      // S2: Scan one level deeper for nested projects (e.g. packages/groupA/service)
+      try {
+        const subEntries = await fsp.readdir(subDir, { withFileTypes: true });
+        for (const subEntry of subEntries) {
+          if (!subEntry.isDirectory() || subEntry.name.startsWith('.') || subEntry.name === 'node_modules') continue;
+          const nestedDir = path.join(subDir, subEntry.name);
+          const nestedInfo = await detectProjectStartInfo(nestedDir, fsp, path);
+          if (nestedInfo) results.push({ ...nestedInfo, cwd: nestedDir, dir: `${entry.name}/${subEntry.name}` });
+        }
+      } catch {}
     }
   } catch {}
   return results;
@@ -1402,25 +1474,57 @@ async function detectProjectStartInfo(
     }
   } catch {}
 
-  // 4. Go
+  // 4. Go (S1: also check cmd/*/main.go pattern)
   try {
     const goMod = await fsp.readFile(path.join(dir, 'go.mod'), 'utf-8').catch(() => null);
     const hasMain = await fsp.readFile(path.join(dir, 'main.go'), 'utf-8').catch(() => null);
-    if (goMod && hasMain) {
-      const mf = await fsp.readFile(path.join(dir, 'Makefile'), 'utf-8').catch(() => null);
-      return mf ? { type: 'Go (Makefile)', command: 'make', args: ['run'], label: 'make run', needsInstall: false }
-        : { type: 'Go', command: 'go', args: ['run', '.'], label: 'go run .', needsInstall: false };
+    if (goMod) {
+      if (hasMain) {
+        const mf = await fsp.readFile(path.join(dir, 'Makefile'), 'utf-8').catch(() => null);
+        return mf ? { type: 'Go (Makefile)', command: 'make', args: ['run'], label: 'make run', needsInstall: false }
+          : { type: 'Go', command: 'go', args: ['run', '.'], label: 'go run .', needsInstall: false };
+      }
+      // Check cmd/*/main.go for idiomatic Go layout
+      const cmdStat = await fsp.stat(path.join(dir, 'cmd')).catch(() => null);
+      if (cmdStat?.isDirectory()) {
+        const cmdEntries = await fsp.readdir(path.join(dir, 'cmd'), { withFileTypes: true }).catch(() => []);
+        for (const entry of cmdEntries) {
+          if (entry.isDirectory() || entry.name === 'main.go') {
+            const mainPath = entry.isDirectory() ? `cmd/${entry.name}` : 'cmd';
+            const mainExists = await fsp.readFile(path.join(dir, mainPath, 'main.go'), 'utf-8').catch(() => null)
+              || (entry.name === 'main.go' ? true : null);
+            if (mainExists || entry.name === 'main.go') {
+              return { type: 'Go', command: 'go', args: ['run', `./${mainPath}/`], label: `go run ./${mainPath}/`, needsInstall: false };
+            }
+          }
+        }
+      }
     }
   } catch {}
 
-  // 5. Python
+  // 5. Python (S1: Django/Flask/FastAPI/uvicorn/streamlit detection)
   try {
+    const py = process.platform === 'win32' ? 'python' : 'python3';
     const pyproject = await fsp.readFile(path.join(dir, 'pyproject.toml'), 'utf-8').catch(() => null);
     const mainPy = await fsp.readFile(path.join(dir, 'main.py'), 'utf-8').catch(() => null)
       || await fsp.readFile(path.join(dir, 'app.py'), 'utf-8').catch(() => null);
-    if (pyproject || mainPy) {
-      return { type: 'Python (FastAPI)', command: process.platform === 'win32' ? 'python' : 'python3',
-        args: [mainPy ? 'main.py' : 'app.py'], label: `python ${mainPy ? 'main.py' : 'app.py'}`, needsInstall: false };
+    const managePy = await fsp.stat(path.join(dir, 'manage.py')).catch(() => null);
+    // Django: manage.py present
+    if (managePy) return { type: 'Python (Django)', command: py, args: ['manage.py', 'runserver'], label: `${py} manage.py runserver`, needsInstall: false };
+    if (pyproject) {
+      const pyText = pyproject.toLowerCase();
+      if (pyText.includes('fastapi')) return { type: 'Python (FastAPI)', command: py, args: mainPy ? [mainPy === 'main.py' ? 'main.py' : 'app.py'] : ['-m', 'uvicorn', 'main:app', '--reload'], label: 'FastAPI dev', needsInstall: false };
+      if (pyText.includes('django')) return { type: 'Python (Django)', command: py, args: ['manage.py', 'runserver'], label: `${py} manage.py runserver`, needsInstall: false };
+      if (pyText.includes('flask')) return { type: 'Python (Flask)', command: py, args: mainPy ? [mainPy === 'main.py' ? 'main.py' : 'app.py'] : ['-m', 'flask', 'run'], label: 'Flask dev', needsInstall: false };
+      if (pyText.includes('streamlit')) return { type: 'Python (Streamlit)', command: 'streamlit', args: ['run', mainPy === 'main.py' ? 'main.py' : 'app.py' || 'app.py'], label: 'streamlit run', needsInstall: false };
+      if (pyText.includes('uvicorn')) return { type: 'Python (uvicorn)', command: py, args: ['-m', 'uvicorn', 'main:app', '--reload'], label: `${py} -m uvicorn main:app --reload`, needsInstall: false };
+    }
+    if (mainPy) {
+      // Check file content for framework hints
+      const content = mainPy || '';
+      if (typeof content === 'string' && content.includes('Flask')) return { type: 'Python (Flask)', command: py, args: [content === mainPy ? 'main.py' : 'app.py'], label: `${py} ${content === mainPy ? 'main.py' : 'app.py'}`, needsInstall: false };
+      if (typeof content === 'string' && content.includes('fastapi')) return { type: 'Python (FastAPI)', command: py, args: [content === mainPy ? 'main.py' : 'app.py'], label: `${py} ${content === mainPy ? 'main.py' : 'app.py'}`, needsInstall: false };
+      return { type: 'Python', command: py, args: [mainPy === 'main.py' ? 'main.py' : 'app.py'], label: `${py} ${mainPy === 'main.py' ? 'main.py' : 'app.py'}`, needsInstall: false };
     }
   } catch {}
 
@@ -1428,6 +1532,15 @@ async function detectProjectStartInfo(
   try {
     const cargoToml = await fsp.readFile(path.join(dir, 'Cargo.toml'), 'utf-8').catch(() => null);
     if (cargoToml) return { type: 'Rust', command: 'cargo', args: ['run'], label: 'cargo run', needsInstall: false };
+  } catch {}
+
+  // 6b. .NET (S1)
+  try {
+    const csproj = await fsp.stat(path.join(dir, '*.csproj')).catch(() => null)
+      || (await fsp.readdir(dir).catch(() => [])).find((f: string) => f.endsWith('.csproj'));
+    if (csproj) return { type: '.NET', command: 'dotnet', args: ['run'], label: 'dotnet run', needsInstall: false };
+    const sln = (await fsp.readdir(dir).catch(() => [])).find((f: string) => f.endsWith('.sln'));
+    if (sln) return { type: '.NET Solution', command: 'dotnet', args: ['run'], label: 'dotnet run', needsInstall: false };
   } catch {}
 
   // 7. Docker Compose
@@ -1738,6 +1851,19 @@ async function cmdStartProject(): Promise<void> {
               `🤖 AI 启动建议\n${C.accent(cwd)}\n\n${C.accent(j.command || '未知')}\n\n${j.reasoning || ''}${j.install ? '\n\n📦 ' + j.install : ''}`,
               { title: 'AI 启动顾问' }
             ) + '\n');
+            if (j.command) {
+              // S5: Offer one-click execution of AI-suggested command
+              const answer = await new Promise<string>(resolve => {
+                rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+                rl.question(`  ${C.accent('◇')} 执行此命令？(y/n) `, (ans: string) => { rl.close(); resolve(ans.trim().toLowerCase()); });
+              });
+              if (answer === 'y' || answer === 'yes') {
+                printLoopStatus('take-action', 'AI 建议执行');
+                const { spawn } = await import('child_process');
+                const child = spawn(j.command, { cwd, shell: true, stdio: 'inherit' });
+                await new Promise<void>((res, rej) => { child.on('close', (code: number) => code === 0 ? res() : rej(new Error(`exit ${code}`))); child.on('error', rej); });
+              }
+            }
           } catch { console.log(drawWideBox(resp.content.slice(0, 600), { title: 'AI 启动建议' }) + '\n'); }
           return;
         }

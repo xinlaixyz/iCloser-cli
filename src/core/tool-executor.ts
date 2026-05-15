@@ -1,14 +1,37 @@
 // Tool Executor — bridges AI tool calls to local capabilities
 import { readFile, fileExists } from '../utils/fs.js';
-import { searchWeb } from './web-search.js';
-import { isWebSearchAvailable } from './web-search.js';
+import { searchWeb, isWebSearchAvailable, getWebSearchStatus } from './web-search.js';
 import type { ToolDefinition } from '../ai/provider.js';
+import { buildToolCapabilitySnapshot } from './tool-registry.js';
 
 export interface ToolCallResult {
   toolCallId: string;
   name: string;
   result: string;
   error?: string;
+}
+
+// Tool usage metrics
+const toolStats = new Map<string, { success: number; failure: number; lastUsed: number }>();
+function recordToolUse(name: string, success: boolean): void {
+  const s = toolStats.get(name) || { success: 0, failure: 0, lastUsed: 0 };
+  if (success) s.success++; else s.failure++;
+  s.lastUsed = Date.now();
+  toolStats.set(name, s);
+}
+
+export function getToolStats(): Record<string, { success: number; failure: number; lastUsed: number }> {
+  return Object.fromEntries(toolStats);
+}
+
+// Tool health diagnostic
+export function getToolHealth(): { name: string; status: 'available' | 'limited' | 'unavailable'; reason: string }[] {
+  const snapshot = buildToolCapabilitySnapshot();
+  return snapshot.capabilities.map(c => ({
+    name: c.name,
+    status: c.status as 'available' | 'limited' | 'unavailable',
+    reason: c.status === 'available' ? '正常' : c.status === 'limited' ? c.reason : c.fallback,
+  }));
 }
 
 const TOOL_DEFINITIONS: ToolDefinition[] = [
@@ -70,6 +93,17 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
       required: ['file'],
     },
   },
+  {
+    name: 'git_status',
+    description: '查看 Git 状态：分支、变更文件、最近提交。',
+    parameters: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', description: 'status | log | diff | branch' },
+      },
+      required: [],
+    },
+  },
 ];
 
 export function buildToolDefinitions(): ToolDefinition[] {
@@ -81,6 +115,17 @@ export function buildToolDefinitions(): ToolDefinition[] {
 }
 
 export async function executeToolCall(name: string, args: Record<string, unknown>, rootPath: string): Promise<string> {
+  try {
+    const result = await _executeTool(name, args, rootPath);
+    recordToolUse(name, !result.startsWith('错误') && !result.startsWith('命令执行失败') && !result.startsWith('搜索错误'));
+    return result;
+  } catch (e) {
+    recordToolUse(name, false);
+    return `工具执行异常: ${(e as Error).message}`;
+  }
+}
+
+async function _executeTool(name: string, args: Record<string, unknown>, rootPath: string): Promise<string> {
   switch (name) {
     case 'read_file': {
       const filePath = (args.path as string) || '';
@@ -90,7 +135,14 @@ export async function executeToolCall(name: string, args: Record<string, unknown
       try {
         const content = await readFile(fullPath);
         const lines = content.split('\n');
-        if (lines.length > 200) return lines.slice(0, 200).join('\n') + `\n... (${lines.length - 200} 行省略)`;
+        // TI3: Compress large results — skeleton mode for >200 lines
+        if (lines.length > 200) {
+          const keyLines = lines.filter((l, i) =>
+            i < 30 || i > lines.length - 10 ||
+            /^(import|export|function|class|interface|type|const|let|var|public|private|#|##|\/\/|func |def |package )/.test(l)
+          );
+          return keyLines.slice(0, 100).join('\n') + `\n... (${lines.length} 行，已压缩为关键行)`;
+        }
         return content;
       } catch { return `错误：无法读取 ${filePath}`; }
     }
@@ -98,7 +150,6 @@ export async function executeToolCall(name: string, args: Record<string, unknown
     case 'search_code': {
       const pattern = (args.pattern as string) || '';
       if (!pattern) return '错误：缺少 pattern 参数';
-      // Use grep-like search via scanner patterns
       try {
         const { findFiles } = await import('../utils/fs.js');
         const searchPath = (args.path as string) || '';
@@ -106,36 +157,55 @@ export async function executeToolCall(name: string, args: Record<string, unknown
         const files = await findFiles(rootPath, [globPattern]);
         const results: string[] = [];
         let count = 0;
-        for (const file of files.slice(0, 50)) {
+        for (const file of files.slice(0, 30)) {
           try {
             const content = await readFile(file);
             const lines = content.split('\n');
-            for (let i = 0; i < lines.length && count < 20; i++) {
+            for (let i = 0; i < lines.length && count < 15; i++) {
               try {
                 if (new RegExp(pattern, 'i').test(lines[i])) {
-                  results.push(`${file}:${i + 1}: ${lines[i].trim().slice(0, 120)}`);
+                  results.push(`${file}:${i + 1}: ${lines[i].trim().slice(0, 100)}`);
                   count++;
                 }
-              } catch { /* regex error on line */ }
+              } catch { /* regex error */ }
             }
-          } catch { /* skip unreadable */ }
+          } catch { /* skip */ }
         }
-        if (results.length === 0) return `未找到匹配 "${pattern}" 的结果`;
-        return results.join('\n');
+        if (results.length === 0) return `未找到匹配 "${pattern}" 的结果。建议: 尝试不同关键词或 read_file 直接查看文件。`;
+        // TI3: summary line
+        return `找到 ${results.length} 条匹配:\n${results.join('\n')}${results.length >= 15 ? '\n(结果已截断，缩小搜索范围可获取更精确结果)' : ''}`;
       } catch (e) { return `搜索错误：${(e as Error).message}`; }
     }
 
     case 'run_command': {
       const command = (args.command as string) || '';
       if (!command) return '错误：缺少 command 参数';
-      // Only allow safe commands
-      const dangerous = /rm\s+-rf|sudo|chmod\s+777|>\/dev\/|mkfs|dd\s+if=|:\(\)\s*\{/i;
-      if (dangerous.test(command)) return '错误：命令被安全策略拦截';
+      // TI2: Platform-aware adaptation
+      const isWin = process.platform === 'win32';
+      const unixOnly = /^(ls|find|grep|cat|sed|awk|tail|head|which|wget|curl)\b/i;
+      if (isWin && unixOnly.test(command.trim())) {
+        const alt: Record<string, string> = {
+          ls: 'dir', find: 'dir /s /b', grep: 'findstr', cat: 'type',
+          tail: 'powershell Get-Content -Tail', head: 'powershell Get-Content -Head',
+          which: 'where', wget: 'curl -o', cp: 'copy', mv: 'move',
+          mkdir: 'New-Item -ItemType Directory -Force', rm: 'Remove-Item',
+          chmod: 'icacls', diff: 'Compare-Object', wc: 'Measure-Object -Line',
+          sort: 'Sort-Object', uniq: 'Get-Unique', tar: 'Compress-Archive',
+          env: 'Get-ChildItem env:', kill: 'Stop-Process', ps: 'Get-Process',
+          awk: 'powershell -Command', sed: 'powershell -Command',
+          xargs: 'ForEach-Object', uname: 'Get-ComputerInfo',
+        };
+        const cmd = command.trim().split(/\s+/)[0].toLowerCase();
+        return `平台: Windows。命令 "${cmd}" 不可用。替代: ${alt[cmd] || 'powershell Get-ChildItem'}。请改用替代命令或 read_file 代替。`;
+      }
+      const dangerous = /rm\s+-r|rm\s+-f|sudo|chmod\s+777|>\/dev\/|mkfs|dd\s+if=|fork\s*bomb|del\s+\/f|format\s+[a-z]:|diskpart/i;
+      if (dangerous.test(command)) return '错误：命令被安全策略拦截（危险操作）';
       try {
         const { execSync } = await import('child_process');
         const output = execSync(command, { cwd: rootPath, timeout: 30000, encoding: 'utf-8', maxBuffer: 1024 * 1024 });
-        return output.slice(0, 2000) || '(命令执行成功，无输出)';
-      } catch (e) { return `命令执行失败：${(e as Error).message}`; }
+        // TI3: Truncate large output
+        return (output || '(命令执行成功，无输出)').slice(0, 1500);
+      } catch (e) { return `命令执行失败：${(e as Error).message}。建议: 用 read_file 代替命令，或检查命令是否正确。`; }
     }
 
     case 'web_search': {
@@ -169,6 +239,18 @@ export async function executeToolCall(name: string, args: Record<string, unknown
         if (parsed.classes.length > 0) lines.push(`类 (${parsed.classes.length}): ` + parsed.classes.map(c => c.name).join(', '));
         return lines.join('\n') || '无符号信息';
       } catch { return '代码智能暂不可用'; }
+    }
+
+    case 'git_status': {
+      const action = (args.action as string) || 'status';
+      try {
+        const { execSync } = await import('child_process');
+        const cmd = action === 'log' ? 'git log --oneline -10' :
+          action === 'diff' ? 'git diff --stat' :
+          action === 'branch' ? 'git branch -a' : 'git status --short';
+        const output = execSync(cmd, { cwd: rootPath, timeout: 10000, encoding: 'utf-8' });
+        return output.slice(0, 1000) || '(无输出)';
+      } catch { return 'Git 不可用或非 Git 仓库'; }
     }
 
     default:

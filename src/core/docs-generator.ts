@@ -566,3 +566,81 @@ async function loadAllDocs(rootPath: string): Promise<Record<string, string>> {
   }
   return docs;
 }
+
+// ============================================================
+// D1: Document Q&A — ask questions across all docs
+// ============================================================
+export async function askDocuments(
+  docs: Record<string, string>,
+  question: string,
+  providerAdapter: { chat: (p: { systemPrompt: string; task: string; context: { projectMeta: string; relevantCode: never[]; relevantMemory: string; totalTokens: number; budgetUsed: number }; history: string }) => Promise<{ content: string }> },
+): Promise<string> {
+  const allContent = Object.entries(docs)
+    .map(([file, content]) => `### ${file}\n${content.slice(0, 3000)}`)
+    .join('\n\n');
+  const resp = await providerAdapter.chat({
+    systemPrompt: '你是项目文档专家。基于提供的文档内容回答问题。引用来源文档名和行号。用中文回答，简洁准确。',
+    task: `文档内容:\n${allContent.slice(0, 12000)}\n\n问题: ${question}`,
+    context: { projectMeta: '', relevantCode: [], relevantMemory: '', totalTokens: 0, budgetUsed: 0 },
+    history: '',
+  });
+  return resp.content;
+}
+
+// ============================================================
+// D2: Document summarization
+// ============================================================
+export async function summarizeDocument(
+  content: string,
+  filename: string,
+  providerAdapter: { chat: (p: { systemPrompt: string; task: string; context: { projectMeta: string; relevantCode: never[]; relevantMemory: string; totalTokens: number; budgetUsed: number }; history: string }) => Promise<{ content: string }> },
+): Promise<string> {
+  const resp = await providerAdapter.chat({
+    systemPrompt: '你是文档摘要专家。用3-5句话总结文档核心内容，然后列出关键要点（最多5个）。',
+    task: `文档: ${filename}\n${content.slice(0, 5000)}`,
+    context: { projectMeta: '', relevantCode: [], relevantMemory: '', totalTokens: 0, budgetUsed: 0 },
+    history: '',
+  });
+  return resp.content;
+}
+
+// ============================================================
+// D8: Persona-based rewrite
+// ============================================================
+export async function rewriteDocument(
+  content: string,
+  targetPersona: string,
+  providerAdapter: { chat: (p: { systemPrompt: string; task: string; context: { projectMeta: string; relevantCode: never[]; relevantMemory: string; totalTokens: number; budgetUsed: number }; history: string }) => Promise<{ content: string }> },
+): Promise<string> {
+  const personaPrompts: Record<string, string> = {
+    beginner: '改写成新手指南。去掉技术术语，加使用示例和截图说明。面向刚接触项目的开发者。',
+    architect: '改写成架构师视角。突出设计决策、技术选型理由、模块间关系。',
+    manager: '改写成管理层视角。突出进度、风险、资源需求、ROI。去掉代码细节。',
+    developer: '改写成开发者视角。突出API用法、代码示例、调试技巧。',
+  };
+  const instruction = personaPrompts[targetPersona] || `改写成面向${targetPersona}的版本。`;
+  const resp = await providerAdapter.chat({
+    systemPrompt: `你是文档改写专家。${instruction}只输出改写后的完整文档。`,
+    task: content.slice(0, 5000),
+    context: { projectMeta: '', relevantCode: [], relevantMemory: '', totalTokens: 0, budgetUsed: 0 },
+    history: '',
+  });
+  return resp.content;
+}
+
+// ============================================================
+// D9: Document review — quality audit with line-level comments
+// ============================================================
+export async function reviewDocument(
+  content: string,
+  filename: string,
+  providerAdapter: { chat: (p: { systemPrompt: string; task: string; context: { projectMeta: string; relevantCode: never[]; relevantMemory: string; totalTokens: number; budgetUsed: number }; history: string }) => Promise<{ content: string }> },
+): Promise<string> {
+  const resp = await providerAdapter.chat({
+    systemPrompt: '你是文档审查专家。检查文档的完整性、准确性、清晰度。标注具体问题（位置+问题+建议）。输出审查报告。',
+    task: `审查文档: ${filename}\n\n${content.slice(0, 5000)}\n\n请标注: 1)不清晰的表述 2)缺失的信息 3)矛盾之处 4)格式问题`,
+    context: { projectMeta: '', relevantCode: [], relevantMemory: '', totalTokens: 0, budgetUsed: 0 },
+    history: '',
+  });
+  return resp.content;
+}

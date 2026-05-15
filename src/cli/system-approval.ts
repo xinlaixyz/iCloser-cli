@@ -9,6 +9,7 @@ export interface SystemOperationStep {
   args: string[];
   display: string;
   background?: boolean;
+  cwd?: string;
 }
 
 export interface SystemOperation {

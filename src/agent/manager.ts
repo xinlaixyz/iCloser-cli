@@ -546,3 +546,24 @@ export function filterSandboxedFiles(files: { path: string; content: string }[],
 
   return { allowed, blocked };
 }
+
+// Process isolation: run agent in child process when sandboxLevel='isolated'
+import { fork } from 'child_process';
+import * as path from 'path';
+
+export async function runAgentIsolated(
+  agentId: string, task: string, rootPath: string, timeout = 120000
+): Promise<{ success: boolean; output: string; error?: string }> {
+  return new Promise(resolve => {
+    const worker = fork(path.join(rootPath, 'dist', 'index.js'), ['t', task, '--go'], {
+      cwd: rootPath, stdio: 'pipe', timeout,
+      env: { ...process.env, ICLOSER_AGENT_MODE: '1', ICLOSER_AGENT_ID: agentId },
+    });
+    let output = '';
+    worker.stdout?.on('data', d => output += d.toString());
+    worker.stderr?.on('data', d => output += d.toString());
+    worker.on('exit', code => resolve({ success: code === 0, output: output.slice(-5000) }));
+    worker.on('error', err => resolve({ success: false, output: '', error: err.message }));
+    setTimeout(() => { worker.kill(); resolve({ success: false, output, error: 'timeout' }); }, timeout);
+  });
+}

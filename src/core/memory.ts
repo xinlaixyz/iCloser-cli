@@ -632,10 +632,10 @@ export async function searchMemory(
 }
 
 export async function compressProjectMemory(memory: ProjectMemory): Promise<ProjectMemory> {
-  // Keep last 100 tasks, merge similar older ones
-  if (memory.taskHistory.length > 100) {
-    const recent = memory.taskHistory.slice(-50);
-    const old = memory.taskHistory.slice(0, -50);
+  // M5: Compress at 50 (was 100) — keep memory lean
+  if (memory.taskHistory.length > 50) {
+    const recent = memory.taskHistory.slice(-25);
+    const old = memory.taskHistory.slice(0, -25);
 
     // Compress old tasks into a single summary record
     const oldSummary = old.map(t => `${t.description} (${t.status})`).join('; ');
@@ -649,6 +649,13 @@ export async function compressProjectMemory(memory: ProjectMemory): Promise<Proj
     };
 
     memory.taskHistory = [compressedRecord, ...recent];
+  }
+
+  // M5: Cleanup stale memoryCandidates — remove rejected and oldest pending beyond 100
+  if (memory.memoryCandidates.length > 100) {
+    memory.memoryCandidates = memory.memoryCandidates
+      .filter(c => c.reviewStatus !== 'rejected')
+      .slice(-50);
   }
 
   return memory;
@@ -765,6 +772,49 @@ export async function addPitfall(
     encounteredAt: new Date().toISOString(),
   });
   await saveGlobalMemory(globalMem);
+}
+
+// M6: Auto-promote approved preference candidates to UserPreferences
+export async function promotePreferenceCandidates(memory: ProjectMemory): Promise<void> {
+  const preferenceCandidates = memory.memoryCandidates.filter(
+    c => c.reviewStatus === 'approved' && c.kind === 'preference'
+  );
+  if (preferenceCandidates.length === 0) return;
+
+  const globalMem = await loadGlobalMemory();
+  if (!globalMem.preferences) {
+    globalMem.preferences = { codeStyle: {}, techPreferences: [], commentLanguage: 'chinese', autoExecute: false, maxParallelTasks: 3, preferredAI: '' };
+  }
+
+  let changed = false;
+  for (const candidate of preferenceCandidates) {
+    const content = (candidate.summary + ' ' + candidate.content).toLowerCase();
+    // Detect and apply code style preferences
+    if (content.includes('camelcase')) { globalMem.preferences.codeStyle = { ...globalMem.preferences.codeStyle, namingConvention: 'camelCase' }; changed = true; }
+    if (content.includes('pascalcase')) { globalMem.preferences.codeStyle = { ...globalMem.preferences.codeStyle, namingConvention: 'PascalCase' }; changed = true; }
+    if (content.includes('snake_case')) { globalMem.preferences.codeStyle = { ...globalMem.preferences.codeStyle, namingConvention: 'snake_case' }; changed = true; }
+    if (content.includes('单引号')) { globalMem.preferences.codeStyle = { ...globalMem.preferences.codeStyle, quoteStyle: 'single' }; changed = true; }
+    if (content.includes('双引号')) { globalMem.preferences.codeStyle = { ...globalMem.preferences.codeStyle, quoteStyle: 'double' }; changed = true; }
+    if (content.includes('中文')) { globalMem.preferences.commentLanguage = 'chinese'; changed = true; }
+    if (content.includes('英文')) { globalMem.preferences.commentLanguage = 'english'; changed = true; }
+    if (content.includes('不让') || content.includes('不要') || content.includes('少用') || content.includes('禁用')) {
+      const match = content.match(/(?:不让|不要|少用|禁用)(\S+)/);
+      if (match) {
+        if (!globalMem.preferences.techPreferences) globalMem.preferences.techPreferences = [];
+        globalMem.preferences.techPreferences.push(`avoid: ${match[1]}`);
+        changed = true;
+      }
+    }
+  }
+
+  if (changed) await saveGlobalMemory(globalMem);
+}
+
+// M7: Auto-capture task errors as pitfalls for future reference
+export async function recordTaskError(taskDescription: string, errorMessage: string, tech?: string): Promise<void> {
+  const severity = errorMessage.length > 500 ? 'high' : errorMessage.includes('crash') || errorMessage.includes('panic') ? 'high' : 'medium';
+  const desc = `任务失败: ${taskDescription.slice(0, 80)} — ${errorMessage.slice(0, 200)}`;
+  await addPitfall(desc, tech || 'general', severity);
 }
 
 export async function recordSkillUsage(skillName: string, success: boolean): Promise<void> {

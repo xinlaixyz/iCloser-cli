@@ -263,7 +263,7 @@ async function main() {
     await sleep(2500);
     const afterAutoReport = outputBuffer.substring(beforeAutoReport).replace(/[[0-9;]*m/g, '');
     // P7: analysis now routes to AI chat loop (not static autopilot)
-    assert(afterAutoReport.includes('收集上下文') || afterAutoReport.includes('分析中') || afterAutoReport.includes('完成') || afterAutoReport.includes('鉴权'), '分析整个项目 enters analysis flow');
+    assert(afterAutoReport.includes('意图') || afterAutoReport.includes('收集上下文') || afterAutoReport.includes('分析中') || afterAutoReport.includes('扫描') || afterAutoReport.includes('完成') || afterAutoReport.includes('鉴权'), '分析整个项目 enters analysis flow');
     assert(!afterAutoReport.includes('思考中'), '分析整个项目 does not trigger AI chat');
 
     const beforeAutoDocs = outputBuffer.length;

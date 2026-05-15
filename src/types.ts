@@ -627,10 +627,15 @@ export interface AgentMessage {
 export type UserIntentCategory =
   | 'analysis'        // 分析项目/代码质量/结构
   | 'code_change'     // 修改/创建/删除代码
+  | 'code_fix'        // 修复错误/bug
+  | 'code_complete'   // 补全代码
+  | 'plan'            // 大型多步骤需求 → 先生成开发计划
   | 'security_review' // 安全检查/漏洞扫描
   | 'refactor'        // 重构/优化/拆分
   | 'test_gen'        // 生成/补充测试
   | 'doc_gen'         // 生成/补充文档
+  | 'devops'          // 启动/停止/测试/构建
+  | 'pm'              // PM视角：发布/路线图/风险/估算
   | 'question'        // 问答/咨询/求助
   | 'config'          // 配置/设置/API Key
   | 'chat'            // 闲聊/无明确工程意图

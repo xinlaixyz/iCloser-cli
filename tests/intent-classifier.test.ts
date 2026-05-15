@@ -22,13 +22,25 @@ describe('Intent classifier — regex phase', () => {
       '修改用户模块的接口',
       '添加一个健康检查接口',
       '删除旧的配置文件',
-      'fix the login bug',
       '加个缓存层',
       'implement user auth',
     ];
     for (const input of tests) {
       const result = classifyIntentRegex(input);
       expect(result?.category).toBe('code_change');
+    }
+  });
+
+  it('classifies code fix requests', () => {
+    const tests = [
+      'fix the login bug',
+      '修复这个报错',
+      '帮我解决崩溃问题',
+      'resolve the crash issue',
+    ];
+    for (const input of tests) {
+      const result = classifyIntentRegex(input);
+      expect(result?.category).toBe('code_fix');
     }
   });
 

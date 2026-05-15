@@ -13,9 +13,14 @@ export interface WebSearchOptions {
   timeout?: number;        // default 5000ms
 }
 
-// In-memory cache: query → { results, expiresAt }
-const cache = new Map<string, { results: WebSearchResult[]; expiresAt: number }>();
-const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+// Tiered cache: L1 (short TTL for fresh results) + L2 (long TTL as fallback)
+const l1Cache = new Map<string, { results: WebSearchResult[]; expiresAt: number }>();
+const l2Cache = new Map<string, { results: WebSearchResult[]; expiresAt: number }>();
+const L1_TTL_MS = 60 * 60 * 1000;       // 1 hour — fresh results
+const L2_TTL_MS = 24 * 60 * 60 * 1000;  // 24 hours — stale fallback
+const MAX_CACHE_SIZE = 200;              // Prevent unbounded growth
+let cacheHits = 0;
+let cacheMisses = 0;
 
 let _available: boolean | null = null;
 let _lastCheck = 0;
@@ -36,18 +41,41 @@ function setAvailable(ok: boolean): void {
 
 export function getWebSearchStatus(): 'available' | 'unavailable' | 'degraded' {
   if (isWebSearchAvailable()) return 'available';
-  // Check if we have any cached results — if so, degraded, not unavailable
-  return cache.size > 0 ? 'degraded' : 'unavailable';
+  return (l1Cache.size > 0 || l2Cache.size > 0) ? 'degraded' : 'unavailable';
 }
+
+export function getCacheStats(): { l1Size: number; l2Size: number; hits: number; misses: number; hitRate: string } {
+  const total = cacheHits + cacheMisses;
+  return {
+    l1Size: l1Cache.size,
+    l2Size: l2Cache.size,
+    hits: cacheHits,
+    misses: cacheMisses,
+    hitRate: total > 0 ? `${Math.round((cacheHits / total) * 100)}%` : 'N/A',
+  };
+}
+
+export function clearCache(): void { l1Cache.clear(); l2Cache.clear(); cacheHits = 0; cacheMisses = 0; }
 
 export async function searchWeb(query: string, options: WebSearchOptions = {}): Promise<WebSearchResult[]> {
   const maxResults = options.maxResults || 5;
   const cacheKey = query.toLowerCase().trim();
 
-  // Check cache
-  const cached = cache.get(cacheKey);
-  if (cached && Date.now() < cached.expiresAt) return cached.results.slice(0, maxResults);
+  // L1 cache: fast, fresh
+  const l1Cached = l1Cache.get(cacheKey);
+  if (l1Cached && Date.now() < l1Cached.expiresAt) {
+    cacheHits++;
+    return l1Cached.results.slice(0, maxResults);
+  }
 
+  // L2 cache: stale but better than nothing
+  const l2Cached = l2Cache.get(cacheKey);
+  if (l2Cached && Date.now() < l2Cached.expiresAt) {
+    cacheHits++;
+    return l2Cached.results.slice(0, maxResults);
+  }
+
+  cacheMisses++;
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), options.timeout || 5000);
@@ -61,18 +89,25 @@ export async function searchWeb(query: string, options: WebSearchOptions = {}): 
     const data = await response.json() as Record<string, unknown>;
     const results = extractResults(data, query);
 
-    // Cache
-    cache.set(cacheKey, { results, expiresAt: Date.now() + CACHE_TTL_MS });
+    // Tiered caching
+    l1Cache.set(cacheKey, { results, expiresAt: Date.now() + L1_TTL_MS });
+    l2Cache.set(cacheKey, { results, expiresAt: Date.now() + L2_TTL_MS });
 
-    // Mark as available
+    // Cache cleanup: evict oldest if over limit
+    if (l1Cache.size > MAX_CACHE_SIZE) {
+      const oldest = [...l1Cache.entries()].sort((a, b) => a[1].expiresAt - b[1].expiresAt)[0];
+      if (oldest) { l1Cache.delete(oldest[0]); l2Cache.delete(oldest[0]); }
+    }
+
     setAvailable(true);
-
     return results.slice(0, maxResults);
   } catch (err) {
     setAvailable(false);
 
-    // Return cached if available (even if expired — better than nothing)
-    if (cached) return cached.results.slice(0, maxResults);
+    // Return L2 cached if available (better than nothing)
+    if (l2Cached) return l2Cached.results.slice(0, maxResults);
+    // Even check L1 even if expired — last resort
+    if (l1Cached) return l1Cached.results.slice(0, maxResults);
 
     return [];
   }
