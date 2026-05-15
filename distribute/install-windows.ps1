@@ -5,7 +5,7 @@
 param([switch]$Uninstall)
 
 $VERSION = "0.1.0"
-$REPO = "https://github.com/icloser/agent-shell"
+$REPO = ""  # local only
 $INSTALL_DIR = "$env:USERPROFILE\.icloser"
 $ErrorActionPreference = "Stop"
 
@@ -50,20 +50,13 @@ try {
 # 2. Install
 w-step "安装 iCloser Agent Shell..."
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-if (Test-Path (Join-Path $scriptDir "package.json")) {
-    w-info "检测到本地项目"
-    cd $scriptDir
-    if (-not (Test-Path "node_modules")) { npm install --no-audit --no-fund --loglevel=error }
-    if (-not (Test-Path "dist")) { npx tsc }
-    w-ok "本地项目就绪"
-} else {
-    if (Test-Path $INSTALL_DIR) { Remove-Item -Recurse -Force $INSTALL_DIR }
-    git clone --depth 1 $REPO $INSTALL_DIR
-    cd $INSTALL_DIR
-    npm install --no-audit --no-fund --loglevel=error
-    npx tsc
-    w-ok "项目安装完成: $INSTALL_DIR"
+if (-not (Test-Path (Join-Path $scriptDir "package.json"))) {
+    w-err "未找到 package.json。请确保此脚本在项目根目录运行。"
 }
+cd $scriptDir
+if (-not (Test-Path "node_modules")) { npm install --no-audit --no-fund --loglevel=error }
+if (-not (Test-Path "dist")) { npx tsc }
+w-ok "项目就绪: $scriptDir"
 
 # 3. Global link
 w-step "全局注册 ic 命令..."

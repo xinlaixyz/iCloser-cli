@@ -8,17 +8,17 @@
 
 class IcloserAgentShell < Formula
   desc "AI engineering execution CLI — understand, modify, verify, report"
-  homepage "https://github.com/icloser/agent-shell"
+  homepage "https://github.com/YOUR_ORG/agent-shell"  # 替换为你的仓库地址
   version "0.1.0"
   license "MIT"
 
   on_macos do
-    url "https://github.com/icloser/agent-shell/releases/download/v0.1.0/icloser-agent-shell-0.1.0-portable.tar.gz"
+    url "https://github.com/YOUR_ORG/agent-shell/releases/download/v0.1.0/icloser-agent-shell-0.1.0-portable.tar.gz"
     sha256 "PLACEHOLDER_SHA256"
   end
 
   on_linux do
-    url "https://github.com/icloser/agent-shell/releases/download/v0.1.0/icloser-agent-shell-0.1.0-portable.tar.gz"
+    url "https://github.com/YOUR_ORG/agent-shell/releases/download/v0.1.0/icloser-agent-shell-0.1.0-portable.tar.gz"
     sha256 "PLACEHOLDER_SHA256"
   end
 

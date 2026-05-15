@@ -13,7 +13,6 @@
 set -e
 
 VERSION="0.1.0"
-REPO="https://github.com/icloser/agent-shell"
 UNINSTALL=false
 INSTALL_DIR="$HOME/.icloser"
 BIN_DIR="/usr/local/bin"
@@ -110,39 +109,21 @@ fi
 # ============================================================
 step "安装 iCloser Agent Shell..."
 
-# Try: local project directory
+# Use local project directory (this script is inside the project)
 LOCAL_DIR="$(cd "$(dirname "$0")" && pwd)"
-if [ -f "$LOCAL_DIR/package.json" ] && [ -d "$LOCAL_DIR/dist" ]; then
-    info "检测到本地项目: $LOCAL_DIR"
-    cd "$LOCAL_DIR"
-    # Already built — skip npm install if node_modules exists
-    if [ ! -d "node_modules" ]; then
-        info "安装依赖..."
-        npm install --no-audit --no-fund --loglevel=error
-    fi
-    if [ ! -d "dist" ]; then
-        info "编译..."
-        npx tsc
-    fi
-    ok "本地项目就绪"
-else
-    # Download from git
-    info "下载项目..."
-    if [ -d "$INSTALL_DIR" ]; then rm -rf "$INSTALL_DIR"; fi
-    git clone --depth 1 "$REPO" "$INSTALL_DIR" 2>/dev/null || {
-        info "git clone 失败，尝试下载压缩包..."
-        curl -fsSL "$REPO/archive/refs/heads/main.tar.gz" -o /tmp/icloser.tar.gz
-        mkdir -p "$INSTALL_DIR"
-        tar -xzf /tmp/icloser.tar.gz -C "$INSTALL_DIR" --strip-components=1
-        rm /tmp/icloser.tar.gz
-    }
-    cd "$INSTALL_DIR"
+if [ ! -f "$LOCAL_DIR/package.json" ]; then
+    err "未找到 package.json。请确保此脚本在项目根目录运行。"
+fi
+cd "$LOCAL_DIR"
+if [ ! -d "node_modules" ]; then
     info "安装依赖..."
     npm install --no-audit --no-fund --loglevel=error
+fi
+if [ ! -d "dist" ]; then
     info "编译..."
     npx tsc
-    ok "项目安装完成: $INSTALL_DIR"
 fi
+ok "项目就绪: $LOCAL_DIR"
 
 # ============================================================
 # 4. GLOBAL LINK

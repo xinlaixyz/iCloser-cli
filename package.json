@@ -56,9 +56,9 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/icloser/agent-shell"
+    "url": ""
   },
-  "homepage": "https://github.com/icloser/agent-shell#readme",
+  "homepage": "",
   "author": "iCloser",
   "license": "MIT",
   "engines": {
