@@ -1126,7 +1126,9 @@ program.command('intel')
   .argument('[query...]', '查询内容，例如：谁调用了 scanProject / 模块 src/core 的导出')
   .option('--json', 'JSON 格式输出')
   .option('--callers', '仅显示调用者')
-  .action(async (args: string[] = [], options?: { json?: boolean; callers?: boolean }) => {
+  .option('--dataflow', '类型级数据流分析 (TS Compiler API)')
+  .option('--impact', '影响面分析 (TS Compiler API)')
+  .action(async (args: string[] = [], options?: { json?: boolean; callers?: boolean; dataflow?: boolean; impact?: boolean }) => {
     const rootPath = process.cwd();
     const query = args.join(' ').trim();
     if (!query) { info('用法：ic intel <符号名 | 函数名 | 文件名 | 模块名>'); info('自然语言：ic intel 谁调用了 scanProject'); return; }
@@ -1202,6 +1204,25 @@ program.command('intel')
           info('试试 ic intel <函数名> 或 ic intel <模块名>');
         }
       }
+      // TS Compiler API data flow analysis (type-level, cross-file)
+      if (options?.dataflow || options?.impact) {
+        try {
+          const { analyzeTSProject, analyzeImpactWithTSC, formatDataFlowSummary } = await import('./core/ts-dataflow.js');
+          progress('类型级数据流分析...');
+          const result = analyzeTSProject(rootPath);
+          if (options?.impact) {
+            const impact = analyzeImpactWithTSC(rootPath, query || 'main');
+            section(`影响面: ${chalk.cyan(query || 'main')}`);
+            console.log(`  直接: ${impact.directlyAffected.length}  间接: ${impact.indirectlyAffected.length}  文件: ${impact.filesToCheck.length}`);
+            if (impact.directlyAffected.length > 0) console.log(`  直接: ${impact.directlyAffected.map(s => chalk.cyan(s)).join(', ')}`);
+            if (impact.indirectlyAffected.length > 0) console.log(`  间接: ${impact.indirectlyAffected.slice(0, 10).map(s => chalk.cyan(s)).join(', ')}`);
+            console.log(`  ${impact.assessment}`);
+          } else {
+            console.log(formatDataFlowSummary(result));
+          }
+        } catch (err) { warn(`TS 数据流分析失败: ${(err as Error).message.slice(0, 200)}`); }
+      }
+
       console.log();
     } catch (err) { printError(err as Error); }
   });
@@ -2405,9 +2426,37 @@ program.command('quality')
         return;
       }
       section('质量总览');
-      const bar = '█'.repeat(Math.round(overall / 5)) + '░'.repeat(20 - Math.round(overall / 5));
-      console.log('  ' + bar + ' ' + overall + '/100 [' + grade + ']');
-      console.log('  验证:' + verifyScore + '/40 门禁:30/30 安全:20/20 覆盖:10/10');
+
+      // Read coverage data for real scoring
+      let coveragePct = 0;
+      let coverageTrend = '';
+      try {
+        const fs = await import('fs/promises');
+        const historyPath = path.join(rootPath, '.icloser', 'coverage-history.json');
+        const baselinePath = path.join(rootPath, '.icloser', 'coverage-baseline.json');
+        const history = JSON.parse(await fs.readFile(historyPath, 'utf-8').catch(() => '[]'));
+        const baseline = JSON.parse(await fs.readFile(baselinePath, 'utf-8').catch(() => 'null'));
+
+        if (baseline) {
+          coveragePct = Math.round(baseline.summary.lines.pct);
+          // ASCII sparkline for last 10 data points
+          const recent = history.slice(-10);
+          if (recent.length >= 2) {
+            const min = Math.min(...recent.map((h: {lines:number}) => h.lines));
+            const max = Math.max(...recent.map((h: {lines:number}) => h.lines));
+            const range = max - min || 1;
+            const chars = '▁▂▃▄▅▆▇█';
+            coverageTrend = ' ' + recent.map((h: {lines:number}) => chars[Math.min(7, Math.floor((h.lines - min) / range * 7))]).join('');
+          }
+        }
+      } catch {}
+
+      const coverScore = coveragePct >= 80 ? 10 : coveragePct >= 60 ? 7 : coveragePct >= 40 ? 4 : 1;
+      const overall2 = Math.min(100, verifyScore + 30 + 20 + coverScore);
+      const grade2 = overall2 >= 90 ? 'A' : overall2 >= 75 ? 'B' : overall2 >= 60 ? 'C' : 'D';
+      const bar = '█'.repeat(Math.round(overall2 / 5)) + '░'.repeat(20 - Math.round(overall2 / 5));
+      console.log('  ' + bar + ' ' + overall2 + '/100 [' + grade2 + ']');
+      console.log(`  验证:${verifyScore}/40 门禁:30/30 安全:20/20 覆盖:${coverScore}/10${coveragePct > 0 ? ` (${coveragePct}%)` : ''}${coverageTrend}`);
       console.log('  任务:' + passed + '通过/' + failed + '失败/' + total + '总计');
       console.log();
     } catch (err) { printError(err as Error); }
@@ -2562,7 +2611,6 @@ program.command("plan")
         const { allTasksDone } = await import("./core/task-planner.js");
         if (!allTasksDone(activePlan)) { warn("还有未完成任务。运行 ic plan status 查看"); return; }
         success("验收通过！计划完成: " + activePlan.requirement);
-        // Rename to completed
         if (activePlanFile) {
           try {
             const completedFile = activePlanFile.replace(".json", "-DONE.json");
@@ -2574,7 +2622,46 @@ program.command("plan")
         return;
       }
 
-      info("用法: ic plan [create|status|next|start|accept|list|load]");
+      // DAG: Show parallelization plan
+      if (action === "dag") {
+        const { getDAGLevels } = await import("./core/task-planner.js");
+        const levels = await getDAGLevels(activePlan);
+        for (const level of levels) {
+          const names = level.tasks.map(t => `Task-${t.seq} ${t.status === 'done' ? '✅' : '·'}`);
+          console.log(`  层 ${level.level} [${level.estimatedTime}]  ${names.join(' ⏺ ')}`);
+          if (level.tasks.length > 1) console.log(`    ↳ ${level.tasks.length} 任务可并行执行`);
+        }
+        return;
+      }
+
+      // DAG: Execute all ready tasks in parallel by level
+      if (action === "run-all") {
+        const { getDAGLevels } = await import("./core/task-planner.js");
+        const levels = await getDAGLevels(activePlan);
+        let totalDone = 0;
+        for (const level of levels) {
+          const pending = level.tasks.filter(t => t.status !== 'done');
+          if (pending.length === 0) continue;
+          progress(`DAG 层 ${level.level}: 并行执行 ${pending.length} 个任务`);
+          const results = await Promise.allSettled(pending.map(async (t) => {
+            t.status = 'in_progress';
+            await saveActivePlan(rootPath);
+            const { createTask: ct } = await import('./core/task-engine.js');
+            const newTask = ct(t.title + ': ' + t.description, { priority: 'high' });
+            await executeTask(newTask, config, rootPath, null);
+            t.status = 'done';
+            await saveActivePlan(rootPath);
+            return t;
+          }));
+          totalDone += results.filter(r => r.status === 'fulfilled').length;
+          const failed = results.filter(r => r.status === 'rejected').length;
+          if (failed > 0) warn(`层 ${level.level}: ${failed} 个任务失败`);
+        }
+        success(`DAG 执行完成: ${totalDone} 个任务`);
+        return;
+      }
+
+      info("用法: ic plan [create|status|next|start|accept|dag|run-all|list|load]");
     } catch (err) { printError(err as Error); }
   });
 

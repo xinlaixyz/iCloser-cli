@@ -279,6 +279,22 @@ export class AgentManager {
 
     // Create and start children
     const children = this.createChildren(orch.id, childTasks);
+
+    // Cross-agent file locking: prevent children from stepping on each other
+    try {
+      const { acquireFileLocks } = await import('../core/task-engine.js');
+      const allFiles = childTasks.map(t => t.description.match(/(?:src|lib|app)\/[\w/.-]+\.\w+/g) || []).flat();
+      if (allFiles.length > 0) {
+        await acquireFileLocks(this.id, allFiles);
+        // Release after all children complete
+        const release = async () => {
+          const { releaseFileLocks } = await import('../core/task-engine.js');
+          releaseFileLocks(this.id);
+        };
+        setTimeout(release, 180000); // auto-release after 3 min
+      }
+    } catch { /* file locks are best-effort */ }
+
     const startResults = await Promise.all(children.map(c => this.start(c.id, c.name)));
 
     // Wait for all children

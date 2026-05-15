@@ -40,10 +40,10 @@ export function defaultConfig(rootPath: string, identity: ProjectIdentity): IClo
       maxRetries: 3,
       maxParallelTasks: 3,
       verifyStages: isFrontend
-        ? ['lint', 'unit-test', 'e2e']
+        ? ['lint', 'unit-test', 'e2e', 'coverage']
         : isBackend
-          ? ['compile', 'lint', 'unit-test', 'integration-test']
-          : ['compile', 'lint', 'unit-test'],
+          ? ['compile', 'lint', 'unit-test', 'integration-test', 'coverage']
+          : ['compile', 'lint', 'unit-test', 'coverage'],
     },
     security: {
       sensitiveFiles: [

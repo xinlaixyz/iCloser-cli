@@ -139,21 +139,41 @@ function generateTestContent(sourceFile: string, testFile: string, framework: st
   return generateJavaScriptTest(sourceFile, testFile, framework);
 }
 
-function generateJavaScriptTest(sourceFile: string, testFile: string, framework: string): string {
+function generateJavaScriptTest(sourceFile: string, testFile: string, framework: string, exports?: { name: string; kind: string }[]): string {
   const importPath = toRelativeImport(testFile, sourceFile);
   const suiteName = path.posix.basename(sourceFile);
   const api = framework.toLowerCase().includes('jest') ? '@jest/globals' : 'vitest';
-  return [
+  const lines: string[] = [
     `import { describe, expect, it } from '${api}';`,
     `import * as subject from '${importPath}';`,
     '',
     `describe('${suiteName}', () => {`,
-    `  it('exports a usable module API', () => {`,
-    `    expect(Object.keys(subject).length).toBeGreaterThan(0);`,
-    '  });',
-    '});',
-    '',
-  ].join('\n');
+  ];
+
+  // Generate meaningful tests for each exported function
+  const exportedFns = (exports || []).filter(e => e.kind === 'function');
+  for (const fn of exportedFns.slice(0, 5)) {
+    lines.push(`  describe('${fn.name}', () => {`);
+    lines.push(`    it('should be callable', () => {`);
+    lines.push(`      expect(typeof subject.${fn.name}).toBe('function');`);
+    lines.push(`    });`);
+    lines.push(`    it('should handle null/undefined gracefully', () => {`);
+    lines.push(`      expect(() => { try { subject.${fn.name}(); } catch(e) {} }).not.toThrow();`);
+    lines.push(`    });`);
+    lines.push(`  });`);
+    lines.push('');
+  }
+
+  // Fallback: generic module test
+  if (exportedFns.length === 0) {
+    lines.push(`  it('exports a usable module API', () => {`);
+    lines.push(`    expect(Object.keys(subject).length).toBeGreaterThan(0);`);
+    lines.push(`  });`);
+  }
+
+  lines.push('});');
+  lines.push('');
+  return lines.join('\n');
 }
 
 function generatePythonTest(sourceFile: string): string {

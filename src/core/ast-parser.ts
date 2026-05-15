@@ -1,6 +1,7 @@
 // AST Parser — tree-sitter based TypeScript/JavaScript code analysis
 import { createRequire } from 'node:module';
 import { readFile } from 'node:fs/promises';
+import type { VariableDef } from '../types.js';
 
 const require = createRequire(import.meta.url);
 const Parser: typeof import('tree-sitter') = require('tree-sitter');
@@ -59,6 +60,11 @@ export interface AstCallEdge {
   callerLine: number;
 }
 
+export interface DataFlowEdge {
+  def: { name: string; kind: string; file: string; line: number; functionName?: string; typeAnnotation?: string };
+  uses: { name: string; file: string; line: number; usageKind: string; context?: string }[];
+}
+
 export interface ParsedFile {
   filePath: string;
   exports: AstExport[];
@@ -67,6 +73,7 @@ export interface ParsedFile {
   classes: AstClass[];
   interfaces: AstInterface[];
   callGraph: AstCallEdge[];
+  dataFlow?: DataFlowEdge[];
   error?: string;
 }
 
@@ -99,6 +106,9 @@ async function parseTsSourceFile(filePath: string): Promise<ParsedFile> {
     const source = await readFile(filePath, 'utf-8');
     const parser = isTsx ? getTsxParser() : getTsParser();
     const tree = parser.parse(source);
+    const dataFlow = extractDataFlowTs(tree.rootNode, source);
+    for (const e of dataFlow) e.def.file = filePath;
+    for (const e of dataFlow) for (const u of e.uses) u.file = filePath;
     return {
       filePath,
       exports: extractExports(tree.rootNode, source),
@@ -107,6 +117,7 @@ async function parseTsSourceFile(filePath: string): Promise<ParsedFile> {
       classes: extractClasses(tree.rootNode, source),
       interfaces: extractInterfaces(tree.rootNode, source),
       callGraph: extractCallGraph(tree.rootNode, source),
+      dataFlow,
     };
   } catch (err) {
     return {
@@ -117,6 +128,7 @@ async function parseTsSourceFile(filePath: string): Promise<ParsedFile> {
       classes: [],
       interfaces: [],
       callGraph: [],
+      dataFlow: [],
       error: (err as Error).message,
     };
   }
@@ -130,6 +142,9 @@ function parseTsSourceText(source: string, isTsx = false): ParsedFile {
     // Check for syntax errors in the AST
     const hasError = hasErrorNode(tree.rootNode);
 
+    const dataFlow = extractDataFlowTs(tree.rootNode, source);
+    for (const e of dataFlow) e.def.file = '<inline>';
+    for (const e of dataFlow) for (const u of e.uses) u.file = '<inline>';
     const result: ParsedFile = {
       filePath: '<inline>',
       exports: extractExports(tree.rootNode, source),
@@ -138,6 +153,7 @@ function parseTsSourceText(source: string, isTsx = false): ParsedFile {
       classes: extractClasses(tree.rootNode, source),
       interfaces: extractInterfaces(tree.rootNode, source),
       callGraph: extractCallGraph(tree.rootNode, source),
+      dataFlow,
     };
 
     if (hasError) result.error = 'Syntax error in source';
@@ -436,6 +452,158 @@ function extractCallGraph(node: import('tree-sitter').SyntaxNode, source: string
 
   walk(node);
   return edges;
+}
+
+// Enhanced data flow: assignment chains, destructuring, return tracking
+function extractDataFlowTs(node: import('tree-sitter').SyntaxNode, source: string): DataFlowEdge[] {
+  const defs = new Map<string, DataFlowEdge['def']>();
+  const edges: DataFlowEdge[] = [];
+  const assignmentChains: { from: string; to: string; fromLine: number; toLine: number }[] = [];
+  let currentFunction = '<module>';
+  let returnVar: string | null = null;
+
+  function walk(n: import('tree-sitter').SyntaxNode) {
+    if (n.type === 'function_declaration' || n.type === 'method_definition' || n.type === 'arrow_function') {
+      const savedFn = currentFunction;
+      const savedReturn = returnVar;
+      returnVar = null;
+      const name = n.type === 'arrow_function' ? '<arrow>' : (namedChildText(n, 'name') || '<anonymous>');
+      currentFunction = name;
+
+      const params = n.childForFieldName('parameters');
+      if (params) {
+        for (const param of params.namedChildren) {
+          const pName = namedChildText(param, 'name') || param.text;
+          // Also handle destructured params: function({x, y})
+          if (param.type === 'object_pattern' || param.type === 'array_pattern') {
+            for (const child of param.namedChildren) {
+              const childName = namedChildText(child, 'name') || child.text;
+              const key = `${childName}@D${param.startPosition.row + 1}`;
+              if (!defs.has(key)) {
+                defs.set(key, { name: childName, kind: 'param', file: '', line: param.startPosition.row + 1, functionName: currentFunction });
+              }
+            }
+          } else {
+            const key = `${pName}@${param.startPosition.row + 1}`;
+            if (!defs.has(key)) {
+              defs.set(key, { name: pName, kind: 'param', file: '', line: param.startPosition.row + 1, functionName: currentFunction, typeAnnotation: param.childForFieldName('type')?.text });
+            }
+          }
+        }
+      }
+
+      for (let i = 0; i < n.childCount; i++) walk(n.child(i)!);
+      currentFunction = savedFn;
+      returnVar = savedReturn;
+      return;
+    }
+
+    // Variable declarations
+    if (n.type === 'variable_declarator') {
+      const vName = namedChildText(n, 'name');
+      const valueNode = n.childForFieldName('value');
+      if (vName) {
+        const kindNode = n.parent?.childForFieldName('kind');
+        const key = `${vName}@${n.startPosition.row + 1}`;
+        if (!defs.has(key)) {
+          defs.set(key, { name: vName, kind: (kindNode?.text || 'const') as DataFlowEdge['def']['kind'], file: '', line: n.startPosition.row + 1, functionName: currentFunction, typeAnnotation: n.childForFieldName('type')?.text });
+        }
+        // Assignment chain: if value is an identifier, track data flow
+        if (valueNode?.type === 'identifier') {
+          assignmentChains.push({ from: valueNode.text, to: vName, fromLine: valueNode.startPosition.row + 1, toLine: n.startPosition.row + 1 });
+        }
+        // Destructuring: const {x, y} = obj → data flows from obj to x, y
+        if (n.type === 'variable_declarator' && n.childForFieldName('name')?.type === 'object_pattern') {
+          const pattern = n.childForFieldName('name');
+          if (pattern && valueNode?.type === 'identifier') {
+            for (const prop of pattern.namedChildren) {
+              const propName = namedChildText(prop, 'name') || prop.text;
+              assignmentChains.push({ from: valueNode.text, to: propName, fromLine: valueNode.startPosition.row + 1, toLine: prop.startPosition.row + 1 });
+            }
+          }
+        }
+      }
+    }
+
+    // Return statement tracking
+    if (n.type === 'return_statement') {
+      const retVal = n.namedChildren[0];
+      if (retVal?.type === 'identifier') {
+        returnVar = retVal.text;
+      }
+    }
+
+    // Identifier uses — cross-function scope: match any def in the same file
+    if (n.type === 'identifier') {
+      const idName = n.text;
+      const isAssignmentTarget = n.parent?.type === 'assignment_expression' && n.parent.childForFieldName('left') === n;
+      const isCallArg = n.parent?.type === 'arguments';
+      const isReturnExpr = n.parent?.type === 'return_statement';
+
+      for (const [key, def] of defs) {
+        // Match: same name, within same file (cross-function or module-level)
+        if (def.name === idName) {
+          const isCrossFunction = def.functionName !== currentFunction && def.functionName !== '<module>' && currentFunction !== '<module>';
+          let edge = edges.find(e => e.def.name === def.name && e.def.line === def.line);
+          if (!edge) { edge = { def: { ...def }, uses: [] }; edges.push(edge); }
+          const kind = isAssignmentTarget ? 'write' : isCallArg ? 'call_arg' : isReturnExpr ? 'return' : 'read';
+          if (!edge.uses.some(u => u.line === n.startPosition.row + 1 && u.usageKind === kind)) {
+            edge.uses.push({
+              name: idName, file: '', line: n.startPosition.row + 1, usageKind: kind,
+              context: (isCrossFunction ? `↳${currentFunction}` : '') + source.slice(Math.max(0, n.startIndex - 15), Math.min(source.length, n.endIndex + 15)),
+            });
+          }
+          break;
+        }
+      }
+
+      // Track this.property assignments in class methods
+      if (isAssignmentTarget && n.parent?.type === 'member_expression') {
+        const obj = n.parent.childForFieldName('object');
+        if (obj?.text === 'this') {
+          const prop = n.parent.childForFieldName('property');
+          if (prop) {
+            const key = `this.${prop.text}@${n.startPosition.row + 1}`;
+            if (!defs.has(key)) {
+              defs.set(key, { name: `this.${prop.text}`, kind: 'var', file: '', line: n.startPosition.row + 1, functionName: currentFunction });
+            }
+          }
+        }
+      }
+
+      // Track this.property reads
+      if (n.parent?.type === 'member_expression' && n.parent.childForFieldName('object')?.text === 'this' && n.parent.childForFieldName('property') === n) {
+        const key = `this.${idName}@${n.startPosition.row + 1}`;
+        // Find if this.prop was defined
+        for (const [defKey, def] of defs) {
+          if (def.name === `this.${idName}`) {
+            let edge = edges.find(e => e.def.name === def.name && e.def.line === def.line);
+            if (!edge) { edge = { def: { ...def }, uses: [] }; edges.push(edge); }
+            edge.uses.push({ name: `this.${idName}`, file: '', line: n.startPosition.row + 1, usageKind: 'read', context: `this.${idName}` });
+            break;
+          }
+        }
+      }
+    }
+
+    for (let i = 0; i < n.childCount; i++) walk(n.child(i)!);
+  }
+
+  walk(node);
+
+  // Add assignment chain edges
+  for (const chain of assignmentChains) {
+    const fromDef = [...defs.values()].find(d => d.name === chain.from && d.functionName === currentFunction || d.functionName === '<module>');
+    const toDef = [...defs.values()].find(d => d.name === chain.to && d.functionName === currentFunction || d.functionName === '<module>');
+    if (toDef) {
+      const edge = edges.find(e => e.def.name === toDef.name && e.def.line === toDef.line);
+      if (edge && fromDef) {
+        edge.uses.push({ name: chain.from, file: '', line: chain.toLine, usageKind: 'write', context: `← ${chain.from}` });
+      }
+    }
+  }
+
+  return edges.filter(e => e.uses.length > 0);
 }
 
 // === helpers ===
@@ -2044,6 +2212,156 @@ async function parseSqlSourceFile(filePath: string): Promise<ParsedFile> {
   const source = await readFile(filePath, 'utf-8');
   const result = parseSqlRegex(source);
   return { ...result, filePath, error: undefined };
+}
+
+// Cross-file data flow: trace how data propagates through function calls across files
+export function analyzeCrossFileDataFlow(
+  parsedFiles: ParsedFile[],
+  callGraph: { caller: string; callee: string; callerFile: string; calleeFile?: string; line: number }[],
+): { def: VariableDef; propagatedTo: { file: string; functionName: string; paramName: string; line: number; callChain: string[] }[] }[] {
+  const results: { def: VariableDef; propagatedTo: { file: string; functionName: string; paramName: string; line: number; callChain: string[] }[] }[] = [];
+
+  // Build map: functionName → file → ParsedFile
+  const fileMap = new Map(parsedFiles.map(f => [f.filePath, f]));
+
+  // Build reverse call graph: callee → [callers]
+  const calledBy = new Map<string, { caller: string; callerFile: string; line: number }[]>();
+  for (const edge of callGraph) {
+    const key = edge.calleeFile ? `${edge.calleeFile}:${edge.callee}` : edge.callee;
+    if (!calledBy.has(key)) calledBy.set(key, []);
+    calledBy.get(key)!.push({ caller: edge.caller, callerFile: edge.callerFile, line: edge.line });
+  }
+
+  for (const file of parsedFiles) {
+    if (!file.dataFlow) continue;
+    for (const edge of file.dataFlow) {
+      const propagatedTo: { file: string; functionName: string; paramName: string; line: number; callChain: string[] }[] = [];
+
+      // Find call_arg uses — these are data being passed to function calls
+      for (const use of edge.uses.filter(u => u.usageKind === 'call_arg')) {
+        const callSite = file.callGraph.find(c => c.caller === edge.def.functionName && c.callerLine <= use.line + 5 && c.callerLine >= use.line - 5);
+        if (callSite) {
+          const calleeFile = parsedFiles.find(f =>
+            f.filePath === callSite.calleeFile || f.functions.some(fn => fn.name === callSite.callee)
+          );
+          if (calleeFile) {
+            const calleeFn = calleeFile.functions.find(fn => fn.name === callSite.callee);
+            if (calleeFn && calleeFn.params.length > 0) {
+              for (const param of calleeFn.params) {
+                propagatedTo.push({
+                  file: calleeFile.filePath,
+                  functionName: callSite.callee,
+                  paramName: param,
+                  line: calleeFn.line,
+                  callChain: [edge.def.functionName || '<module>', callSite.callee],
+                });
+              }
+            }
+          }
+        }
+      }
+
+      // Export→import data flow: if this variable is exported, track which files import it
+      const exported = file.exports.find(e => e.name === edge.def.name);
+      if (exported) {
+        for (const otherFile of parsedFiles) {
+          if (otherFile.filePath === file.filePath) continue;
+          const importer = otherFile.imports.find(i => i.symbols.some(s => s === edge.def.name || s === '*'));
+          if (importer) {
+            const usingFns = otherFile.functions.filter(fn =>
+              otherFile.dataFlow?.some(df => df.uses.some(u => u.name === edge.def.name && Math.abs(u.line - fn.line) < 50))
+            );
+            for (const fn of usingFns.slice(0, 3)) {
+              propagatedTo.push({
+                file: otherFile.filePath,
+                functionName: fn.name,
+                paramName: edge.def.name,
+                line: fn.line,
+                callChain: [`export:${file.filePath}#${edge.def.name}`, `import:${otherFile.filePath}#${fn.name}`],
+              });
+            }
+          }
+        }
+      }
+
+      if (propagatedTo.length > 0) {
+        results.push({
+          def: {
+            name: edge.def.name,
+            kind: edge.def.kind as VariableDef['kind'],
+            file: edge.def.file,
+            line: edge.def.line,
+            functionName: edge.def.functionName,
+            typeAnnotation: edge.def.typeAnnotation,
+          },
+          propagatedTo,
+        });
+      }
+    }
+  }
+
+  return results;
+}
+
+// analyzeImpact: compute which symbols are affected by changing a given entry point
+export function analyzeImpact(
+  entrySymbol: string,
+  parsedFiles: ParsedFile[],
+  callGraph: { caller: string; callee: string; callerFile: string; calleeFile?: string; line: number }[],
+): { directlyAffected: string[]; indirectlyAffected: string[]; dataFlowChains: string[]; fileCount: number } {
+  const directlyAffected = new Set<string>();
+  const indirectlyAffected = new Set<string>();
+  const chains: string[] = [];
+
+  // BFS on call graph starting from entrySymbol
+  const visited = new Set<string>();
+  const queue: { symbol: string; depth: number; chain: string[] }[] = [{ symbol: entrySymbol, depth: 0, chain: [entrySymbol] }];
+
+  while (queue.length > 0) {
+    const { symbol, depth, chain } = queue.shift()!;
+    if (visited.has(symbol)) continue;
+    visited.add(symbol);
+
+    if (depth <= 1) directlyAffected.add(symbol);
+    else indirectlyAffected.add(symbol);
+    if (chain.length > 1) chains.push(chain.join(' → '));
+
+    // Find all outgoing calls
+    for (const edge of callGraph) {
+      if (edge.caller === symbol && !visited.has(edge.callee)) {
+        queue.push({ symbol: edge.callee, depth: depth + 1, chain: [...chain, edge.callee] });
+      }
+    }
+    // Also check data flow edges
+    for (const file of parsedFiles) {
+      if (!file.dataFlow) continue;
+      for (const df of file.dataFlow) {
+        if (df.def.name === symbol || (df.def.functionName && df.def.functionName.includes(symbol))) {
+          for (const use of df.uses.filter(u => u.usageKind === 'call_arg')) {
+            const callee = file.callGraph.find(c => Math.abs(c.callerLine - use.line) <= 3);
+            if (callee && !visited.has(callee.callee)) {
+              queue.push({ symbol: callee.callee, depth: depth + 1, chain: [...chain, callee.callee] });
+            }
+          }
+        }
+      }
+    }
+  }
+
+  directlyAffected.delete(entrySymbol); // Remove self
+  const allFiles = new Set<string>();
+  for (const f of parsedFiles) {
+    for (const fn of f.functions) {
+      if (directlyAffected.has(fn.name) || indirectlyAffected.has(fn.name)) allFiles.add(f.filePath);
+    }
+  }
+
+  return {
+    directlyAffected: [...directlyAffected],
+    indirectlyAffected: [...indirectlyAffected],
+    dataFlowChains: chains.slice(0, 20),
+    fileCount: allFiles.size,
+  };
 }
 
 async function toPromise<T>(promise: Promise<T>): Promise<T> { return promise; }

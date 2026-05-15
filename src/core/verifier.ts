@@ -5,7 +5,7 @@ import * as path from 'path';
 import type {
   VerifyResult, VerifyStage, StageResult, ProjectIdentity, Task,
 } from '../types.js';
-import { fileExists, readJson } from '../utils/fs.js';
+import { fileExists, readJson, readFile } from '../utils/fs.js';
 
 export interface VerifyOptions {
   stages: VerifyStage[];
@@ -53,9 +53,69 @@ export async function runVerification(
           break;
         }
 
-        // Auto-repair: the AI would fix the error here
-        // For now, just record the error and continue
-        break;
+        // Auto-repair: AI-driven fix with targeted error repair (max 2 repair attempts per stage)
+        let repaired = false;
+        let repairAttempts = 0;
+        while (!repaired && repairAttempts < 2) {
+          repairAttempts++;
+          try {
+            const errorText = result.output + (result.errorSummary || '');
+            const { parseErrorOutput } = await import('./code-writer.js');
+            const errors = parseErrorOutput(errorText);
+            if (errors.length === 0) break; // Can't locate errors, give up
+
+            // Read first 3 affected files
+            const fileContents: Record<string, string> = {};
+            for (const e of errors.slice(0, 3)) {
+              try { fileContents[e.file] = await readFile(path.join(rootPath, e.file)); } catch {}
+            }
+            if (Object.keys(fileContents).length === 0) break;
+
+            // Load config for AI provider
+            const { loadConfig } = await import('../config.js');
+            const config = await loadConfig(rootPath);
+            if (!config || config.ai.provider === 'mock') break;
+
+            const { createProvider } = await import('../ai/provider.js');
+            const ai = createProvider({ ...config.ai, apiKey: config.ai.apiKey || '' });
+            const filesBlock = Object.entries(fileContents).map(([f, c]) => `### ${f}\n${c.slice(0, 2000)}`).join('\n\n');
+
+            const resp = await ai.chat({
+              systemPrompt: '你是代码修复专家。输出JSON变更契约。只修改报错行，不改任何无关代码。',
+              task: `修复${stage}阶段错误:\n${errorText.slice(0, 2000)}\n\n错误位置:\n${errors.map(e => `  ${e.file}:${e.line} - ${e.message}`).join('\n')}\n\n${filesBlock}`,
+              context: { projectMeta: '', relevantCode: [], relevantMemory: '', totalTokens: 0, budgetUsed: 0 }, history: '',
+            });
+
+            const j = JSON.parse((resp.content.match(/\{[\s\S]*\}/)?.[0] || '{}'));
+            const changes = j.changes || [];
+            if (changes.length === 0) break;
+
+            const { writeFile, ensureDir } = await import('../utils/fs.js');
+            for (const c of changes) {
+              if (c.file && c.content) {
+                const fp = path.join(rootPath, c.file);
+                await ensureDir(path.dirname(fp));
+                await writeFile(fp, c.content);
+              }
+            }
+
+            // Retry the stage
+            const retryResult = await runStage(rootPath, identity, stage, options.timeout);
+            if (retryResult.status !== 'fail') {
+              stageResults.push(retryResult);
+              result.status = retryResult.status;
+              result.output = retryResult.output;
+              repaired = true;
+              allPassed = true; // Reset the fail flag for this stage
+            } else {
+              result.output += `\n[修复尝试${repairAttempts}失败]`;
+            }
+          } catch (repairErr) {
+            result.output += `\n[修复异常: ${(repairErr as Error).message.slice(0, 100)}]`;
+            break;
+          }
+        }
+        if (!repaired) break;
       }
 
       stageResults.push(result);
@@ -109,6 +169,8 @@ async function runStage(
       return runIntegrationTest(rootPath, identity, timeout, startTime);
     case 'e2e':
       return runE2E(rootPath, identity, timeout, startTime);
+    case 'coverage':
+      return runCoverageStage(rootPath, identity);
     default:
       return {
         stage,
@@ -570,6 +632,7 @@ function getFallbackCommand(language: string, stage: VerifyStage, rootPath?: str
     case 'unit-test': cmd = getUnitTestCommand(language); break;
     case 'integration-test': cmd = getIntegrationTestCommand(language); break;
     case 'e2e': cmd = getE2ECommand(language); break;
+    case 'coverage': cmd = getCoverageCommand(language); break;
   }
   if (!cmd) return null;
 
@@ -605,6 +668,12 @@ function hasLocalToolForStage(rootPath: string, stage: VerifyStage): boolean {
         existsSync(path.join(binDir, 'playwright.cmd')) ||
         existsSync(path.join(binDir, 'cypress')) ||
         existsSync(path.join(binDir, 'cypress.cmd'));
+    }
+    case 'coverage': {
+      return existsSync(path.join(binDir, 'c8')) ||
+        existsSync(path.join(binDir, 'c8.cmd')) ||
+        existsSync(path.join(binDir, 'nyc')) ||
+        existsSync(path.join(binDir, 'nyc.cmd'));
     }
     case 'integration-test':
       // Same check as unit-test for now
@@ -665,6 +734,153 @@ function getE2ECommand(language: string): string | null {
     javascript: `${NPX} --no-install cypress run`,
   };
   return commands[language] || null;
+}
+
+function getCoverageCommand(language: string): string | null {
+  const commands: Record<string, string> = {
+    typescript: `${NPX} --no-install c8 vitest run --coverage 2>&1`,
+    javascript: `${NPX} --no-install c8 jest --coverage 2>&1`,
+    go: 'go test -coverprofile=coverage.out ./... 2>&1 && go tool cover -func=coverage.out 2>&1',
+    python: 'python -m pytest --cov=. --cov-report=term 2>&1',
+    rust: 'cargo tarpaulin --out text 2>&1',
+  };
+  return commands[language] || null;
+}
+
+// Parse coverage output from common tools (c8/nyc/istanbul text format)
+function parseCoverageOutput(output: string): import('../types.js').CoverageSummary | null {
+  // Try c8/nyc/istanbul text table format: "Lines: XX.XX% (X/Y)"
+  const linesMatch = output.match(/Lines\s*:\s*([\d.]+)%\s*\((\d+)\/(\d+)\)/i);
+  const branchesMatch = output.match(/Branches\s*:\s*([\d.]+)%\s*\((\d+)\/(\d+)\)/i);
+  const funcsMatch = output.match(/Functions\s*:\s*([\d.]+)%\s*\((\d+)\/(\d+)\)/i);
+  const stmtsMatch = output.match(/Statements\s*:\s*([\d.]+)%\s*\((\d+)\/(\d+)\)/i);
+
+  // Go cover format: "total: (statements) XX.X%"
+  const goMatch = output.match(/total:\s*\(statements\)\s*([\d.]+)%/i);
+
+  // Python pytest-cov format: "TOTAL XX XX X XX%"
+  const pyMatch = output.match(/TOTAL\s+\d+\s+\d+\s+\d+\s+(\d+)%/i);
+
+  if (linesMatch) {
+    return {
+      lines: { pct: parseFloat(linesMatch[1]), covered: parseInt(linesMatch[2]), total: parseInt(linesMatch[3]) },
+      branches: branchesMatch ? { pct: parseFloat(branchesMatch[1]), covered: parseInt(branchesMatch[2]), total: parseInt(branchesMatch[3]) } : { pct: 0, covered: 0, total: 0 },
+      functions: funcsMatch ? { pct: parseFloat(funcsMatch[1]), covered: parseInt(funcsMatch[2]), total: parseInt(funcsMatch[3]) } : { pct: 0, covered: 0, total: 0 },
+      statements: stmtsMatch ? { pct: parseFloat(stmtsMatch[1]), covered: parseInt(stmtsMatch[2]), total: parseInt(stmtsMatch[3]) } : { pct: 0, covered: 0, total: 0 },
+    };
+  }
+
+  if (goMatch) {
+    const pct = parseFloat(goMatch[1]);
+    return { lines: { pct, covered: 0, total: 0 }, branches: { pct: 0, covered: 0, total: 0 }, functions: { pct, covered: 0, total: 0 }, statements: { pct, covered: 0, total: 0 } };
+  }
+
+  if (pyMatch) {
+    const pct = parseInt(pyMatch[1]);
+    return { lines: { pct, covered: 0, total: 0 }, branches: { pct: 0, covered: 0, total: 0 }, functions: { pct, covered: 0, total: 0 }, statements: { pct, covered: 0, total: 0 } };
+  }
+
+  return null;
+}
+
+async function runCoverageStage(rootPath: string, identity: ProjectIdentity): Promise<StageResult> {
+  const start = Date.now();
+  const command = getCoverageCommand(identity.language);
+  if (!command) {
+    return { stage: 'coverage', status: 'skipped', output: `语言 ${identity.language} 无覆盖率工具支持`, duration: 0 };
+  }
+
+  try {
+    const output = execSync(command, { cwd: rootPath, timeout: 120000, encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 });
+    const coverage = parseCoverageOutput(output);
+
+    if (!coverage) {
+      return { stage: 'coverage', status: 'warn', output: '无法解析覆盖率输出', duration: Date.now() - start };
+    }
+
+    // Default thresholds: 60% lines, 50% branches, 60% functions
+    const thresholds = { lines: 60, branches: 50, functions: 60 };
+
+    // Load baseline if it exists, use it for comparison
+    let baseline: import('../types.js').CoverageBaseline | null = null;
+    try {
+      const baselinePath = path.join(rootPath, '.icloser', 'coverage-baseline.json');
+      if (existsSync(baselinePath)) {
+        baseline = JSON.parse(await (await import('fs/promises')).readFile(baselinePath, 'utf-8'));
+      }
+    } catch {}
+
+    // Save/update baseline + append to history
+    try {
+      const plansDir = path.join(rootPath, '.icloser');
+      const { mkdirSync } = await import('fs');
+      mkdirSync(plansDir, { recursive: true });
+
+      // Current baseline
+      const baselinePath = path.join(plansDir, 'coverage-baseline.json');
+      const baselineData: import('../types.js').CoverageBaseline = {
+        projectName: identity.name || rootPath,
+        updatedAt: new Date().toISOString(),
+        summary: coverage,
+        threshold: baseline?.threshold || thresholds,
+      };
+      await (await import('fs/promises')).writeFile(baselinePath, JSON.stringify(baselineData, null, 2));
+
+      // History tracking (last 30 runs)
+      const historyPath = path.join(plansDir, 'coverage-history.json');
+      let history: { date: string; lines: number; branches: number; functions: number }[] = [];
+      try { history = JSON.parse(await (await import('fs/promises')).readFile(historyPath, 'utf-8')); } catch {}
+      history.push({
+        date: new Date().toISOString().split('T')[0],
+        lines: Math.round(coverage.lines.pct * 10) / 10,
+        branches: Math.round(coverage.branches.pct * 10) / 10,
+        functions: Math.round(coverage.functions.pct * 10) / 10,
+      });
+      if (history.length > 30) history = history.slice(-30);
+      await (await import('fs/promises')).writeFile(historyPath, JSON.stringify(history, null, 2));
+    } catch {}
+
+    const linesOk = coverage.lines.pct >= thresholds.lines;
+    const branchesOk = coverage.branches.pct >= thresholds.branches;
+    const funcsOk = coverage.functions.pct >= thresholds.functions;
+    const allOk = linesOk && branchesOk && funcsOk;
+
+    // Check if coverage dropped below baseline
+    let droppedFromBaseline = false;
+    if (baseline) {
+      droppedFromBaseline = coverage.lines.pct < baseline.summary.lines.pct - 1 ||
+        coverage.branches.pct < baseline.summary.branches.pct - 1 ||
+        coverage.functions.pct < baseline.summary.functions.pct - 1;
+    }
+
+    const summary = [
+      `Lines: ${coverage.lines.pct.toFixed(1)}% (${coverage.lines.covered}/${coverage.lines.total})`,
+      `Branches: ${coverage.branches.pct.toFixed(1)}% (${coverage.branches.covered}/${coverage.branches.total})`,
+      `Functions: ${coverage.functions.pct.toFixed(1)}% (${coverage.functions.covered}/${coverage.functions.total})`,
+    ].join(', ');
+
+    const status = !allOk ? 'fail' : droppedFromBaseline ? 'fail' : 'pass';
+    let reason = '';
+    if (!linesOk) reason = `行覆盖率 ${coverage.lines.pct.toFixed(1)}% < ${thresholds.lines}%`;
+    if (!branchesOk) reason = (reason ? reason + '; ' : '') + `分支覆盖率 ${coverage.branches.pct.toFixed(1)}% < ${thresholds.branches}%`;
+    if (!funcsOk) reason = (reason ? reason + '; ' : '') + `函数覆盖率 ${coverage.functions.pct.toFixed(1)}% < ${thresholds.functions}%`;
+    if (droppedFromBaseline && allOk) reason = `覆盖率较基线下降 (曾: ${baseline!.summary.lines.pct.toFixed(1)}%)`;
+
+    return {
+      stage: 'coverage',
+      status,
+      output: summary + (reason ? ` [${reason}]` : ''),
+      duration: Date.now() - start,
+      errorSummary: reason || undefined,
+    };
+  } catch (e) {
+    return {
+      stage: 'coverage',
+      status: 'skipped',
+      output: `覆盖率工具执行失败: ${(e as Error).message.slice(0, 200)}`,
+      duration: Date.now() - start,
+    };
+  }
 }
 
 // ============================================================

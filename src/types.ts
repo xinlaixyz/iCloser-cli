@@ -143,6 +143,12 @@ export interface ProjectIndex {
   lastScan: string;       // ISO timestamp
   callGraph?: CrossFileCallEdge[];  // S11: project-wide function call graph
   fileFingerprints?: Record<string, string>;  // S11: filePath → mtimeMs:size for incremental scan
+  tsDataFlow?: {  // TS Compiler API type-level data flow (T1.1)
+    totalEdges: number;
+    totalUses: number;
+    crossFileFlows: number;
+    topFlows: { name: string; type: string; useCount: number }[];
+  };
 }
 
 export interface CrossFileCallEdge {
@@ -151,6 +157,41 @@ export interface CrossFileCallEdge {
   callerFile: string;
   calleeFile?: string;
   line: number;
+}
+
+// Data flow tracking — variable definition → usage chains
+export interface VariableDef {
+  name: string;
+  kind: 'const' | 'let' | 'var' | 'param' | 'return';
+  file: string;
+  line: number;
+  functionName?: string;  // enclosing function
+  typeAnnotation?: string;
+}
+
+export interface VariableUse {
+  name: string;
+  file: string;
+  line: number;
+  usageKind: 'read' | 'write' | 'call_arg' | 'return';
+  context?: string;  // surrounding expression snippet
+}
+
+export interface DataFlowEdge {
+  def: VariableDef;
+  uses: VariableUse[];
+}
+
+// Cross-file data flow: how data passes through function calls across files
+export interface CrossFileDataFlow {
+  sourceDef: VariableDef;
+  propagatedTo: {
+    file: string;
+    functionName: string;
+    paramName: string;
+    line: number;
+    callChain: string[];  // ordered chain of function names
+  }[];
 }
 
 export interface StyleFingerprint {
@@ -237,7 +278,21 @@ export interface ImpactAnalysis {
 // ============================================================
 // Verification
 // ============================================================
-export type VerifyStage = 'compile' | 'lint' | 'unit-test' | 'integration-test' | 'e2e';
+export type VerifyStage = 'compile' | 'lint' | 'unit-test' | 'integration-test' | 'e2e' | 'coverage';
+
+export interface CoverageSummary {
+  lines: { total: number; covered: number; pct: number };
+  branches: { total: number; covered: number; pct: number };
+  functions: { total: number; covered: number; pct: number };
+  statements: { total: number; covered: number; pct: number };
+}
+
+export interface CoverageBaseline {
+  projectName: string;
+  updatedAt: string;
+  summary: CoverageSummary;
+  threshold: { lines: number; branches: number; functions: number };  // minimum percentages
+}
 
 export interface VerifyResult {
   stages: StageResult[];
@@ -383,6 +438,10 @@ export interface MemoryCandidate {
   createdAt: string;
   updatedAt: string;
   metadata: MemoryMetadata;
+  // TTL: time-based expiry
+  expiresAt?: string;       // ISO timestamp when this entry expires
+  lastAccessedAt?: string;  // last time this memory was used
+  accessCount?: number;     // number of times retrieved
 }
 
 export interface ProjectMemory {

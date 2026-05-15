@@ -115,6 +115,29 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
     callGraph = await buildCrossFileCallGraph(rootPath, modules);
   } catch { /* best effort, non-blocking */ }
 
+  // Phase 8.6: TS Compiler API type-level data flow (T1.1 enhanced, deep scan only)
+  let tsDataFlow: import('../types.js').ProjectIndex['tsDataFlow'];
+  if (options.deep) {
+    try {
+      const { analyzeTSProject } = await import('./ts-dataflow.js');
+      const dfResult = await Promise.race([
+        (async () => analyzeTSProject(rootPath))(),
+        new Promise<null>(resolve => setTimeout(() => resolve(null), 3000)),
+      ]);
+      if (dfResult && dfResult.stats.definitions > 0) {
+        tsDataFlow = {
+          totalEdges: dfResult.edges.length,
+          totalUses: dfResult.stats.uses,
+          crossFileFlows: dfResult.stats.crossFileFlows,
+          topFlows: [...dfResult.edges]
+            .sort((a, b) => b.uses.length - a.uses.length)
+            .slice(0, 20)
+            .map(e => ({ name: e.def.name, type: e.def.type, useCount: e.uses.length })),
+        };
+      }
+    } catch { /* TS data flow is optional */ }
+  }
+
   // Phase 9: Architecture pattern detection
   const architecturePattern = detectArchitecturePattern(rootPath, modules, identity);
 
@@ -140,6 +163,7 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
     lastScan: new Date().toISOString(),
     callGraph,
     fileFingerprints: currentFingerprints,
+    tsDataFlow,
   };
 
   return {

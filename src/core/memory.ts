@@ -817,6 +817,52 @@ export async function recordTaskError(taskDescription: string, errorMessage: str
   await addPitfall(desc, tech || 'general', severity);
 }
 
+// TTL constants (hours)
+const MEMORY_TTL: Record<string, number> = {
+  'short-term': 24,
+  'task': 24 * 7,        // 7 days
+  'project': 24 * 30,    // 30 days
+  'global': 24 * 90,     // 90 days
+  default: 24 * 30,
+};
+
+// Set TTL when creating a new memory candidate
+export function setMemoryTTL(candidate: { suggestedScope?: string; createdAt: string; expiresAt?: string }): void {
+  const scope = candidate.suggestedScope || 'project';
+  const ttlHours = MEMORY_TTL[scope] || MEMORY_TTL.default;
+  const created = new Date(candidate.createdAt);
+  candidate.expiresAt = new Date(created.getTime() + ttlHours * 3600 * 1000).toISOString();
+}
+
+// Cleanup stale memory entries that have passed their TTL
+export function cleanupStaleMemory(memory: ProjectMemory): number {
+  const now = new Date();
+  const before = memory.memoryCandidates.length;
+
+  memory.memoryCandidates = memory.memoryCandidates.filter(c => {
+    if (!c.expiresAt) return true; // No TTL set, keep
+    return new Date(c.expiresAt) > now;
+  });
+
+  // Decay: items not accessed in 30 days get archived
+  const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 3600 * 1000);
+  const toArchive = memory.memoryCandidates.filter(c =>
+    c.reviewStatus === 'approved' &&
+    c.lastAccessedAt &&
+    new Date(c.lastAccessedAt) < thirtyDaysAgo
+  );
+  for (const c of toArchive) {
+    c.reviewStatus = 'pending'; // Demote to pending — needs re-review
+    c.reason = (c.reason || '') + ' [30天未访问，自动降级]';
+  }
+
+  // Cleanup decisions older than 90 days
+  const ninetyDaysAgo = new Date(now.getTime() - 90 * 24 * 3600 * 1000);
+  memory.decisions = memory.decisions.filter(d => new Date(d.decidedAt) > ninetyDaysAgo);
+
+  return before - memory.memoryCandidates.length;
+}
+
 export async function recordSkillUsage(skillName: string, success: boolean): Promise<void> {
   const globalMem = await loadGlobalMemory();
   const existing = globalMem.skillHistory.find(s => s.skillName === skillName);

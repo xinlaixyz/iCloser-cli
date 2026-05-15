@@ -60,3 +60,24 @@ export function getNextPendingTask(plan: DevPlan): PlanTask | null {
 export function allTasksDone(plan: DevPlan): boolean {
   return plan.tasks.every(t => t.status === 'done');
 }
+
+// DAG integration: export wrapped functions that use dag-scheduler
+export async function getDAGLevels(plan: DevPlan): Promise<import('./dag-scheduler.js').DAGLevel[]> {
+  const { topologicalLevels } = await import('./dag-scheduler.js');
+  return topologicalLevels(plan.tasks);
+}
+
+export async function validatePlanDAG(plan: DevPlan): Promise<string | null> {
+  const { detectCycle } = await import('./dag-scheduler.js');
+  const cycle = detectCycle(plan.tasks);
+  return cycle ? `循环依赖: ${cycle[0].join(' → ')}` : null;
+}
+
+export function formatDAGLevels(levels: import('./dag-scheduler.js').DAGLevel[]): string {
+  let out = '';
+  for (const level of levels) {
+    out += `[层 ${level.level}] ${level.tasks.map(t => `Task-${t.seq}`).join(' ⏺ ')} (${level.estimatedTime})\n`;
+    out += level.tasks.map(t => `  ${t.status === 'done' ? '✅' : '·'} ${t.title}`).join('\n') + '\n';
+  }
+  return out;
+}
