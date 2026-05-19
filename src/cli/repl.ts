@@ -2521,21 +2521,33 @@ function flushTableBuffer(maxW: number): void {
   const aligns = tableAligns.length === cols ? tableAligns : Array(cols).fill('left');
 
   // Calculate column widths from actual content (strip ANSI)
-  const colWidths: number[] = Array(cols).fill(4);
+  const MIN_COL_WIDTH = 10; // at least 4 CJK chars + 2 padding
+  const colWidths: number[] = Array(cols).fill(MIN_COL_WIDTH);
   for (const row of rows) {
     for (let i = 0; i < cols; i++) {
       colWidths[i] = Math.max(colWidths[i], displayWidth(row[i]) + 2);// +2 padding
     }
   }
-  // Cap total width, distributing cuts from rightmost column first
+  // Cap total width with proportional distribution
   const borderOverhead = 4 + (cols - 1) * 3; // "  │ │ " style
   let totalW = colWidths.reduce((a, b) => a + b, 0) + borderOverhead;
   if (totalW > maxW) {
-    let excess = totalW - maxW;
-    for (let i = cols - 1; i >= 0 && excess > 0; i--) {
-      const cut = Math.min(excess, Math.max(0, colWidths[i] - 5)); // keep at least 5 display units wide
+    // Distribute cuts proportionally by column width, rightmost columns get more cuts
+    const excess = totalW - maxW;
+    const weights = colWidths.map((w, i) => w * (1 + (cols - 1 - i) * 0.5)); // right columns weighted heavier
+    const totalWeight = weights.reduce((a, b) => a + b, 0);
+    for (let i = 0; i < cols; i++) {
+      const share = Math.round(excess * weights[i] / totalWeight);
+      const cut = Math.min(share, Math.max(0, colWidths[i] - MIN_COL_WIDTH));
       colWidths[i] -= cut;
-      excess -= cut;
+    }
+    // If still over budget (rounding), trim from rightmost
+    totalW = colWidths.reduce((a, b) => a + b, 0) + borderOverhead;
+    let remainingExcess = totalW - maxW;
+    for (let i = cols - 1; i >= 0 && remainingExcess > 0; i--) {
+      const cut = Math.min(remainingExcess, Math.max(0, colWidths[i] - MIN_COL_WIDTH));
+      colWidths[i] -= cut;
+      remainingExcess -= cut;
     }
   }
 
@@ -2584,12 +2596,59 @@ function flushTableBuffer(maxW: number): void {
 }
 
 function renderMarkdownLine(line: string, maxW: number): void {
+  // Blank line
   if (line.trim() === '') { flushTableBuffer(maxW); process.stdout.write('\n'); return; }
-  const hM = line.match(/^(#{1,4})\s+(.+)/); if (hM) { flushTableBuffer(maxW); if (hM[1].length <= 2) process.stdout.write('\n'); const t = hM[2]; process.stdout.write('  ' + (hM[1].length === 1 ? chalk.bold.underline(C.bright(t)) : chalk.bold(C.bright(t))) + '\n'); return; }
-  if (line.trim().startsWith('> ')) { flushTableBuffer(maxW); process.stdout.write(`  ${C.dim('▎')} ${C.dim(line.trim().slice(2))}\n`); return; }
-  if (/^[-*_]{3,}\s*$/.test(line.trim())) { flushTableBuffer(maxW); process.stdout.write(`  ${C.dim('─'.repeat(Math.min(maxW, 60)))}\n`); return; }
-  const ulM = line.match(/^(\s*)[-*+]\s+(.+)/); if (ulM) { flushTableBuffer(maxW); process.stdout.write('  ' + C.primary('•') + ' ' + renderInlineFormatting(ulM[2]) + '\n'); return; }
-  const olM = line.match(/^(\s*)(\d+)\.\s+(.+)/); if (olM) { flushTableBuffer(maxW); process.stdout.write('  ' + C.dim(olM[2] + '.') + ' ' + renderInlineFormatting(olM[3]) + '\n'); return; }
+
+  // Headings — H1/H2 get extra breathing room above
+  const hM = line.match(/^(#{1,4})\s+(.+)/);
+  if (hM) {
+    flushTableBuffer(maxW);
+    if (hM[1].length <= 2) process.stdout.write('\n'); // blank line before H1/H2
+    const t = hM[2];
+    if (hM[1].length === 1) {
+      process.stdout.write('  ' + chalk.bold.underline(C.bright(t)) + '\n');
+    } else if (hM[1].length === 2) {
+      process.stdout.write('  ' + chalk.bold(C.bright(t)) + '\n');
+    } else {
+      process.stdout.write('  ' + chalk.bold(C.bright(t)) + '\n');
+    }
+    return;
+  }
+
+  // Blockquote
+  if (line.trim().startsWith('> ')) {
+    flushTableBuffer(maxW);
+    process.stdout.write(`  ${C.dim('▎')} ${C.dim(line.trim().slice(2))}\n`);
+    return;
+  }
+
+  // Horizontal rule
+  if (/^[-*_]{3,}\s*$/.test(line.trim())) {
+    flushTableBuffer(maxW);
+    process.stdout.write(`\n  ${C.dim('─'.repeat(Math.min(maxW - 4, 60)))}\n\n`);
+    return;
+  }
+
+  // Unordered list — support nested (indented) lists
+  const ulM = line.match(/^(\s*)[-*+]\s+(.+)/);
+  if (ulM) {
+    flushTableBuffer(maxW);
+    const indent = Math.floor(ulM[1].length / 2);
+    const prefix = '  ' + '  '.repeat(indent);
+    const marker = indent > 0 ? C.dim('◦') : C.primary('•');
+    process.stdout.write(prefix + marker + ' ' + renderInlineFormatting(ulM[2]) + '\n');
+    return;
+  }
+
+  // Ordered list
+  const olM = line.match(/^(\s*)(\d+)\.\s+(.+)/);
+  if (olM) {
+    flushTableBuffer(maxW);
+    const indent = Math.floor(olM[1].length / 2);
+    const prefix = '  ' + '  '.repeat(indent);
+    process.stdout.write(prefix + C.dim(olM[2] + '.') + ' ' + renderInlineFormatting(olM[3]) + '\n');
+    return;
+  }
 
   // Table rows — buffer for column-width calculation
   if (line.trim().startsWith('|') && line.trim().endsWith('|')) {
@@ -2613,7 +2672,17 @@ function renderMarkdownLine(line: string, maxW: number): void {
   flushTableBuffer(maxW);
   process.stdout.write('  ' + renderInlineFormatting(line) + '\n');
 }
-function renderInlineFormatting(text: string): string { if (!text) return ''; let t = text; t = t.replace(/\*\*(.+?)\*\*/g, (_, m) => chalk.bold(m)); t = t.replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, (_, m) => chalk.italic(m)); t = t.replace(/`([^`]+)`/g, (_, m) => C.accent(m)); return t; }
+function renderInlineFormatting(text: string): string {
+  if (!text) return '';
+  let t = text;
+  // Bold: **text**
+  t = t.replace(/\*\*(.+?)\*\*/g, (_, m) => chalk.bold(m));
+  // Italic: *text* (not **)
+  t = t.replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, (_, m) => chalk.italic(m));
+  // Inline code: `text`
+  t = t.replace(/`([^`]+)`/g, (_, m) => C.accent(m));
+  return t;
+}
 
 function printFooter(_hasFiles: boolean): void {
   // S20 panel handles file confirmation — old inline system disabled
