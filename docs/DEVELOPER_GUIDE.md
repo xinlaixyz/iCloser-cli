@@ -106,11 +106,11 @@ src/
 │   └── manager.ts        # 内置 4 个 Skill
 │
 └── utils/
-    ├── fs.ts             # 文件系统工具
-    ├── git.ts            # Git 工具
-    └── detect.ts         # 11 语言自动识别
+    ├── fs.ts             # 文件系统 (编码检测/换行统一/分片读取/批量操作)
+    ├── git.ts            # Git 工具 (execFileSync 安全调用)
+    └── detect.ts         # 13语言+6非代码分类自动识别
 
-tests/                    # 44 测试文件, 498 tests
+tests/                    # 66 测试文件, 654 tests
 docs/                     # 产品/UI/API/测试 文档
 doc/                      # 架构/状态/任务 文档 (~100 篇)
 skills/                   # 内置 Skill 定义 (4 个)
@@ -156,6 +156,7 @@ AI Layer (src/ai/)
 | 核心引擎 | 100% | task-engine, task-loop, agent/manager |
 | 上下文系统 | 90% | context, tool-loop(预加载), recall(12条/6K) |
 | 项目检测 | 95% | detect (13语言+6分类+子项目覆盖) |
+| 文件处理 | 95% | fs (F6编码检测/F7分片读取/F10换行统一) |
 | 工具链 | 95% | scanner, ast-parser, docs-generator |
 | 质量保障 | 90% | verifier, gate/checker, security |
 | UI/UX | 98% | cli/repl, cli/output, cli/diff-renderer |
