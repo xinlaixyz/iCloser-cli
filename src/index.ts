@@ -3182,17 +3182,24 @@ program.command("code")
         const name = cleanArgs[1];
         const validTypes = ['crud', 'middleware', 'route', 'component'];
         if (!validTypes.includes(scaffoldType)) { fail("类型: crud | middleware | route | component"); return; }
-        const { generateScaffold } = await import("./core/code-writer.js");
         const index = await (await import("./core/scanner.js")).loadProjectIndex(rootPath);
         const lang = config.project?.identity?.language || 'typescript';
-        const { files } = generateScaffold(scaffoldType, name, lang, index?.styleFingerprint);
+        // C8: Use AI-enhanced scaffold — auto-completes TODO stubs
+        const { generateScaffoldWithAI } = await import("./core/code-writer.js");
+        progress(`AI 脚手架: ${scaffoldType} ${name}`);
+        const result = isMock
+          ? await import("./core/code-writer.js").then(m => m.generateScaffold(scaffoldType, name, lang, index?.styleFingerprint))
+          : await generateScaffoldWithAI(scaffoldType, name, lang, rootPath, index, provider, index?.styleFingerprint);
         const { writeFile, ensureDir } = await import("./utils/fs.js");
-        for (const f of files) {
+        let aiCompleted = 0;
+        for (const f of result.files) {
           const fp = path.join(rootPath, f.path);
           await ensureDir(path.dirname(fp));
           await writeFile(fp, f.content);
-          success(f.path);
+          if (!/\/\/\s*TODO/i.test(f.content)) aiCompleted++;
+          success(f.path + (aiCompleted > 0 ? '' : ' (骨架)'));
         }
+        if (!isMock && aiCompleted > 0) detail('AI 补全', `${aiCompleted} 个文件的 TODO 已自动实现`);
         return;
       }
 
@@ -3314,7 +3321,35 @@ program.command("code")
         return;
       }
 
-      info("用法: ic code new <描述> [--with-tests] | fix | complete <文件> | refactor <描述> | scaffold <类型> <名称> | review [文件] | lint-fix [--go]");
+      // C12: Cross-file refactoring — AI reads multiple files, refactors coherently
+      if (subcommand === "refactor-files" && cleanArgs.length >= 2) {
+        const instruction = cleanArgs.pop()!;
+        const filePaths = cleanArgs.map(f => path.resolve(rootPath, f));
+        const { fileExists: fe } = await import("./utils/fs.js");
+        for (const fp of filePaths) {
+          if (!(await fe(fp))) { fail("文件不存在: " + fp); return; }
+        }
+        progress(`AI 跨文件重构 (${filePaths.length} 文件): ${instruction}`);
+        const { refactorCrossFile } = await import("./core/code-writer.js");
+        const idx = await (await import("./core/scanner.js")).loadProjectIndex(rootPath).catch(() => null);
+        const result = await refactorCrossFile(filePaths, instruction, rootPath, idx, provider);
+        if (result.files.length === 0) { info("AI 未建议修改"); return; }
+        section(`跨文件重构 — ${result.files.length} 文件`);
+        console.log(`  ${chalk.dim(result.explanation)}`);
+        const { writeFile, ensureDir } = await import("./utils/fs.js");
+        for (const f of result.files) {
+          const prev = await readFile(f.path).catch(() => "");
+          await ensureDir(path.dirname(f.path));
+          await writeFile(f.path, f.refactored);
+          const { filesToDiff } = await import('./cli/diff-renderer.js');
+          const diff = filesToDiff([{ path: f.path, content: f.refactored, previousContent: f.original }]);
+          if (diff) console.log(`\n${chalk.cyan(f.path)}\n${diff.slice(0, 800)}`);
+          success(f.path);
+        }
+        return;
+      }
+
+      info("用法: ic code new <描述> [--with-tests] | fix | complete <文件> | refactor <描述> | scaffold <类型> <名称> | review [文件] | lint-fix [--go] | refactor-files <文件1 文件2...> <指令>");
     } catch (err) { printError(err as Error); }
   });
 // ic agent — multi-agent management

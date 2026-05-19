@@ -9,11 +9,19 @@ export async function ensureDir(dir: string): Promise<void> {
   await fse.ensureDir(dir);
 }
 
-export async function readFile(filePath: string): Promise<string> {
-  return nodeReadFile(filePath, 'utf-8');
+export async function readFile(filePath: string, options?: { encoding?: 'auto' | 'utf-8'; normalizeNewlines?: boolean }): Promise<string> {
+  const enc = options?.encoding || 'utf-8';
+  const normalize = options?.normalizeNewlines !== false; // default true
+  let content: string;
+  if (enc === 'auto') {
+    content = await readFileSafe(filePath);
+  } else {
+    content = await nodeReadFile(filePath, 'utf-8');
+  }
+  return normalize ? normalizeNewlines(content) : content;
 }
 
-export async function writeFile(filePath: string, content: string, rootPath?: string): Promise<void> {
+export async function writeFile(filePath: string, content: string, rootPath?: string, options?: { matchNewline?: boolean }): Promise<void> {
   const resolved = path.resolve(filePath);
   if (rootPath) {
     const rel = path.relative(path.resolve(rootPath), resolved);
@@ -23,8 +31,17 @@ export async function writeFile(filePath: string, content: string, rootPath?: st
   } else if (resolved.includes('..')) {
     throw new Error(`路径遍历拒绝: ${filePath}`);
   }
+  // Match existing newline style if possible (F10)
+  let finalContent = content;
+  if (options?.matchNewline) {
+    try {
+      const existing = await nodeReadFile(resolved, 'utf-8');
+      const detected = detectNewlineStyle(existing);
+      finalContent = detected === 'crlf' ? content.replace(/\r?\n/g, '\r\n') : content.replace(/\r\n/g, '\n');
+    } catch { /* file is new, use platform default */ }
+  }
   await fse.ensureDir(path.dirname(resolved));
-  await nodeWriteFile(resolved, content, 'utf-8');
+  await nodeWriteFile(resolved, finalContent, 'utf-8');
 }
 
 export async function readJson(filePath: string): Promise<Record<string, unknown>> {
