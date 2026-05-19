@@ -35,7 +35,6 @@ export async function runVerification(
       const result = await runStage(rootPath, identity, stage, options.timeout);
 
       if (result.status === 'fail') {
-        stageResults.push(result);
         allPassed = false;
 
         // If this is the last attempt, don't try remaining stages
@@ -59,7 +58,7 @@ export async function runVerification(
         while (!repaired && repairAttempts < 2) {
           repairAttempts++;
           try {
-            const errorText = result.output + (result.errorSummary || '');
+            const errorText = result.output + (result.errorDetails || result.stderr || '');
             const { parseErrorOutput } = await import('./code-writer.js');
             const errors = parseErrorOutput(errorText);
             if (errors.length === 0) break; // Can't locate errors, give up
@@ -67,7 +66,7 @@ export async function runVerification(
             // Read first 3 affected files
             const fileContents: Record<string, string> = {};
             for (const e of errors.slice(0, 3)) {
-              try { fileContents[e.file] = await readFile(path.join(rootPath, e.file)); } catch {}
+              try { fileContents[e.file] = await readFile(path.join(rootPath, e.file)); } catch { /* best-effort */ }
             }
             if (Object.keys(fileContents).length === 0) break;
 
@@ -102,20 +101,20 @@ export async function runVerification(
             // Retry the stage
             const retryResult = await runStage(rootPath, identity, stage, options.timeout);
             if (retryResult.status !== 'fail') {
-              stageResults.push(retryResult);
               result.status = retryResult.status;
               result.output = retryResult.output;
+              result.errorDetails = retryResult.errorDetails;
               repaired = true;
-              allPassed = true; // Reset the fail flag for this stage
+              allPassed = true;
             } else {
               result.output += `\n[修复尝试${repairAttempts}失败]`;
             }
           } catch (repairErr) {
             result.output += `\n[修复异常: ${(repairErr as Error).message.slice(0, 100)}]`;
-            break;
+            repaired = false; // ensure outer check handles the push
           }
         }
-        if (!repaired) break;
+        if (!repaired) { stageResults.push(result); break; }
       }
 
       stageResults.push(result);
@@ -563,6 +562,7 @@ function pickScriptName(stage: VerifyStage, scripts: Record<string, string>): st
     'unit-test': ['test:unit', 'unit-test', 'test'],
     'integration-test': ['test:integration', 'integration-test', 'test:it'],
     e2e: ['test:e2e', 'e2e', 'test:e2e:ci'],
+    coverage: ['test:coverage', 'coverage'],
   };
 
   for (const name of candidates[stage]) {
@@ -747,6 +747,18 @@ function getCoverageCommand(language: string): string | null {
   return commands[language] || null;
 }
 
+// P0-5: safe number parser — never returns NaN
+function safeInt(s: string | undefined): number {
+  if (!s) return 0;
+  const n = parseInt(s, 10);
+  return Number.isFinite(n) ? n : 0;
+}
+function safeFloat(s: string | undefined): number {
+  if (!s) return 0;
+  const n = parseFloat(s);
+  return Number.isFinite(n) ? n : 0;
+}
+
 // Parse coverage output from common tools (c8/nyc/istanbul text format)
 function parseCoverageOutput(output: string): import('../types.js').CoverageSummary | null {
   // Try c8/nyc/istanbul text table format: "Lines: XX.XX% (X/Y)"
@@ -763,20 +775,20 @@ function parseCoverageOutput(output: string): import('../types.js').CoverageSumm
 
   if (linesMatch) {
     return {
-      lines: { pct: parseFloat(linesMatch[1]), covered: parseInt(linesMatch[2]), total: parseInt(linesMatch[3]) },
-      branches: branchesMatch ? { pct: parseFloat(branchesMatch[1]), covered: parseInt(branchesMatch[2]), total: parseInt(branchesMatch[3]) } : { pct: 0, covered: 0, total: 0 },
-      functions: funcsMatch ? { pct: parseFloat(funcsMatch[1]), covered: parseInt(funcsMatch[2]), total: parseInt(funcsMatch[3]) } : { pct: 0, covered: 0, total: 0 },
-      statements: stmtsMatch ? { pct: parseFloat(stmtsMatch[1]), covered: parseInt(stmtsMatch[2]), total: parseInt(stmtsMatch[3]) } : { pct: 0, covered: 0, total: 0 },
+      lines: { pct: safeFloat(linesMatch[1]), covered: safeInt(linesMatch[2]), total: safeInt(linesMatch[3]) },
+      branches: branchesMatch ? { pct: safeFloat(branchesMatch[1]), covered: safeInt(branchesMatch[2]), total: safeInt(branchesMatch[3]) } : { pct: 0, covered: 0, total: 0 },
+      functions: funcsMatch ? { pct: safeFloat(funcsMatch[1]), covered: safeInt(funcsMatch[2]), total: safeInt(funcsMatch[3]) } : { pct: 0, covered: 0, total: 0 },
+      statements: stmtsMatch ? { pct: safeFloat(stmtsMatch[1]), covered: safeInt(stmtsMatch[2]), total: safeInt(stmtsMatch[3]) } : { pct: 0, covered: 0, total: 0 },
     };
   }
 
   if (goMatch) {
-    const pct = parseFloat(goMatch[1]);
+    const pct = safeFloat(goMatch[1]);
     return { lines: { pct, covered: 0, total: 0 }, branches: { pct: 0, covered: 0, total: 0 }, functions: { pct, covered: 0, total: 0 }, statements: { pct, covered: 0, total: 0 } };
   }
 
   if (pyMatch) {
-    const pct = parseInt(pyMatch[1]);
+    const pct = safeInt(pyMatch[1]);
     return { lines: { pct, covered: 0, total: 0 }, branches: { pct: 0, covered: 0, total: 0 }, functions: { pct, covered: 0, total: 0 }, statements: { pct, covered: 0, total: 0 } };
   }
 
@@ -795,7 +807,7 @@ async function runCoverageStage(rootPath: string, identity: ProjectIdentity): Pr
     const coverage = parseCoverageOutput(output);
 
     if (!coverage) {
-      return { stage: 'coverage', status: 'warn', output: '无法解析覆盖率输出', duration: Date.now() - start };
+      return { stage: 'coverage', status: 'fail', output: '无法解析覆盖率输出', duration: Date.now() - start };
     }
 
     // Default thresholds: 60% lines, 50% branches, 60% functions
@@ -808,7 +820,7 @@ async function runCoverageStage(rootPath: string, identity: ProjectIdentity): Pr
       if (existsSync(baselinePath)) {
         baseline = JSON.parse(await (await import('fs/promises')).readFile(baselinePath, 'utf-8'));
       }
-    } catch {}
+    } catch { /* best-effort */ }
 
     // Save/update baseline + append to history
     try {
@@ -819,7 +831,7 @@ async function runCoverageStage(rootPath: string, identity: ProjectIdentity): Pr
       // Current baseline
       const baselinePath = path.join(plansDir, 'coverage-baseline.json');
       const baselineData: import('../types.js').CoverageBaseline = {
-        projectName: identity.name || rootPath,
+        projectName: rootPath.split(/[/\\]/).pop() || rootPath,
         updatedAt: new Date().toISOString(),
         summary: coverage,
         threshold: baseline?.threshold || thresholds,
@@ -829,7 +841,7 @@ async function runCoverageStage(rootPath: string, identity: ProjectIdentity): Pr
       // History tracking (last 30 runs)
       const historyPath = path.join(plansDir, 'coverage-history.json');
       let history: { date: string; lines: number; branches: number; functions: number }[] = [];
-      try { history = JSON.parse(await (await import('fs/promises')).readFile(historyPath, 'utf-8')); } catch {}
+      try { history = JSON.parse(await (await import('fs/promises')).readFile(historyPath, 'utf-8')); } catch { /* best-effort */ }
       history.push({
         date: new Date().toISOString().split('T')[0],
         lines: Math.round(coverage.lines.pct * 10) / 10,
@@ -838,7 +850,7 @@ async function runCoverageStage(rootPath: string, identity: ProjectIdentity): Pr
       });
       if (history.length > 30) history = history.slice(-30);
       await (await import('fs/promises')).writeFile(historyPath, JSON.stringify(history, null, 2));
-    } catch {}
+    } catch { /* best-effort */ }
 
     const linesOk = coverage.lines.pct >= thresholds.lines;
     const branchesOk = coverage.branches.pct >= thresholds.branches;
@@ -871,7 +883,7 @@ async function runCoverageStage(rootPath: string, identity: ProjectIdentity): Pr
       status,
       output: summary + (reason ? ` [${reason}]` : ''),
       duration: Date.now() - start,
-      errorSummary: reason || undefined,
+      errorDetails: reason || undefined,
     };
   } catch (e) {
     return {

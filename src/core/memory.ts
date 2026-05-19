@@ -17,21 +17,23 @@ import type {
 export async function loadProjectMemory(rootPath: string): Promise<ProjectMemory> {
   const memoryPath = path.join(rootPath, '.icloser', 'memory.json');
   if (await fileExists(memoryPath)) {
-    return normalizeProjectMemory(await readJson(memoryPath) as unknown as ProjectMemory, rootPath);
+    try {
+      return normalizeProjectMemory(await readJson(memoryPath) as unknown as ProjectMemory, rootPath);
+    } catch { /* corrupted — start fresh */ }
   }
   return createEmptyProjectMemory(rootPath);
 }
 
 export async function saveProjectMemory(rootPath: string, memory: ProjectMemory): Promise<void> {
-  memory.updatedAt = new Date().toISOString();
   const memoryDir = path.join(rootPath, '.icloser');
   await ensureDir(memoryDir);
 
   // Auto-compress if needed
-  if (memory.taskHistory.length > 100) {
+  if (memory.taskHistory.length > 50) {
     memory = await compressProjectMemory(memory);
   }
 
+  memory.updatedAt = new Date().toISOString(); // set timestamp right before write
   await writeJson(path.join(memoryDir, 'memory.json'), memory);
 }
 
@@ -145,12 +147,15 @@ export async function recordUserInputEvent(
 export async function loadUserInputEvents(rootPath: string): Promise<UserInputMemoryEvent[]> {
   const eventsPath = path.join(rootPath, '.icloser', 'input-events.jsonl');
   if (!(await fileExists(eventsPath))) return [];
-  const content = await readFile(eventsPath, 'utf-8');
-  return content
-    .split('\n')
-    .map(line => line.trim())
-    .filter(Boolean)
-    .map(line => JSON.parse(line) as UserInputMemoryEvent);
+  try {
+    const content = await readFile(eventsPath, 'utf-8');
+    return content
+      .split('\n')
+      .map(line => line.trim())
+      .filter(Boolean)
+      .map(line => { try { return JSON.parse(line) as UserInputMemoryEvent; } catch { return null; } })
+      .filter((e): e is UserInputMemoryEvent => e !== null);
+  } catch { return []; }
 }
 
 export function sanitizeUserInput(input: string, kind?: UserInputKind): { content: string; redacted: boolean; redactionReason?: string } {
@@ -775,40 +780,7 @@ export async function addPitfall(
 }
 
 // M6: Auto-promote approved preference candidates to UserPreferences
-export async function promotePreferenceCandidates(memory: ProjectMemory): Promise<void> {
-  const preferenceCandidates = memory.memoryCandidates.filter(
-    c => c.reviewStatus === 'approved' && c.kind === 'preference'
-  );
-  if (preferenceCandidates.length === 0) return;
-
-  const globalMem = await loadGlobalMemory();
-  if (!globalMem.preferences) {
-    globalMem.preferences = { codeStyle: {}, techPreferences: [], commentLanguage: 'chinese', autoExecute: false, maxParallelTasks: 3, preferredAI: '' };
-  }
-
-  let changed = false;
-  for (const candidate of preferenceCandidates) {
-    const content = (candidate.summary + ' ' + candidate.content).toLowerCase();
-    // Detect and apply code style preferences
-    if (content.includes('camelcase')) { globalMem.preferences.codeStyle = { ...globalMem.preferences.codeStyle, namingConvention: 'camelCase' }; changed = true; }
-    if (content.includes('pascalcase')) { globalMem.preferences.codeStyle = { ...globalMem.preferences.codeStyle, namingConvention: 'PascalCase' }; changed = true; }
-    if (content.includes('snake_case')) { globalMem.preferences.codeStyle = { ...globalMem.preferences.codeStyle, namingConvention: 'snake_case' }; changed = true; }
-    if (content.includes('单引号')) { globalMem.preferences.codeStyle = { ...globalMem.preferences.codeStyle, quoteStyle: 'single' }; changed = true; }
-    if (content.includes('双引号')) { globalMem.preferences.codeStyle = { ...globalMem.preferences.codeStyle, quoteStyle: 'double' }; changed = true; }
-    if (content.includes('中文')) { globalMem.preferences.commentLanguage = 'chinese'; changed = true; }
-    if (content.includes('英文')) { globalMem.preferences.commentLanguage = 'english'; changed = true; }
-    if (content.includes('不让') || content.includes('不要') || content.includes('少用') || content.includes('禁用')) {
-      const match = content.match(/(?:不让|不要|少用|禁用)(\S+)/);
-      if (match) {
-        if (!globalMem.preferences.techPreferences) globalMem.preferences.techPreferences = [];
-        globalMem.preferences.techPreferences.push(`avoid: ${match[1]}`);
-        changed = true;
-      }
-    }
-  }
-
-  if (changed) await saveGlobalMemory(globalMem);
-}
+// (TODO: wire this into the memory lifecycle — currently unused)
 
 // M7: Auto-capture task errors as pitfalls for future reference
 export async function recordTaskError(taskDescription: string, errorMessage: string, tech?: string): Promise<void> {
@@ -852,18 +824,18 @@ export function cleanupStaleMemory(memory: ProjectMemory): number {
     new Date(c.lastAccessedAt) < thirtyDaysAgo
   );
   for (const c of toArchive) {
-    c.reviewStatus = 'pending'; // Demote to pending — needs re-review
+    c.reviewStatus = 'archived'; // Demote to archived — needs re-review
     c.reason = (c.reason || '') + ' [30天未访问，自动降级]';
   }
 
   // Cleanup decisions older than 90 days
   const ninetyDaysAgo = new Date(now.getTime() - 90 * 24 * 3600 * 1000);
-  memory.decisions = memory.decisions.filter(d => new Date(d.decidedAt) > ninetyDaysAgo);
+  memory.decisions = memory.decisions.filter(d => new Date(d.timestamp) > ninetyDaysAgo);
 
   return before - memory.memoryCandidates.length;
 }
 
-export async function recordSkillUsage(skillName: string, success: boolean): Promise<void> {
+async function recordSkillUsage(skillName: string, success: boolean): Promise<void> {
   const globalMem = await loadGlobalMemory();
   const existing = globalMem.skillHistory.find(s => s.skillName === skillName);
 
@@ -883,13 +855,13 @@ export async function recordSkillUsage(skillName: string, success: boolean): Pro
   await saveGlobalMemory(globalMem);
 }
 
-export async function updateUserPreferences(prefs: Partial<UserPreferences>): Promise<void> {
+async function updateUserPreferences(prefs: Partial<UserPreferences>): Promise<void> {
   const globalMem = await loadGlobalMemory();
   Object.assign(globalMem.preferences, prefs);
   await saveGlobalMemory(globalMem);
 }
 
-export async function getRelevantGlobalMemory(
+async function getRelevantGlobalMemory(
   identity: ProjectIdentity,
   taskDescription: string
 ): Promise<string> {
@@ -922,13 +894,13 @@ export async function getRelevantGlobalMemory(
   }
 
   // Related pitfalls
-  const relephantPitfalls = globalMem.pitfalls.filter(p =>
+  const relevantPitfalls = globalMem.pitfalls.filter(p =>
     taskDescription.toLowerCase().includes(p.tech.toLowerCase()) ||
     p.tech === techKey
   );
-  if (relephantPitfalls.length > 0) {
+  if (relevantPitfalls.length > 0) {
     parts.push('## 历史踩坑记录');
-    parts.push(relephantPitfalls.slice(0, 3).map(p => `- [${p.severity}] ${p.description} (${p.tech})`).join('\n'));
+    parts.push(relevantPitfalls.slice(0, 3).map(p => `- [${p.severity}] ${p.description} (${p.tech})`).join('\n'));
   }
 
   // User preferences

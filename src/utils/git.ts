@@ -1,6 +1,13 @@
 // Git utilities for iCloser Agent Shell
-import { execSync } from 'child_process';
+import { execSync, execFileSync } from 'child_process';
 import * as path from 'path';
+
+function git(args: string[], rootPath: string, timeout = 10000, maxBuffer?: number): string {
+  return execFileSync('git', args, { cwd: rootPath, timeout, encoding: 'utf-8', ...(maxBuffer ? { maxBuffer } : {}) });
+}
+function gitQuiet(args: string[], rootPath: string, timeout = 10000): string {
+  return execFileSync('git', args, { cwd: rootPath, timeout, encoding: 'utf-8', stdio: 'pipe' });
+}
 
 export interface GitStatus {
   branch: string;
@@ -12,11 +19,7 @@ export interface GitStatus {
 
 export function isGitRepo(rootPath: string): boolean {
   try {
-    execSync('git rev-parse --git-dir', {
-      cwd: rootPath,
-      stdio: 'pipe',
-      timeout: 5000,
-    });
+    gitQuiet(['rev-parse', '--git-dir'], rootPath, 5000);
     return true;
   } catch {
     return false;
@@ -24,31 +27,19 @@ export function isGitRepo(rootPath: string): boolean {
 }
 
 export function getGitRoot(rootPath: string): string {
-  return execSync('git rev-parse --show-toplevel', {
-    cwd: rootPath,
-    encoding: 'utf-8',
-    timeout: 5000,
-  }).trim();
+  return git(['rev-parse', '--show-toplevel'], rootPath, 5000).trim();
 }
 
 export function getCurrentBranch(rootPath: string): string {
   try {
-    return execSync('git rev-parse --abbrev-ref HEAD', {
-      cwd: rootPath,
-      encoding: 'utf-8',
-      timeout: 5000,
-    }).trim();
+    return git(['rev-parse', '--abbrev-ref', 'HEAD'], rootPath, 5000).trim();
   } catch {
     return 'unknown';
   }
 }
 
 export function getGitStatus(rootPath: string): GitStatus {
-  const output = execSync('git status --porcelain', {
-    cwd: rootPath,
-    encoding: 'utf-8',
-    timeout: 5000,
-  });
+  const output = git(['status', '--porcelain'], rootPath, 5000);
 
   const staged: string[] = [];
   const changed: string[] = [];
@@ -78,15 +69,10 @@ export function createCommit(
   files: string[]
 ): boolean {
   try {
-    // Stage specific files
     for (const file of files) {
-      execSync(`git add "${file}"`, { cwd: rootPath, timeout: 10000 });
+      gitQuiet(['add', file], rootPath);
     }
-
-    execSync(`git commit -m "${message.replace(/"/g, '\\"')}"`, {
-      cwd: rootPath,
-      timeout: 10000,
-    });
+    gitQuiet(['commit', '-m', message], rootPath);
     return true;
   } catch {
     return false;
@@ -94,14 +80,9 @@ export function createCommit(
 }
 
 export function getDiff(rootPath: string, staged = false): string {
-  const args = staged ? 'git diff --staged' : 'git diff';
+  const args = staged ? ['diff', '--staged'] : ['diff'];
   try {
-    return execSync(args, {
-      cwd: rootPath,
-      encoding: 'utf-8',
-      timeout: 15000,
-      maxBuffer: 10 * 1024 * 1024,
-    });
+    return git(args, rootPath, 15000, 10 * 1024 * 1024);
   } catch {
     return '';
   }
@@ -109,11 +90,7 @@ export function getDiff(rootPath: string, staged = false): string {
 
 export function getLog(rootPath: string, count = 10): string {
   try {
-    return execSync(`git log --oneline -${count}`, {
-      cwd: rootPath,
-      encoding: 'utf-8',
-      timeout: 5000,
-    });
+    return git(['log', '--oneline', `-${count}`], rootPath, 5000);
   } catch {
     return '';
   }
@@ -125,10 +102,7 @@ export function createWorktree(
   worktreePath: string
 ): boolean {
   try {
-    execSync(`git worktree add "${worktreePath}" -b "${branchName}"`, {
-      cwd: rootPath,
-      timeout: 30000,
-    });
+    gitQuiet(['worktree', 'add', worktreePath, '-b', branchName], rootPath, 30000);
     return true;
   } catch {
     return false;
@@ -137,37 +111,12 @@ export function createWorktree(
 
 export function removeWorktree(rootPath: string, worktreePath: string): boolean {
   try {
-    execSync(`git worktree remove "${worktreePath}"`, {
-      cwd: rootPath,
-      timeout: 15000,
-    });
+    gitQuiet(['worktree', 'remove', worktreePath], rootPath, 15000);
     return true;
   } catch {
     return false;
   }
 }
 
-export function createStash(rootPath: string, message: string): string | null {
-  try {
-    const output = execSync(`git stash create "${message}"`, {
-      cwd: rootPath,
-      encoding: 'utf-8',
-      timeout: 10000,
-    }).trim();
-    return output || null;
-  } catch {
-    return null;
-  }
-}
-
-export function applyStash(rootPath: string, stashRef: string): boolean {
-  try {
-    execSync(`git stash apply "${stashRef}"`, {
-      cwd: rootPath,
-      timeout: 10000,
-    });
-    return true;
-  } catch {
-    return false;
-  }
-}
+// T1-6e: WorktreeInfo type for git worktree isolation
+export interface WorktreeInfo { path: string; branch: string; }

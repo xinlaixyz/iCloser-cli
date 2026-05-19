@@ -162,16 +162,16 @@ function matchWildcard(str: string, pattern: string): boolean {
 }
 
 function isConfigFile(filePath: string): boolean {
-  const configPatterns = [
-    '.yml', '.yaml', '.json', '.toml', '.ini', '.cfg',
-    'docker-compose', 'Dockerfile', 'Makefile', 'makefile',
-    '.github/', '.gitlab-ci', 'Jenkinsfile',
+  const extPatterns = ['.yml', '.yaml', '.json', '.toml', '.ini', '.cfg'];
+  const namePatterns = ['docker-compose', 'dockerfile', 'makefile',
+    '.github/', '.gitlab-ci', 'jenkinsfile',
     'webpack', 'vite.config', 'rollup.config', 'tsconfig',
-    'eslint', 'prettier', '.babelrc',
-  ];
+    'eslint', 'prettier', '.babelrc'];
 
   const relative = filePath.toLowerCase();
-  return configPatterns.some(p => relative.includes(p.toLowerCase()));
+  const name = relative.replace(/^.*[/\\]/, '');
+  if (extPatterns.some(ext => name.endsWith(ext))) return true;
+  return namePatterns.some(p => relative.includes(p));
 }
 
 // ============================================================
@@ -185,7 +185,7 @@ function isDangerousCommand(command: string, dangerousPatterns: string[]): boole
   }
 
   // Additional heuristics
-  if (/\brm\s+-rf\b/.test(lower)) return true;
+  if (/\brm\s+.*(-r\b.*-f\b|-f\b.*-r\b)/.test(lower)) return true; // rm with both -r and -f (any order)
   if (/\bgit\s+push\s+.*--force/.test(lower)) return true;
   if (/\bDROP\b/.test(command) && /\bTABLE\b|\bDATABASE\b/.test(command)) return true;
   if (/\bchmod\s+777\b/.test(lower)) return true;
@@ -229,7 +229,8 @@ export async function logAudit(
   const auditPath = path.join(rootPath, '.icloser', 'audit.log');
   const line = JSON.stringify(entry);
   await ensureDir(path.dirname(auditPath));
-  await writeFile(auditPath, line + '\n');
+  const fsp = await import('fs/promises');
+  await fsp.appendFile(auditPath, line + '\n', 'utf-8');
 }
 
 // ============================================================

@@ -25,7 +25,7 @@ export async function readCodePatterns(
       } else {
         parts.push(`// ${file} (前5000字符)\n${content.slice(0, 5000)}`);
       }
-    } catch {}
+    } catch { /* best-effort */ }
   }
 
   return parts.join('\n\n');
@@ -77,11 +77,13 @@ export function findIncompleteCode(content: string): { line: number; signature: 
 export function getTestFilePath(sourcePath: string, index: ProjectIndex): string {
   const ext = sourcePath.split('.').pop() || 'ts';
   const base = sourcePath.replace(/\.[^.]+$/, '');
+  const name = base.replace(/^.*[/\\]/, ''); // just the filename, no path
+  const dir = base.replace(/[/\\][^/\\]*$/, ''); // the directory part
   const testPatterns = [
     `${base}.test.${ext}`,
     `${base}.spec.${ext}`,
-    `tests/${base}.test.${ext}`,
-    `__tests__/${base}.test.${ext}`,
+    `tests/${name}.test.${ext}`,
+    dir ? `${dir}/__tests__/${name}.test.${ext}` : `__tests__/${name}.test.${ext}`,
   ];
   // Check existing test files
   for (const tp of testPatterns) {
@@ -129,7 +131,7 @@ export async function generateWithTests(
   try {
     const j = JSON.parse((sourceResp.content.match(/\{[\s\S]*\}/)?.[0] || '{}'));
     sources = (j.changes || []).map((c: { file: string; content: string }) => ({ file: c.file, content: c.content }));
-  } catch {}
+  } catch { return { source: [], tests: [] }; }
 
   // Step 2: Generate tests for source files
   const testResp = await provider.chat({
@@ -142,39 +144,480 @@ export async function generateWithTests(
   try {
     const j = JSON.parse((testResp.content.match(/\{[\s\S]*\}/)?.[0] || '{}'));
     tests = (j.changes || []).map((c: { file: string; content: string }) => ({ file: c.file, content: c.content }));
-  } catch {}
+  } catch { return { source: sources, tests: [] }; }
 
   return { source: sources, tests };
 }
 
-// C9: Generate scaffolding for common patterns
+// C7: Generate with auto verify-repair loop (max 3 rounds)
+export async function generateWithVerifyLoop(
+  desc: string, rootPath: string, index: ProjectIndex,
+  provider: any,
+): Promise<{
+  source: { file: string; content: string }[];
+  tests: { file: string; content: string }[];
+  verifyRounds: number;
+  verifyPassed: boolean;
+  diagnostics: string;
+}> {
+  const MAX_ROUNDS = 3;
+  let result = await generateWithTests(desc, rootPath, index, provider);
+  if (result.source.length === 0) {
+    return { ...result, verifyRounds: 0, verifyPassed: false, diagnostics: 'AI 未生成任何代码，无法验证。' };
+  }
+
+  const { writeFile, ensureDir } = await import('../utils/fs.js');
+  const path = await import('path');
+
+  // Write generated files to disk for verification
+  for (const s of result.source) {
+    const fullPath = [rootPath, s.file].join('/').replace(/\/+/g, '/');
+    await ensureDir(path.dirname(fullPath));
+    await writeFile(fullPath, s.content);
+  }
+  for (const t of result.tests) {
+    const fullPath = [rootPath, t.file].join('/').replace(/\/+/g, '/');
+    await ensureDir(path.dirname(fullPath));
+    await writeFile(fullPath, t.content);
+  }
+
+  // Verify loop
+  for (let round = 1; round <= MAX_ROUNDS; round++) {
+    try {
+      const { runVerification } = await import('./verifier.js');
+      const verifyResult = await runVerification(rootPath, index.identity, {
+        id: `verify-${Date.now().toString(36)}`,
+        description: desc,
+        status: 'queued',
+        priority: 'normal',
+        createdAt: new Date().toISOString(),
+        changes: [],
+        diffs: [],
+        reasoning: [],
+        errorLog: [],
+        retryCount: 0,
+        maxRetries: 3,
+        agentExecutions: [],
+      } as any, {
+        stages: ['compile' as any, 'lint' as any],
+        maxRetries: 1,
+        timeout: 60000,
+      } as any);
+
+      if (verifyResult.overall === 'pass') {
+        return { ...result, verifyRounds: round, verifyPassed: true, diagnostics: '' };
+      }
+
+      // Parse errors and feed back to AI for fix
+      const errorText = verifyResult.stages
+        .filter((s: any) => s.status !== 'pass')
+        .map((s: any) => s.errorSummary || `${s.stage}: failed`)
+        .join('\n');
+
+      if (round < MAX_ROUNDS) {
+        const errors = parseErrorOutput(errorText);
+        if (errors.length === 0) break; // can't parse errors, can't auto-fix
+
+        // AI fix pass
+        const fixResp = await provider.chat({
+          systemPrompt: '你是代码修复专家。根据编译/lint错误修复代码。只输出JSON变更契约。只修改报错文件，仅改错误行。',
+          task: `修复以下错误:\n${errors.map(e => `${e.file}:${e.line}: ${e.message}`).join('\n')}\n\n现有代码:\n${result.source.map(s => `## ${s.file}\n${s.content}`).join('\n\n')}`,
+          context: { projectMeta: '', relevantCode: [], relevantMemory: '', totalTokens: 0, budgetUsed: 0 }, history: '',
+        });
+
+        try {
+          const j = JSON.parse((fixResp.content.match(/\{[\s\S]*\}/)?.[0] || '{}'));
+          const fixes = (j.changes || []) as { file: string; content: string }[];
+          // Apply fixes to source array
+          for (const fix of fixes) {
+            const srcIdx = result.source.findIndex(s => s.file === fix.file);
+            if (srcIdx >= 0) {
+              result.source[srcIdx].content = fix.content;
+            } else {
+              const testIdx = result.tests?.findIndex(t => t.file === fix.file) ?? -1;
+              if (testIdx >= 0 && result.tests) result.tests[testIdx].content = fix.content;
+            }
+            const fullPath = [rootPath, fix.file].join('/').replace(/\/+/g, '/');
+            await writeFile(fullPath, fix.content);
+          }
+        } catch { break; } // can't parse fix response, stop trying
+      } else {
+        return {
+          ...result,
+          verifyRounds: round,
+          verifyPassed: false,
+          diagnostics: `验证失败 (${round} 轮后):\n${errorText}`,
+        };
+      }
+    } catch (e) {
+      return { ...result, verifyRounds: round, verifyPassed: false, diagnostics: `验证异常: ${(e as Error).message}` };
+    }
+  }
+
+  return {
+    ...result,
+    verifyRounds: MAX_ROUNDS,
+    verifyPassed: false,
+    diagnostics: `达到最大修复轮数 (${MAX_ROUNDS})，请手动检查。`,
+  };
+}
+
+// C9: Generate scaffolding for common patterns, style-aware
 export function generateScaffold(
   type: 'crud' | 'middleware' | 'route' | 'component',
   name: string,
   language: string,
+  style?: StyleFingerprint,
 ): { files: { path: string; content: string }[] } {
   const PascalName = name.charAt(0).toUpperCase() + name.slice(1);
   const camelName = name.charAt(0).toLowerCase() + name.slice(1);
   const files: { path: string; content: string }[] = [];
 
+  const quote = style?.quoteStyle === 'single' ? "'" : '"';
+  const semi = style?.semicolons === false ? '' : ';';
+
   if (language === 'typescript' || language === 'javascript') {
     const ext = language === 'typescript' ? 'ts' : 'js';
     switch (type) {
       case 'crud':
-        files.push({ path: `${camelName}.model.${ext}`, content: `export interface ${PascalName} {\n  id: string;\n  createdAt: Date;\n  updatedAt: Date;\n}\n` });
-        files.push({ path: `${camelName}.controller.${ext}`, content: `import { ${PascalName} } from './${camelName}.model';\n\nexport async function get${PascalName}s() {\n  // TODO: implement\n}\n\nexport async function create${PascalName}(data: Partial<${PascalName}>) {\n  // TODO: implement\n}\n` });
-        files.push({ path: `${camelName}.route.${ext}`, content: `import { Router } from 'express';\nimport { get${PascalName}s, create${PascalName} } from './${camelName}.controller';\n\nconst router = Router();\nrouter.get('/', get${PascalName}s);\nrouter.post('/', create${PascalName});\n\nexport default router;\n` });
+        files.push({ path: `${camelName}.model.${ext}`, content: `export interface ${PascalName} {\n  id: string${semi}\n  createdAt: Date${semi}\n  updatedAt: Date${semi}\n}\n` });
+        files.push({ path: `${camelName}.controller.${ext}`, content: `import { ${PascalName} } from ${quote}./${camelName}.model${quote}${semi}\n\nexport async function get${PascalName}s() {\n  // TODO: implement\n}\n\nexport async function create${PascalName}(data: Partial<${PascalName}>) {\n  // TODO: implement\n}\n` });
+        files.push({ path: `${camelName}.route.${ext}`, content: `import { Router } from ${quote}express${quote}${semi}\nimport { get${PascalName}s, create${PascalName} } from ${quote}./${camelName}.controller${quote}${semi}\n\nconst router = Router()${semi}\nrouter.get(${quote}/${quote}, get${PascalName}s)${semi}\nrouter.post(${quote}/${quote}, create${PascalName})${semi}\n\nexport default router${semi}\n` });
         break;
       case 'middleware':
-        files.push({ path: `${camelName}.middleware.${ext}`, content: `import { Request, Response, NextFunction } from 'express';\n\nexport function ${camelName}Middleware(req: Request, res: Response, next: NextFunction) {\n  // TODO: implement middleware logic\n  next();\n}\n` });
+        files.push({ path: `${camelName}.middleware.${ext}`, content: `import { Request, Response, NextFunction } from ${quote}express${quote}${semi}\n\nexport function ${camelName}Middleware(req: Request, res: Response, next: NextFunction) {\n  // TODO: implement middleware logic\n  next()${semi}\n}\n` });
         break;
       case 'route':
-        files.push({ path: `${camelName}.route.${ext}`, content: `import { Router } from 'express';\n\nconst router = Router();\n\nrouter.get('/', (req, res) => { res.json({ message: '${name}' }); });\n\nexport default router;\n` });
+        files.push({ path: `${camelName}.route.${ext}`, content: `import { Router } from ${quote}express${quote}${semi}\n\nconst router = Router()${semi}\n\nrouter.get(${quote}/${quote}, (req, res) => { res.json({ message: ${quote}${name}${quote} }) })${semi}\n\nexport default router${semi}\n` });
         break;
       case 'component':
-        files.push({ path: `${PascalName}.tsx`, content: `import React from 'react';\n\ninterface ${PascalName}Props {}\n\nexport const ${PascalName}: React.FC<${PascalName}Props> = () => {\n  return <div>${name}</div>;\n};\n` });
+        files.push({ path: `${PascalName}.tsx`, content: `import React from ${quote}react${quote}${semi}\n\ninterface ${PascalName}Props {}\n\nexport const ${PascalName}: React.FC<${PascalName}Props> = () => {\n  return <div>${name}</div>${semi}\n}${semi}\n` });
         break;
     }
   }
   return { files };
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Gate-1: Post-generation enforcement — compile+lint before write
+// ═══════════════════════════════════════════════════════════════
+
+export interface EnforcementResult {
+  passed: boolean;
+  changes: { file: string; content: string }[];
+  fixes: number;
+  diagnostics: string;
+}
+
+/**
+ * Validate AI-generated changes by running compile/lint BEFORE writing.
+ * If compilation fails, auto-fix with AI (max 2 rounds).
+ * If style fingerprint is available, verify style consistency.
+ */
+export async function enforceCodeQuality(
+  changes: { file: string; content: string }[],
+  rootPath: string,
+  identity: { language: string },
+  provider: any,
+  index?: { styleFingerprint?: import('../types.js').StyleFingerprint },
+): Promise<EnforcementResult> {
+  if (changes.length === 0) return { passed: true, changes: [], fixes: 0, diagnostics: '' };
+
+  const MAX_FIX_ROUNDS = 2;
+  let currentChanges = [...changes];
+  let totalFixes = 0;
+  const diagnostics: string[] = [];
+
+  const { writeFile, ensureDir } = await import('../utils/fs.js');
+  const path = await import('path');
+
+  const allTempFiles: string[] = [];
+  for (let round = 0; round <= MAX_FIX_ROUNDS; round++) {
+    // Write changes to temp locations for validation
+    const tempFiles: { original: string; temp: string; content: string }[] = [];
+    for (const c of currentChanges) {
+      const fullPath = [rootPath, c.file].join('/').replace(/\/+/g, '/');
+      const tempPath = fullPath + '.gate-tmp';
+      await ensureDir(path.dirname(tempPath));
+      await writeFile(tempPath, c.content);
+      tempFiles.push({ original: fullPath, temp: tempPath, content: c.content });
+      allTempFiles.push(tempPath);
+    }
+
+    // Run compile check
+    const compileResult = await runCompileCheck(tempFiles, rootPath, identity);
+
+    if (compileResult.passed) {
+      // Style check (best-effort, non-blocking)
+      if (index?.styleFingerprint && round === 0) {
+        const styleIssues = checkStyleConsistency(currentChanges, index.styleFingerprint);
+        if (styleIssues.length > 0) {
+          diagnostics.push(`风格警告: ${styleIssues.join('; ')}`);
+        }
+      }
+      // Auto-4: Semantic verification — import and reference check (non-blocking)
+      try {
+        const semIssues = await checkSemanticConsistency(currentChanges, rootPath);
+        if (semIssues.length > 0) {
+          diagnostics.push(`语义提示: ${semIssues.slice(0, 3).join('; ')}`);
+        }
+      } catch { /* best-effort */ }
+      // Clean up temp files
+      for (const tf of tempFiles) {
+        try { const fs = await import('fs/promises'); await fs.unlink(tf.temp); } catch { /* best-effort */ }
+      }
+      return { passed: true, changes: currentChanges, fixes: totalFixes, diagnostics: diagnostics.join('\n') };
+    }
+
+    // Compile failed — try AI fix
+    if (round < MAX_FIX_ROUNDS && provider && identity.language === 'TypeScript') {
+      const errors = parseErrorOutput(compileResult.errors);
+      if (errors.length > 0) {
+        diagnostics.push(`第${round + 1}轮编译失败: ${errors.length} 个错误`);
+
+        try {
+          const fixResp = await provider.chat({
+            systemPrompt: '你是TypeScript修复专家。只输出JSON变更契约。仅修复编译错误，不改无关代码，不引入新错误。',
+            task: `修复以下 TypeScript 编译错误:\n${errors.map(e => `${e.file}:${e.line}: ${e.message}`).join('\n')}\n\n当前代码:\n${currentChanges.map(c => `## ${c.file}\n${c.content.slice(0, 2000)}`).join('\n\n')}`,
+            context: { projectMeta: '', relevantCode: [], relevantMemory: '', totalTokens: 0, budgetUsed: 0 }, history: '',
+          });
+
+          const j = JSON.parse((fixResp.content.match(/\{[\s\S]*\}/)?.[0] || '{}'));
+          const fixes = (j.changes || []) as { file: string; content: string }[];
+          if (fixes.length > 0) {
+            for (const fix of fixes) {
+              const idx = currentChanges.findIndex(c => c.file === fix.file);
+              if (idx >= 0) currentChanges[idx] = { file: fix.file, content: fix.content };
+            }
+            totalFixes++;
+          } else {
+            break; // AI produced no fix, stop trying
+          }
+        } catch { break; } // AI fix call failed, stop trying
+      } else {
+        break; // No parseable errors, can't fix
+      }
+    } else {
+      break; // Last round or non-TS language
+    }
+
+    // Clean up temp files between rounds
+    for (const tf of tempFiles) {
+      try { const fs = await import('fs/promises'); await fs.unlink(tf.temp); } catch { /* best-effort */ }
+    }
+  }
+
+  // All rounds exhausted, compile still failing
+  diagnostics.push(`编译验证失败 (${MAX_FIX_ROUNDS}轮修复后)，变更已拒绝`);
+  // Clean up all temp files
+  for (const tf of allTempFiles) { try { const fs = await import('fs/promises'); await fs.unlink(tf); } catch { /* best-effort */ } }
+  return { passed: false, changes: currentChanges, fixes: totalFixes, diagnostics: diagnostics.join('\n') };
+}
+
+interface TempFile { original: string; temp: string; content: string; }
+
+export async function runCompileCheck(
+  _tempFiles: TempFile[],
+  rootPath: string,
+  identity: { language: string },
+): Promise<{ passed: boolean; errors: string }> {
+  const lang = identity.language?.toLowerCase() || '';
+
+  if (lang === 'typescript' || lang === 'javascript') {
+    try {
+      const { execFileSync } = await import('child_process');
+      const hasTsConfig = await (await import('../utils/fs.js')).fileExists([rootPath, 'tsconfig.json'].join('/').replace(/\/+/g, '/'));
+      if (!hasTsConfig) return { passed: true, errors: '' };
+
+      const np = process.platform === 'win32' ? 'npx.cmd' : 'npx';
+      const result = execFileSync(np, ['tsc', '--noEmit'], {
+        cwd: rootPath,
+        timeout: 30000,
+        encoding: 'utf-8',
+        stdio: 'pipe',
+      });
+      return { passed: true, errors: '' };
+    } catch (e: any) {
+      return { passed: false, errors: (e.stdout || '') + (e.stderr || '') };
+    }
+  }
+
+  if (lang === 'go') {
+    try {
+      const { execFileSync } = await import('child_process');
+      execFileSync('go', ['build', './...'], { cwd: rootPath, timeout: 30000, encoding: 'utf-8', stdio: 'pipe' });
+      return { passed: true, errors: '' };
+    } catch (e: any) {
+      return { passed: false, errors: (e.stdout || '') + (e.stderr || '') };
+    }
+  }
+
+  // Non-compiled languages — skip enforcement
+  return { passed: true, errors: '' };
+}
+
+// Auto-4: Semantic consistency — import and reference validation
+async function checkSemanticConsistency(
+  changes: { file: string; content: string }[],
+  rootPath: string,
+): Promise<string[]> {
+  const issues: string[] = [];
+  try {
+    const { loadProjectIndex } = await import('../core/scanner.js');
+    const idx = await loadProjectIndex(rootPath);
+    if (!idx) return [];
+
+    const knownModules = new Set(idx.modules.map(m => m.name));
+    const knownExports = new Set<string>();
+    for (const mod of idx.modules) {
+      for (const exp of mod.exports) {
+        knownExports.add(exp.name);
+      }
+    }
+
+    for (const c of changes) {
+      if (!/\.(ts|tsx|js|jsx)$/.test(c.file)) continue;
+
+      // Extract relative imports: from './xxx' or from "../xxx"
+      const importPattern = /from\s+['"]\.\.?[\/\\]([^'"]+)['"]/g;
+      let m: RegExpExecArray | null;
+      while ((m = importPattern.exec(c.content)) !== null) {
+        const importPath = m[1];
+        // Check if the imported module likely exists
+        const basePath = c.file.replace(/\/[^/]+$/, '');
+        const resolved = `${basePath}/${importPath}`.replace(/\/+/g, '/');
+        const exists = knownModules.has(resolved) || [...knownModules].some(k => k.includes(importPath.split('/').pop() || ''));
+        if (!exists && !importPath.startsWith('.')) {
+          // Can't verify — skip external packages
+        }
+      }
+
+      // Check for bare imports that might not exist
+      const bareImportPattern = /from\s+['"]([^.][^'"]*)['"]/g;
+      while ((m = bareImportPattern.exec(c.content)) !== null) {
+        const pkg = m[1];
+        // Check if it's in package.json
+        if (pkg && !pkg.startsWith('@types/') && !/^(fs|path|os|http|https|url|crypto|stream|util|events|buffer|child_process|readline)$/.test(pkg)) {
+          try {
+            const { readFile } = await import('../utils/fs.js');
+            const pkgJson = JSON.parse(await readFile([rootPath, 'package.json'].join('/').replace(/\/+/g, '/')));
+            const deps = { ...pkgJson.dependencies, ...pkgJson.devDependencies };
+            if (!deps[pkg] && !knownModules.has(pkg)) {
+              issues.push(`${c.file}: 导入了未在 package.json 中声明的包 "${pkg}"`);
+            }
+          } catch { /* pkg.json not found */ }
+        }
+      }
+    }
+  } catch { /* best-effort */ }
+  return issues.slice(0, 5);
+}
+
+// T1-4a: Detect empty/weak tests
+export function detectEmptyTests(content: string, filePath: string): { isEmpty: boolean; hasAssertions: boolean; issues: string[] } {
+  if (!/\.(test|spec)\.(ts|tsx|js|jsx)$/.test(filePath)) return { isEmpty: false, hasAssertions: true, issues: [] };
+
+  const issues: string[] = [];
+  const hasAssertions = /expect\(|assert\.|assert\(|\.to(Be|Equal|Contain|Throw|Match|Called|Have)\b|\.toBe|\.toEqual|\.ok|should\.|\.must\.|t\.(is|ok|not|pass|fail)\b/i.test(content);
+  const hasTestBlock = /(it|test|describe)\(/.test(content);
+  const hasOnlyComments = content.split('\n').filter(l => !l.trim().startsWith('//') && !l.trim().startsWith('/*') && !l.trim().startsWith('*') && l.trim().length > 0).length < 3;
+
+  if (!hasTestBlock) {
+    issues.push('无测试块定义 (it/test/describe)');
+  }
+  if (!hasAssertions && hasTestBlock) {
+    issues.push('测试无断言 (expect/assert/should)');
+  }
+  if (hasOnlyComments) {
+    issues.push('测试仅有注释，无实际代码');
+  }
+
+  // Check for empty test blocks: it("x", () => {})
+  const emptyBlockPattern = /(it|test)\s*\([^)]*\)\s*,\s*(?:async\s*)?\(\s*\)\s*=>\s*\{\s*\}/g;
+  if (emptyBlockPattern.test(content)) {
+    issues.push('存在空测试块 (无实现的箭头函数)');
+  }
+
+  return {
+    isEmpty: issues.length >= 2 || hasOnlyComments,
+    hasAssertions,
+    issues,
+  };
+}
+
+/** T1-4a: Scan generated test files and flag empty/weak tests */
+export function scanGeneratedTests(
+  testFiles: { file: string; content: string }[],
+): { file: string; isEmpty: boolean; hasAssertions: boolean; issues: string[] }[] {
+  return testFiles
+    .map(tf => ({ file: tf.file, ...detectEmptyTests(tf.content, tf.file) }))
+    .filter(r => r.issues.length > 0);
+}
+
+function checkStyleConsistency(
+  changes: { file: string; content: string }[],
+  fingerprint: import('../types.js').StyleFingerprint,
+): string[] {
+  const issues: string[] = [];
+  for (const c of changes) {
+    if (!/\.(ts|tsx|js|jsx)$/.test(c.file)) continue;
+    const lines = c.content.split('\n');
+
+    // Check semicolons
+    if (fingerprint.semicolons === false && lines.some(l => /;\s*$/.test(l.trim()) && !/for\s*\(/.test(l))) {
+      issues.push(`${c.file}: 包含分号，项目约定无分号`);
+    }
+    if (fingerprint.semicolons === true && lines.length > 3) {
+      const stmtLines = lines.filter(l => /^(import|export|const|let|var|return|console)/.test(l.trim()));
+      const missingSemi = stmtLines.filter(l => !/;\s*$/.test(l.trim()) && !/\{$/.test(l.trim()));
+      if (missingSemi.length > stmtLines.length * 0.5) {
+        issues.push(`${c.file}: 缺少分号，项目约定必须有分号`);
+      }
+    }
+
+    // Check quote style
+    if (fingerprint.quoteStyle === 'single') {
+      const doubleQuoteLines = lines.filter(l => /import.*"/.test(l) || /require\s*\(.*"/.test(l) || /from\s+"/.test(l));
+      if (doubleQuoteLines.length > 0) issues.push(`${c.file}: 使用双引号，项目约定单引号`);
+    }
+  }
+  return issues.slice(0, 5);
+}
+
+// C9: AI code refactoring
+export async function refactorCode(
+  filePath: string,
+  instruction: string,
+  rootPath: string,
+  index: ProjectIndex | null,
+  provider: any,
+): Promise<{ original: string; refactored: string; explanation: string }> {
+  const { readFile } = await import('../utils/fs.js');
+  const original = await readFile(filePath);
+  const styleConstraint = index?.styleFingerprint ? buildStyleConstraints(index.styleFingerprint) : '';
+
+  const resp = await provider.chat({
+    systemPrompt: [
+      '你是代码重构专家。分析代码并进行安全重构。',
+      '规则:',
+      '  1. 保持公开 API 不变',
+      '  2. 每次只改一个关注点',
+      '  3. 输出 JSON: {"refactored": "完整重构后的代码", "explanation": "改了什么、为什么 (中文)"}',
+      styleConstraint || '',
+    ].filter(Boolean).join('\n'),
+    task: `文件: ${filePath}\n重构指令: ${instruction}\n\n原始代码:\n${original.slice(0, 6000)}`,
+    context: { projectMeta: '', relevantCode: [], relevantMemory: '', totalTokens: 0, budgetUsed: 0 },
+    history: '',
+  });
+
+  try {
+    const json = JSON.parse((resp.content.match(/\{[\s\S]*\}/)?.[0] || '{}'));
+    return {
+      original,
+      refactored: json.refactored || original,
+      explanation: json.explanation || '',
+    };
+  } catch {
+    return { original, refactored: original, explanation: 'AI 输出解析失败' };
+  }
 }

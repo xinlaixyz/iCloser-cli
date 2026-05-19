@@ -143,7 +143,7 @@ export function getTask(taskId: string): Task | undefined {
   return taskStore.get(taskId);
 }
 
-export function updateTaskStatus(taskId: string, status: TaskStatus): void {
+export function updateTaskStatus(taskId: string, status: TaskStatus, rootPath?: string): void {
   const task = taskStore.get(taskId);
   if (task) {
     task.status = status;
@@ -154,6 +154,23 @@ export function updateTaskStatus(taskId: string, status: TaskStatus): void {
       task.startedAt = new Date().toISOString();
     }
     taskStore.set(taskId, task);
+
+    // Memory Kernel hooks (fire-and-forget)
+    if (rootPath) {
+      if (status === 'running') {
+        import('./memory/integration.js').then(m => m.onTaskCreated(rootPath!, taskId, task.description)).catch(() => {});
+      } else if (status === 'completed') {
+        import('./memory/integration.js').then(m => m.onTaskCompleted(rootPath!, taskId, {
+          filesChanged: task.changes.map(c => c.file),
+          verifyPassed: task.verifyResult?.overall === 'pass',
+          summary: task.description,
+        })).catch(() => {});
+      } else if (status === 'failed') {
+        import('./memory/integration.js').then(m => m.onTaskError(rootPath!, taskId,
+          new Error(task.errorLog.slice(-1)[0] || 'task failed')
+        )).catch(() => {});
+      }
+    }
   }
 }
 
@@ -223,8 +240,8 @@ export function getQueue(): Task[] {
 export function getNextTask(): Task | undefined {
   // Find highest priority queued task with no blocking dependencies
   const readyTasks = taskQueue
-    .map(id => taskStore.get(id)!)
-    .filter(t => t && t.status === 'queued')
+    .map(id => taskStore.get(id))
+    .filter((t): t is Task => t !== undefined && t.status === 'queued')
     .filter(t => !isBlocked(t))
     .sort((a, b) => {
       const priorityOrder = { high: 0, normal: 1, low: 2 };
@@ -236,8 +253,8 @@ export function getNextTask(): Task | undefined {
 
 export function getReadyCount(): number {
   return taskQueue
-    .map(id => taskStore.get(id)!)
-    .filter(t => t && t.status === 'queued' && !isBlocked(t))
+    .map(id => taskStore.get(id))
+    .filter((t): t is Task => t !== undefined && t.status === 'queued' && !isBlocked(t))
     .length;
 }
 
@@ -273,8 +290,8 @@ export interface ScheduleSlot {
 export function scheduleTasks(maxParallel: number): ScheduleSlot[] {
   const slots: ScheduleSlot[] = [];
   const ready = taskQueue
-    .map(id => taskStore.get(id)!)
-    .filter(t => t && t.status === 'queued' && !isBlocked(t))
+    .map(id => taskStore.get(id))
+    .filter((t): t is Task => t !== undefined && t.status === 'queued' && !isBlocked(t))
     .sort((a, b) => {
       const order = { high: 0, normal: 1, low: 2 };
       return order[a.priority] - order[b.priority];
@@ -295,6 +312,7 @@ export function scheduleTasks(maxParallel: number): ScheduleSlot[] {
       if (conflictFiles.length > 0) {
         task.status = 'blocked';
         task.errorLog.push(`文件冲突（与其他并行任务）：${conflictFiles.join(', ')}`);
+        taskStore.set(task.id, task); // Persist blocked state
         // Try next task
         continue;
       }

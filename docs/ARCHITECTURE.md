@@ -7,6 +7,7 @@
 
 - **CLI 层** (`src/cli/`): 命令解析、终端 UI、REPL 交互、输出格式化
 - **核心服务层** (`src/core/`): 扫描器、任务引擎、验证器、上下文组装、审计、安全
+- **Memory Kernel** (`src/core/memory/`): 感官缓冲/工作记忆/情景记忆/语义记忆/Recall检索/固化/遗忘
 - **Agent 管理层** (`src/agent/`): 多 Agent 生命周期管理、通信、编排
 - **AI 集成层** (`src/ai/`): 多 Provider 抽象（Claude/DeepSeek/OpenAI/Qwen）、输出协议解析
 - **门禁层** (`src/gate/`): 质量门禁检查
@@ -20,7 +21,7 @@
 - 语言选择：TypeScript (Node.js >= 18, ES2022)
 - 框架：无框架，vanilla 方案
 - 构建系统：npm (tsc 编译)
-- 测试框架：vitest (37 个测试文件)
+- 测试框架：vitest (65 个测试文件, 644 测试, 0 失败)
 - 运行时兼容：Windows / macOS / Linux
 - AI Provider：支持 Claude、DeepSeek、OpenAI、Qwen 及离线 mock
 
@@ -64,7 +65,23 @@ AgentCode/
 │   │   ├── task-loop.ts      三步循环状态机
 │   │   ├── verifier.ts       编译/测试/lint 验证
 │   │   ├── context.ts        上下文组装
-│   │   ├── memory.ts         记忆系统
+│   │   ├── memory.ts         记忆系统 (已升级为 Memory Kernel)
+│   │   ├── memory/             **Memory Kernel v1.0** ── 认知记忆核心
+│   │   │   ├── store.ts          存储工厂
+│   │   │   ├── sqlite-store.ts   SQLite 索引
+│   │   │   ├── sensory-buffer.ts 感官缓冲
+│   │   │   ├── working-memory.ts 工作记忆
+│   │   │   ├── episodic.ts      情景记忆
+│   │   │   ├── semantic.ts      语义记忆
+│   │   │   ├── salience.ts      重要度引擎
+│   │   │   ├── forgetting.ts    遗忘引擎
+│   │   │   ├── consolidation.ts 记忆固化
+│   │   │   ├── recall.ts        Recall 检索
+│   │   │   ├── runtime.ts       认知调度器
+│   │   │   ├── composer.ts      上下文编排
+│   │   │   ├── bootstrap.ts     自动引导
+│   │   │   ├── integration.ts   系统集成
+│   │   │   └── debug.ts         调试日志
 │   │   ├── audit.ts          审计日志
 │   │   ├── security.ts       安全规则
 │   │   ├── autopilot.ts      自动分析
@@ -97,7 +114,7 @@ AgentCode/
 │       ├── git.ts             Git 操作
 │       └── detect.ts         项目检测
 ├── tests/
-│   └── (37 个测试文件)
+│   └── (51 个测试文件)
 ├── scripts/
 │   └── (18 个 smoke/辅助脚本)
 └── docs/
@@ -152,7 +169,13 @@ AgentManager.orchestrate() 支持编排模式:
 ```
 scanProject()
     │
-    ├── detectProject()     — 语言/框架检测
+    ├── detectProject()     — 语言/框架检测 (13 种编程语言 + 6 种非代码分类)
+    │       │
+    │       ├── 代码语言: ts/js/go/rust/python/java/kotlin/csharp/php/ruby/swift/objc/c/cpp
+    │       └── 非代码: documentation/config/data/infrastructure/empty/unknown
+    │
+    ├── classifyProjectType() — 无代码文件时按文件组成分类 (文档/配置/数据/IaC)
+    ├── detectSubprojects() — 深度 2 子目录扫描 monorepo 子项目
     ├── findFiles()         — 文件发现
     ├── filterBySize()      — 按尺寸/文本过滤 (并行)
     ├── computeFingerprints — 比对 mtime+size 指纹
@@ -160,6 +183,32 @@ scanProject()
     ├── extractModules()    — 模块提取 (增量合并)
     ├── extractApiEndpoints — API 端点检测
     └── 构建依赖图 + 调用图
+```
+
+### 上下文注入流 (2026-05-19 更新)
+
+```
+buildRichContext(input)
+    │
+    ├── isAnalysisIntent? → maxTokens: 80K (非分析: 24K)
+    │                    → deep: true (AST/调用图/架构检测)
+    │                    → includeTests: true
+    │
+    ├── assembleContextFromProject(rootPath, task, options)
+    │       ├── loadProjectIndex() — 已有索引直接使用
+    │       └── scanProject(deep)  — 无索引时自动扫描
+    │
+    ├── assembleContext()
+    │       ├── assembleProjectMeta()     — 项目画像 (~2K tokens)
+    │       ├── assembleRelevantCode()    — 代码片段 (最多 50 文件, 3 级压缩)
+    │       ├── assembleRelevantMemory()  — 记忆注入 (架构规则/决策/历史)
+    │       ├── assembleGlobalMemoryHints() — 全局记忆
+    │       └── Memory Kernel Recall      — 认知检索 (12 条, 6K tokens)
+    │
+    └── handleChatWithTools()  — 工具模式
+            ├── preloadContext: 注入 30 个代码片段 + 记忆到 tool-loop 初始消息
+            ├── maxRounds: 6 (分析) / 3 (一般)
+            └── tokenBudget: 120K chars (分析) / 80K (一般)
 ```
 
 ## 关键设计约束
@@ -172,7 +221,7 @@ scanProject()
 
 ### 性能基线
 - 扫描性能：10K+ 文件项目通过增量指纹跳过未变更文件；并行化文件处理
-- Token 预算：上下文组装按 token 预算分配，优先高相关性代码片段
+- Token 预算：分析意图 80K tokens，一般对话 24K tokens；工具模式预加载 30 个代码片段
 - 并发控制：Agent 并发上限可配置（默认 3），文件锁定避免并行冲突
 
 ### 兼容性要求
@@ -180,6 +229,89 @@ scanProject()
 - 跨平台：Windows / macOS / Linux
 - AI Provider 可切换：mock（离线）→ Claude / DeepSeek / OpenAI / Qwen
 - 输出格式：CLI 文本 + JSON 双模式
+
+## 代码智能管线 (C9-C12)
+
+```
+ic code <subcommand>
+    │
+    ├── new <描述> [--with-tests]     C1+C4: AI 上下文感知代码生成 → 编译闸门 → 可选测试生成
+    ├── fix                           C6: 错误驱动修复 → 读取失败验证记录 → AI 定位修复
+    ├── complete <文件>               C2: 补全 TODO/空函数体 → 编译闸门验证
+    ├── refactor <描述> [--safe]      C9+C12: 跨文件影响分析 → 搜索所有引用 → 批量 diff
+    │       │                                └── --safe: 逐文件备份→写→编译验证→失败回滚
+    ├── review [文件]                 C11: 4维审查(安全/风格/bug/性能)→行号报告+评分
+    ├── lint-fix [--go]              C10: 读取lint输出→逐文件AI修复→每文件验证→最终确认
+    └── scaffold <类型> <名称>       脚手架: crud/middleware/route/component
+```
+
+## 文档管线 (D1-D12)
+
+```
+ic docs <action>
+    │
+    ├── status                        文档缺口检测 (9模板)
+    ├── generate [type]               AI生成缺失文档 → Agent编排并行 → 质量检查 → 写入
+    ├── check                         质量检查 (完整性/准确性/清晰度)
+    ├── ask <问题>                    D1: RAG问答 — 全文档分块→相关段检索→AI回答
+    ├── summarize <type>              D2: AI文档摘要 (概述/要点/依赖/待办)
+    ├── relate <关键词>               D3: 跨文档关联分析 → AI分析依赖/矛盾/缺口
+    ├── translate <type> --lang en    D4: 翻译→保持Markdown格式→输出到docs/
+    ├── format <type> --to html       D5: 格式转换 (md↔html↔json-outline)
+    ├── edit <type> <指令>            DM1: AI增量编辑→自动快照→diff展示
+    ├── diff <type>                   DM1: 版本diff可视化
+    ├── diff-review <type>            D10: AI审查文档版本差异(新增/删除/语义变化)
+    ├── search <关键词>               DM3: 全文搜索
+    ├── link                          DM3: 交叉引用索引
+    ├── check-consistency             DM3: 文档间一致性检查
+    ├── history <type>                DM2: 版本历史
+    ├── sync                          DM2: 代码变更→文档影响分析
+    ├── toc <type>                    DM3: 生成目录
+    └── template                      DM3: 模板管理
+```
+
+### 完整数据流 (init→分析→代码→文档)
+
+```
+ic init
+  └── detectProject() → classifyProjectType() → detectSubprojects()
+        └── scanProject(deep=true)
+              └── saveProjectIndex()
+
+用户 REPL 输入
+  └── classifyIntentRegex() → intent: analysis/code_change/...
+        └── buildRichContext(maxTokens=80K analysis / 24K other)
+              ├── assembleContextFromProject(deep=true, includeTests=true)
+              │     └── scanProject(deep) [if no index]
+              ├── assembleContext()
+              │     ├── assembleProjectMeta()         ~2K tokens
+              │     ├── assembleRelevantCode()         ~60K tokens, 50 files
+              │     ├── assembleRelevantMemory()       ~2K tokens
+              │     ├── Memory Kernel Recall           12 items, 6K tokens
+              │     └── Chinese alias expansion        28 groups
+              └── handleChatWithTools()
+                    ├── preloadContext: 30 code snippets + memory
+                    ├── maxRounds: 6 (analysis) / 3 (other)
+                    └── tokenBudget: 120K chars (analysis)
+
+ic code refactor --safe
+  └── findSymbolReferences() → 影响分析 → 备份 → 逐文件写入 → runCompileCheck → 失败回滚
+
+ic code review
+  └── readFile → AI 4维审查 → Markdown报告 + 评分
+
+ic code lint-fix
+  └── resolveVerificationCommand(lint) → execSync → 按文件分组 → AI修复 → 验证
+
+ic docs ask
+  └── loadAllDocs → askDocuments → AI RAG回答
+
+ic docs translate
+  └── readFile → translateDocument → writeFile(docs/translations/)
+
+ic docs diff-review
+  └── loadDocSnapshot(old) vs readFile(current) → diffReviewDocuments → AI差异报告
+```
 
 ---
 

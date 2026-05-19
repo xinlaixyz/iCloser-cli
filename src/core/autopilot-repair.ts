@@ -313,16 +313,6 @@ function fixTypeScriptImport(content: string, evidence: string): { content: stri
 }
 
 
-function applyReadOnlyTestRepair(rootPath: string, plan: AutopilotRepairPlan): Promise<AutopilotRepairReceipt[]> {
-  const receipts = plan.files.map(file => ({
-    file,
-    fullPath: resolveInsideRoot(rootPath, file),
-    action: 'skipped' as const,
-    ok: true,
-    message: '测试修复需要更精确代码上下文，本轮仅给出建议，不自动改写文件',
-  }));
-  return Promise.resolve(receipts);
-}
 function buildDocRepairActions(evidence: string, files: string[]): string[] {
   const actions: string[] = [];
   if (evidence.includes('缺少一级标题')) actions.push('为失败文档补充 Markdown 一级标题，例如 # PRD / # API / # TESTING。');

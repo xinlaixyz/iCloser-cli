@@ -609,11 +609,65 @@ class ClaudeProvider implements AIProviderAdapter {
   }
 
   async chatStream(prompt: AIPrompt, onChunk: StreamCallback, _tools?: ToolDefinition[]): Promise<AIResponse> {
-    const response = await this.chat(prompt, _tools);
-    for (const char of response.content) {
-      onChunk(char);
+    try {
+      const { default: Anthropic } = await import('@anthropic-ai/sdk');
+
+      const client = new Anthropic({
+        apiKey: this.config.apiKey || process.env.ANTHROPIC_API_KEY || '',
+        baseURL: this.config.baseUrl,
+      });
+
+      const messages: { role: 'user' | 'assistant'; content: string }[] = [
+        {
+          role: 'user',
+          content: `${prompt.context.projectMeta}\n\n${prompt.context.relevantCode.map(c => `// ${c.file}\n${c.content}`).join('\n\n')}\n\n${prompt.context.relevantMemory}${prompt.context.externalKnowledge ? '\n\n## 网络搜索结果\n' + prompt.context.externalKnowledge : ''}${prompt.context.astHints ? '\n\n## 代码调用关系\n' + prompt.context.astHints : ''}\n\n任务：${prompt.task}\n\n历史：${prompt.history}`,
+        },
+      ];
+
+      const stream = client.messages.stream({
+        model: this.config.model,
+        max_tokens: this.config.maxTokens,
+        temperature: this.config.temperature,
+        system: prompt.systemPrompt,
+        messages,
+        tools: _tools?.map(t => ({
+          name: t.name,
+          description: t.description,
+          input_schema: {
+            type: 'object' as const,
+            properties: t.parameters?.properties || {},
+            ...(t.parameters?.required ? { required: t.parameters.required as string[] } : {}),
+          },
+        })),
+      });
+
+      let fullContent = '';
+      for await (const event of stream) {
+        if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+          onChunk(event.delta.text);
+          fullContent += event.delta.text;
+        }
+      }
+
+      const finalMessage = await stream.finalMessage();
+      const tokensUsed = finalMessage.usage.input_tokens + finalMessage.usage.output_tokens;
+
+      const toolCalls: ToolCall[] = finalMessage.content
+        .filter((block): block is Extract<typeof block, { type: 'tool_use' }> => block.type === 'tool_use')
+        .map(block => {
+          const toolBlock = block as { name: string; input: Record<string, unknown> };
+          return { name: toolBlock.name, arguments: toolBlock.input };
+        });
+
+      return {
+        content: fullContent,
+        toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+        tokensUsed,
+        model: finalMessage.model,
+      };
+    } catch (err) {
+      throw classifyError(err, 'claude', ['ANTHROPIC_API_KEY'], Boolean(this.config.apiKey));
     }
-    return response;
   }
 }
 
@@ -711,6 +765,12 @@ class DeepSeekProvider implements AIProviderAdapter {
         temperature: this.config.temperature,
         messages,
         stream: true,
+        ...(_tools && _tools.length > 0 ? {
+          tools: _tools.map(t => ({
+            type: 'function' as const,
+            function: { name: t.name, description: t.description, parameters: t.parameters },
+          })),
+        } : {}),
       });
 
       let fullContent = '';
@@ -769,7 +829,14 @@ class OpenAIProvider implements AIProviderAdapter {
         temperature: this.config.temperature,
         messages: [
           { role: 'system', content: prompt.systemPrompt },
-          { role: 'user', content: prompt.task },
+          {
+            role: 'user',
+            content: prompt.task + '\n\n上下文：\n' +
+              prompt.context.relevantCode.map(c => `// ${c.file}\n${c.content}`).join('\n\n') +
+              (prompt.context.relevantMemory ? '\n\n## 项目记忆\n' + prompt.context.relevantMemory : '') +
+              (prompt.context.externalKnowledge ? '\n\n## 网络搜索结果\n' + prompt.context.externalKnowledge : '') +
+              (prompt.context.astHints ? '\n\n## 代码调用关系\n' + prompt.context.astHints : ''),
+          },
         ],
         tools: tools?.map(t => ({
           type: 'function' as const,
@@ -808,7 +875,13 @@ class OpenAIProvider implements AIProviderAdapter {
         temperature: this.config.temperature,
         messages: [
           { role: 'system', content: prompt.systemPrompt },
-          { role: 'user', content: prompt.task },
+          {
+            role: 'user',
+            content: prompt.task + '\n\n上下文：\n' + prompt.context.projectMeta +
+              (prompt.context.relevantMemory ? '\n\n## 项目记忆\n' + prompt.context.relevantMemory : '') +
+              (prompt.context.externalKnowledge ? '\n\n## 网络搜索结果\n' + prompt.context.externalKnowledge : '') +
+              (prompt.context.astHints ? '\n\n## 代码调用关系\n' + prompt.context.astHints : ''),
+          },
         ],
         stream: true,
       });
@@ -819,8 +892,12 @@ class OpenAIProvider implements AIProviderAdapter {
         if (delta) { fullContent += delta; onChunk(delta); }
       }
       return { content: fullContent, tokensUsed: 0, model: this.config.model };
-    } catch (_err) {
-      return this.chat(prompt, _tools); // fallback
+    } catch (streamErr) {
+      try {
+        return await this.chat(prompt, _tools);
+      } catch {
+        throw streamErr; // preserve original streaming error if both fail
+      }
     }
   }
 }
@@ -841,7 +918,7 @@ class QwenProvider implements AIProviderAdapter {
     this.config = config;
   }
 
-  async chat(prompt: AIPrompt, _tools?: ToolDefinition[]): Promise<AIResponse> {
+  async chat(prompt: AIPrompt, tools?: ToolDefinition[]): Promise<AIResponse> {
     try {
       const { default: OpenAI } = await import('openai');
 
@@ -856,14 +933,34 @@ class QwenProvider implements AIProviderAdapter {
         temperature: this.config.temperature,
         messages: [
           { role: 'system', content: prompt.systemPrompt },
-          { role: 'user', content: prompt.task },
+          {
+            role: 'user',
+            content: prompt.task + '\n\n上下文：\n' +
+              prompt.context.relevantCode.map(c => `// ${c.file}\n${c.content}`).join('\n\n') +
+              (prompt.context.relevantMemory ? '\n\n## 项目记忆\n' + prompt.context.relevantMemory : '') +
+              (prompt.context.astHints ? '\n\n## 代码调用关系\n' + prompt.context.astHints : ''),
+          },
         ],
+        ...(tools?.length ? {
+          tools: tools.map(t => ({
+            type: 'function' as const,
+            function: { name: t.name, description: t.description, parameters: t.parameters },
+          })),
+        } : {}),
       });
 
-      const content = response.choices[0].message.content || '';
+      const choice = response.choices[0];
+      const content = choice.message.content || '';
+
+      // Extract tool calls from Qwen response (OpenAI-compatible format)
+      const toolCalls: ToolCall[] = (choice.message.tool_calls || []).map((tc: any) => ({
+        name: tc.function?.name || '',
+        arguments: JSON.parse(tc.function?.arguments || '{}'),
+      }));
 
       return {
         content,
+        toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
         tokensUsed: response.usage?.total_tokens || 0,
         model: response.model,
       };
@@ -876,7 +973,7 @@ class QwenProvider implements AIProviderAdapter {
     try {
       const { default: OpenAI } = await import('openai');
       const client = new OpenAI({
-        apiKey: this.config.apiKey || process.env.DASHSCOPE_API_KEY || '',
+        apiKey: this.config.apiKey || process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY || '',
         baseURL: this.config.baseUrl || 'https://dashscope.aliyuncs.com/compatible-mode/v1',
       });
 
@@ -886,7 +983,12 @@ class QwenProvider implements AIProviderAdapter {
         temperature: this.config.temperature,
         messages: [
           { role: 'system', content: prompt.systemPrompt },
-          { role: 'user', content: prompt.task },
+          {
+            role: 'user',
+            content: prompt.task + '\n\n上下文：\n' + prompt.context.projectMeta +
+              (prompt.context.relevantMemory ? '\n\n## 项目记忆\n' + prompt.context.relevantMemory : '') +
+              (prompt.context.astHints ? '\n\n## 代码调用关系\n' + prompt.context.astHints : ''),
+          },
         ],
         stream: true,
       });
@@ -897,8 +999,8 @@ class QwenProvider implements AIProviderAdapter {
         if (delta) { fullContent += delta; onChunk(delta); }
       }
       return { content: fullContent, tokensUsed: 0, model: this.config.model };
-    } catch {
-      return this.chat(prompt); // fallback to non-streaming
+    } catch (qwenStreamErr) {
+      try { return await this.chat(prompt); } catch { throw qwenStreamErr; }
     }
   }
 }

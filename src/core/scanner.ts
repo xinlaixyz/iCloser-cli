@@ -89,7 +89,7 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
     const oldModules = oldIndex?.modules || [];
     // Only re-scan changed files; merge with old module data for unchanged files
     const newModules = await extractModules(rootPath, changedFiles);
-    modules = mergeModules(oldModules, newModules, changedFiles, filteredFiles);
+    modules = mergeModules(oldModules, newModules, changedFiles, filteredFiles, rootPath);
   } else {
     modules = await extractModules(rootPath, filteredFiles);
   }
@@ -150,6 +150,19 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
   }, 32);
   const totalTokens = tokenCounts.reduce((sum, t) => sum + t, 0);
 
+  // Gate-3: Detect monorepo sub-projects (non-blocking, best-effort)
+  let subprojects: ProjectIndex['subprojects'];
+  try {
+    const { detectSubprojects } = await import('../utils/detect.js');
+    const subs = await detectSubprojects(rootPath);
+    if (subs.length > 0) {
+      subprojects = subs;
+      if (options.deep) {
+        process.stdout.write(`  发现 ${subs.length} 个子项目: ${subs.map(s => s.name).join(', ')}\n`);
+      }
+    }
+  } catch { /* non-blocking */ }
+
   const index: ProjectIndex = {
     identity,
     modules,
@@ -164,6 +177,7 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
     callGraph,
     fileFingerprints: currentFingerprints,
     tsDataFlow,
+    subprojects,
   };
 
   return {
@@ -231,6 +245,7 @@ const ALL_SOURCE_PATTERNS: string[] = [
   '**/*.toml',
   '**/*.xml',
   '**/*.json',
+  '**/*.pdf', '**/*.html', '**/*.htm', '**/*.pptx', '**/*.ppt', '**/*.docx', '**/*.xlsx',
 ];
 const TEST_PATTERNS: RegExp[] = [
   /\.test\.\w+$/, /\.spec\.\w+$/, /_test\.\w+$/,
@@ -288,10 +303,9 @@ class WorkerPool {
   }
 
   private getWorker(): Worker | null {
-    // Return existing idle worker if available
-    if (this.workers.length > 0 && this.activeCount < this.workers.length) {
-      return this.workers[this.activeCount];
-    }
+    // Find an idle worker (not currently processing a task)
+    const idle = this.workers.find((_, i) => i >= this.activeCount);
+    if (idle) return idle;
     // Create new worker if under limit
     if (this.workers.length < this.maxWorkers) {
       try {
@@ -905,20 +919,25 @@ function mergeModules(
   oldModules: ModuleInfo[],
   newModules: ModuleInfo[],
   changedFiles: string[],
-  allFiles: string[]
+  allFiles: string[],
+  rootPath?: string,
 ): ModuleInfo[] {
   const oldMap = new Map(oldModules.map(m => [m.name, m]));
   const newMap = new Map(newModules.map(m => [m.name, m]));
-  const allFileSet = new Set(allFiles);
+
+  // Convert allFiles to relative paths for matching (module files are stored as relative)
+  const allFileRelSet = new Set(rootPath
+    ? allFiles.map(f => relativePath(f, rootPath))
+    : allFiles);
 
   // Start with new modules (re-scanned)
   for (const [name, mod] of newMap) {
     oldMap.set(name, mod);
   }
 
-  // Remove deleted files from old modules
+  // Remove deleted files from old modules — match against relative paths
   for (const mod of oldMap.values()) {
-    mod.files = mod.files.filter(f => allFileSet.has(f));
+    mod.files = mod.files.filter(f => allFileRelSet.has(f));
   }
 
   return [...oldMap.values()];

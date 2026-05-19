@@ -1,6 +1,8 @@
 # iCloser Agent Shell — 开发者指南
 
-版本: 0.1.0 | 日期: 2026-05-15 | 状态: 82% 完成
+版本: 1.1.0 | 日期: 2026-05-20 | 状态: 98% 完成
+
+> Memory Kernel v1.0 + 上下文注入 + 项目检测增强已完成。
 
 ---
 
@@ -11,8 +13,8 @@ iCloser Agent Shell 是一个**终端 AI 工程助手**。理解项目结构 →
 ```
 技术栈:  TypeScript + Node.js >= 18
 架构:    CLI → Core → Agent → AI Provider
-测试:    44 files / 432 tests / 0 failed
-提交:    58 commits
+测试:    65 files / 644 tests / 0 failed
+提交:    60+ commits
 许可证:  MIT
 ```
 
@@ -23,9 +25,10 @@ git clone <repo-url>
 cd AgentCode
 npm install
 npm run build       # tsc 编译到 dist/
-npm test            # 432 tests, ~13s
+npm test            # 644 tests, ~160s
 npm run smoke       # 14 smoke gates
 node dist/index.js  # 启动 REPL
+# 在 REPL 中说 "分析这个项目" → 自动 deep scan + 上下文注入 + AI 分析
 ```
 
 ---
@@ -63,7 +66,15 @@ src/
 │   ├── verifier.ts       # 验证引擎 (编译→lint→test→e2e)
 │   ├── context.ts        # 上下文组装 (记忆/搜索/AST注入)
 │   ├── web-search.ts     # DuckDuckGo 网络搜索
-│   ├── memory.ts         # 分层记忆 (短期/任务/长期)
+│   ├── memory.ts         # 分层记忆 (短期/任务/长期) [已升级→memory/]
+│   ├── memory/            # **Memory Kernel v1.0** (17 文件, 认知记忆核心)
+│   │   ├── store.ts / sqlite-store.ts / jsonl-store.ts  存储层
+│   │   ├── sensory-buffer.ts / working-memory.ts        记忆层
+│   │   ├── episodic.ts / semantic.ts                    长期记忆
+│   │   ├── salience.ts / forgetting.ts / consolidation.ts 智能引擎
+│   │   ├── recall.ts / runtime.ts / composer.ts         检索+调度
+│   │   ├── bootstrap.ts / integration.ts / cli-handlers.ts  集成
+│   │   └── debug.ts                                    调试日志
 │   ├── security.ts       # 安全层 (三级执行)
 │   ├── autopilot.ts      # 项目自动分析
 │   ├── autodoc.ts        # 自动文档生成
@@ -99,7 +110,7 @@ src/
     ├── git.ts            # Git 工具
     └── detect.ts         # 11 语言自动识别
 
-tests/                    # 44 测试文件, 432 tests
+tests/                    # 44 测试文件, 498 tests
 docs/                     # 产品/UI/API/测试 文档
 doc/                      # 架构/状态/任务 文档 (~100 篇)
 skills/                   # 内置 Skill 定义 (4 个)
@@ -138,14 +149,17 @@ AI Layer (src/ai/)
 
 ## 4. 完成度
 
-### 功能完成度: 82%
+### 功能完成度: 85%
 
 | 域 | 完成度 | 关键文件 |
 |----|--------|---------|
 | 核心引擎 | 100% | task-engine, task-loop, agent/manager |
+| 上下文系统 | 90% | context, tool-loop(预加载), recall(12条/6K) |
+| 项目检测 | 95% | detect (13语言+6分类+子项目覆盖) |
 | 工具链 | 95% | scanner, ast-parser, docs-generator |
 | 质量保障 | 90% | verifier, gate/checker, security |
 | UI/UX | 98% | cli/repl, cli/output, cli/diff-renderer |
+| 记忆系统 | 95% | memory/kernel, recall(12), composer(20/8) |
 | 部署运维 | 60% | install scripts, .github/workflows |
 | 生态扩展 | 20% | 未开始 |
 
@@ -232,7 +246,7 @@ AI Layer (src/ai/)
 
 ### 测试
 ```bash
-npm test                    # 全量 432 tests
+npm test                    # 全量 498 tests
 npx vitest run tests/xxx    # 运行单个文件
 ```
 

@@ -1,5 +1,6 @@
 // Context Compression Manager — Token budget management and smart context assembly
 import * as path from 'path';
+import { existsSync } from 'fs';
 import { readFile, estimateTokens, relativePath } from '../utils/fs.js';
 import { loadProjectIndex, saveProjectIndex, scanProject } from './scanner.js';
 import { loadProjectMemory, loadGlobalMemory } from './memory.js';
@@ -19,6 +20,8 @@ export interface ContextOptions {
 export interface ProjectContextOptions extends Partial<ContextOptions> {
   scanIfMissing?: boolean;
   maxFileSize?: number;
+  deep?: boolean;        // Run deep scan (AST, call graph, architecture detection)
+  includeTests?: boolean; // Include test files in scan
 }
 
 export interface ContextDebugSummary {
@@ -84,7 +87,17 @@ export async function assembleContext(
     }
   } catch { /* global memory is optional */ }
 
-  // 3.5. AST call graph hints + relevant signatures (S17.6)
+  // 3.5. Memory Kernel Recall — inject relevant project memories
+  try {
+    const rootPath = index.rootPath || process.cwd();
+    const { getMemoryContextForLLM } = await import('./memory/integration.js');
+    const memoryRecall = await getMemoryContextForLLM(rootPath, task.description);
+    if (memoryRecall) {
+      relevantMemory = relevantMemory ? relevantMemory + '\n\n' + memoryRecall : memoryRecall;
+    }
+  } catch { /* memory kernel is optional */ }
+
+  // 3.6. AST call graph hints + relevant signatures (S17.6)
   let astHints: string | undefined;
   const taskSymbols = extractSymbolsFromDescription(task.description, index);
   if (taskSymbols.length > 0) {
@@ -114,6 +127,30 @@ export async function assembleContext(
         parts.push('相关调用关系：\n' + relatedEdges.map(e =>
           `- ${e.caller} → ${e.callee} (${e.callerFile}:${e.line})`
         ).join('\n'));
+      }
+    }
+
+    // Auto-6: Impact-aware context — find files that import from matched exports
+    if (taskSymbols.length > 0 && index.dependencyGraph.size > 0) {
+      const impactFiles = new Set<string>();
+      const matchedModules = new Set<string>();
+      for (const exp of relevantExports) {
+        matchedModules.add(exp.file);
+      }
+      for (const [mod, deps] of index.dependencyGraph) {
+        for (const dep of deps) {
+          if (matchedModules.has(dep)) {
+            impactFiles.add(mod); // this module imports from a matched module
+          }
+        }
+      }
+      if (impactFiles.size > 0) {
+        // Limit to 8 impact files, prioritize by module size
+        const impactList = [...impactFiles]
+          .map(f => ({ file: f, size: index.modules.find(m => (m.path || m.name) === f)?.files.length || 0 }))
+          .sort((a, b) => b.size - a.size)
+          .slice(0, 8);
+        parts.push(`受影响文件 (导入了上述符号的模块):\n${impactList.map(i => `- ${i.file} (${i.size} 文件依赖)`).join('\n')}`);
       }
     }
 
@@ -186,8 +223,8 @@ export async function assembleContextFromProject(
   if (!index && scanIfMissing) {
     const result = await scanProject({
       rootPath,
-      deep: false,
-      includeTests: false,
+      deep: options.deep ?? false,
+      includeTests: options.includeTests ?? false,
       maxFileSize: options.maxFileSize ?? 256 * 1024,
     });
     index = result.index;
@@ -488,7 +525,7 @@ async function extractTechStackDetails(index: ProjectIndex): Promise<string> {
       try {
         const content = await readFile([index.rootPath, p].join('/').replace(/\/+/g, '/'));
         const lines = content.split('\n').filter(l => l.trim() && !l.startsWith('//') && !l.startsWith('module '));
-        const deps = lines.filter(l => !l.startsWith('\t//') && l.trim().startsWith('github.com') || l.trim().startsWith('go.') || l.trim().startsWith('google.') || l.trim().startsWith('k8s.io'));
+        const deps = lines.filter(l => !l.startsWith('\t//') && (l.trim().startsWith('github.com') || l.trim().startsWith('go.') || l.trim().startsWith('google.') || l.trim().startsWith('k8s.io')));
         if (deps.length > 0) {
           parts.push(`**Go 模块依赖 (${p}):** ${deps.slice(0, 20).map(d => d.trim().split(' ')[0]).join(', ')}${deps.length > 20 ? ` ... 共 ${deps.length} 个依赖` : ''}`);
         }
@@ -906,20 +943,43 @@ function extractSearchKeywords(description: string): string[] {
   }
 
   const chineseAliases: Array<[RegExp, string[]]> = [
-    [/用户|账号|账户|会员/g, ['user', 'account', 'member']],
-    [/认证|登录|登陆|鉴权|权限/g, ['auth', 'login', 'permission']],
-    [/服务|业务/g, ['service']],
-    [/接口|路由|控制器/g, ['api', 'route', 'router', 'controller', 'handler']],
-    [/校验|验证|检查/g, ['validate', 'validation', 'verify', 'check']],
-    [/配置|设置/g, ['config', 'setting']],
-    [/数据库|表|字段|模型/g, ['database', 'db', 'model', 'schema', 'entity']],
-    [/测试|用例/g, ['test', 'spec']],
-    [/记忆|规则|约束/g, ['memory', 'rule', 'constraint']],
-    [/任务|队列|调度/g, ['task', 'queue', 'schedule']],
-    [/上下文|压缩/g, ['context', 'compress', 'compression']],
-    [/扫描|索引|识别/g, ['scan', 'scanner', 'index', 'detect']],
-    [/安全|敏感|危险/g, ['security', 'sensitive', 'dangerous']],
-    [/报告|变更|差异/g, ['report', 'diff', 'change']],
+    // Auth & Identity
+    [/用户|账号|账户|会员|登录|登陆|鉴权|权限|认证/g, ['user', 'account', 'member', 'auth', 'login', 'permission', 'session', 'jwt', 'token', 'oauth']],
+    // Business logic
+    [/支付|交易|转账|汇款|订单|结算|账单/g, ['payment', 'transaction', 'transfer', 'order', 'billing', 'invoice']],
+    [/钱包|余额|资金|充值|提现/g, ['wallet', 'balance', 'fund', 'deposit', 'withdraw']],
+    [/风控|风险|限额|审批/g, ['risk', 'limit', 'approval', 'kyc', 'compliance']],
+    [/代理|agent|bot|自动化|编排/g, ['agent', 'bot', 'orchestration', 'automation']],
+    // Infrastructure
+    [/服务|业务|后端|中间件/g, ['service', 'backend', 'server', 'middleware']],
+    [/接口|路由|控制器|端点|endpoint/g, ['api', 'route', 'router', 'controller', 'handler', 'endpoint']],
+    [/校验|验证|检查|审计/g, ['validate', 'validation', 'verify', 'check', 'audit']],
+    [/配置|设置|环境/g, ['config', 'setting', 'env', 'environment']],
+    [/数据库|表|字段|模型|实体|仓储/g, ['database', 'db', 'model', 'schema', 'entity', 'repository', 'dao']],
+    [/测试|用例|单元|集成|验收/g, ['test', 'spec', 'unit', 'integration', 'e2e', 'acceptance']],
+    [/记忆|规则|约束|偏好/g, ['memory', 'rule', 'constraint', 'preference']],
+    [/任务|队列|调度|执行|编排/g, ['task', 'queue', 'schedule', 'execution', 'pipeline']],
+    [/上下文|压缩|预算/g, ['context', 'compress', 'compression', 'budget']],
+    [/扫描|索引|识别|检测|发现/g, ['scan', 'scanner', 'index', 'detect', 'discovery']],
+    [/安全|敏感|危险|漏洞|注入/g, ['security', 'sensitive', 'dangerous', 'vulnerability', 'injection']],
+    [/报告|变更|差异|diff|回执/g, ['report', 'diff', 'change', 'receipt']],
+    // Frontend & UI
+    [/前端|界面|页面|组件|UI|视图|面板/g, ['frontend', 'ui', 'view', 'component', 'page', 'panel', 'layout']],
+    [/样式|CSS|布局|响应式/g, ['style', 'css', 'layout', 'responsive']],
+    // DevOps & Infrastructure
+    [/部署|构建|发布|上线|CI|CD/g, ['deploy', 'build', 'release', 'ci', 'cd', 'pipeline', 'github', 'actions']],
+    [/Docker|容器|镜像|k8s|编排/g, ['docker', 'container', 'image', 'kubernetes', 'k8s', 'compose']],
+    [/监控|日志|报警|追踪/g, ['monitor', 'log', 'alert', 'trace', 'observability']],
+    // Blockchain/Web3
+    [/合约|智能合约|solidity|abi|签名/g, ['contract', 'solidity', 'abi', 'signature', 'ecdsa']],
+    [/链上|区块链|预测市场|oracle/g, ['chain', 'blockchain', 'prediction', 'market', 'oracle']],
+    // General
+    [/文档|readme|指南|说明/g, ['doc', 'readme', 'guide', 'documentation']],
+    [/启动|运行|开始|dev|start|serve/g, ['start', 'run', 'dev', 'serve', 'launch']],
+    [/分析|检查|审查|review|扫描/g, ['analysis', 'review', 'scan', 'inspect']],
+    [/修复|修|fix|bug|错误/g, ['fix', 'bug', 'error', 'repair', 'patch']],
+    [/重构|整理|优化|清理/g, ['refactor', 'clean', 'optimize', 'restructure']],
+    [/补全|补齐|补|生成|创建/g, ['complete', 'generate', 'create', 'scaffold']],
   ];
 
   for (const [pattern, aliases] of chineseAliases) {
@@ -1168,16 +1228,28 @@ function assembleRelevantMemory(
       candidate.suggestedScope !== 'task-only'
     )
     .filter(candidate => isMemoryCandidateRelevant(task.description, candidate.summary, candidate.content))
-    .slice(0, 5);  // M2: limit to 5 most relevant
+    .slice(0, 8);  // Get extra for verification attrition
 
-  if (approvedCandidates.length > 0) {
+  // Gate-2: Verify memory factual accuracy before injection
+  const verifiedCandidates = approvedCandidates.filter(candidate => {
+    if (!candidate.content) return true; // no content to verify, allow through
+    return verifyMemoryFactualAccuracy(candidate.summary + ' ' + candidate.content);
+  }).slice(0, 5);
+
+  // Exclude stale candidates that failed verification (don't mutate during read)
+  const staleCount = approvedCandidates.length - verifiedCandidates.length;
+  if (staleCount > 0) {
+    // Candidates excluded: stale entries are cleaned up by cleanupStaleMemory on next pass
+  }
+
+  if (verifiedCandidates.length > 0) {
     parts.push('\n## 已确认可复用记忆');
-    for (const candidate of approvedCandidates) {
+    for (const candidate of verifiedCandidates) {
       const label = candidate.kind === 'template' ? '模板' :
         candidate.kind === 'preference' ? '偏好' :
         candidate.kind === 'rule' ? '规则' :
         candidate.kind === 'fact' ? '事实' : '记忆';
-      parts.push(`- [${label}/${candidate.riskLevel}] ${candidate.summary}`);
+      parts.push(`- [${label}/${candidate.riskLevel}] ${candidate.summary} [来源: 已验证]`);
     }
   }
 
@@ -1236,4 +1308,57 @@ function extractSymbolsFromDescription(description: string, index: import('../ty
     }
   }
   return [...new Set(symbols)].slice(0, 8);
+}
+
+// Gate-2: Verify memory factual accuracy before injection
+// Checks if memory mentions files/symbols that no longer exist in the project
+function verifyMemoryFactualAccuracy(memoryText: string): boolean {
+  // Extract potential file paths from memory text
+  const filePattern = /\b([\w./-]+\.[\w]{1,6})\b/g;
+  const mentionedFiles: string[] = [];
+  let match: RegExpExecArray | null;
+  while ((match = filePattern.exec(memoryText)) !== null) {
+    const fp = match[1];
+    if (/\.(ts|tsx|js|jsx|go|py|java|kt|swift|rs|vue|css|json|yaml|yml|toml|md)$/i.test(fp) && !fp.startsWith('http')) {
+      mentionedFiles.push(fp);
+    }
+  }
+
+  // Check if mentioned files still exist (best-effort, sync)
+  if (mentionedFiles.length > 0) {
+    try {
+      // existsSync imported at top of file
+      let staleFileCount = 0;
+      for (const fp of mentionedFiles) {
+        if (!fp.includes('/') && !fp.includes('\\')) continue; // skip bare filenames
+        if (!existsSync(fp)) staleFileCount++;
+      }
+      // Gap-5: reject if ANY file with a path is missing (was: only if ALL missing AND ≥2)
+      if (staleFileCount > 0) {
+        return false; // At least one referenced file no longer exists — memory is stale
+      }
+    } catch { /* fs access failed, allow through */ }
+  }
+
+  // Check for hallucination indicators in memory text
+  const hallucinationMarkers = [
+    /你此前要求我/,           // "you asked me to..." — fabricating user requests
+    /根据.*记忆.*你/,          // "according to memory, you..."
+    /我们上次/,                // "last time we..." — vague reference
+    /上一轮/,                  // "previous round" — crossing boundaries
+    /you asked me to/i,        // English: fabricating user requests
+    /as per your (request|instruction)/i,  // English: fabricated authority
+    /last time we/i,           // English: vague reference
+    /in the previous (conversation|session)/i, // English: boundary crossing
+    /according to (my|our) (memory|records)/i, // English: memory attribution
+    /i recall (you|us) /i,     // English: fabricated recall
+    /based on our (previous|earlier|last)/i, // English: vague history
+  ];
+  for (const marker of hallucinationMarkers) {
+    if (marker.test(memoryText)) {
+      return false;
+    }
+  }
+
+  return true;
 }

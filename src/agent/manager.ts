@@ -2,6 +2,7 @@
 import type {
   AgentInstance, AgentType, AgentStatus,
   AgentMessage, ContextPackage, AIConfig, AIPrompt,
+  Task,
 } from '../types.js';
 import { buildToolCapabilitySnapshot } from '../core/tool-registry.js';
 
@@ -281,17 +282,17 @@ export class AgentManager {
     const children = this.createChildren(orch.id, childTasks);
 
     // Cross-agent file locking: prevent children from stepping on each other
+    let _lockTimer: ReturnType<typeof setTimeout> | null = null;
+    let _relFL: ((t: Task) => void) | null = null;
+    let _orchTask: Task | null = null;
     try {
-      const { acquireFileLocks } = await import('../core/task-engine.js');
+      const { acquireFileLocks, releaseFileLocks: relFL } = await import('../core/task-engine.js');
+      _relFL = relFL;
       const allFiles = childTasks.map(t => t.description.match(/(?:src|lib|app)\/[\w/.-]+\.\w+/g) || []).flat();
       if (allFiles.length > 0) {
-        await acquireFileLocks(this.id, allFiles);
-        // Release after all children complete
-        const release = async () => {
-          const { releaseFileLocks } = await import('../core/task-engine.js');
-          releaseFileLocks(this.id);
-        };
-        setTimeout(release, 180000); // auto-release after 3 min
+        _orchTask = createOrchTask(orch.id, orch.name, allFiles);
+        acquireFileLocks(_orchTask);
+        _lockTimer = setTimeout(() => { try { _relFL?.(_orchTask!); } catch { /* best-effort */ } }, 180000);
       }
     } catch { /* file locks are best-effort */ }
 
@@ -299,6 +300,8 @@ export class AgentManager {
 
     // Wait for all children
     await Promise.all(children.map(c => this.waitForAgent(c.id, 120000)));
+    // Release locks early if all children completed
+    if (_lockTimer) { clearTimeout(_lockTimer); try { if (_orchTask) _relFL?.(_orchTask); } catch { /* best-effort */ } }
 
     // Collect results
     const childResults = children.map(c => {
@@ -429,6 +432,24 @@ export class AgentManager {
 // ============================================================
 function generateAgentId(): string {
   return `agent-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 7)}`;
+}
+
+function createOrchTask(orchId: string, name: string, affectedFiles: string[]): Task {
+  return {
+    id: `orch-${orchId}`,
+    description: name,
+    status: 'running',
+    priority: 'normal',
+    createdAt: new Date().toISOString(),
+    changes: [],
+    diffs: [],
+    reasoning: [],
+    errorLog: [],
+    retryCount: 0,
+    maxRetries: 1,
+    agentExecutions: [],
+    plan: { subGoals: [], affectedFiles, estimatedImpact: 'low', dependencies: [], lockedFiles: [] },
+  };
 }
 
 function buildAgentSystemPrompt(agent: AgentInstance): string {

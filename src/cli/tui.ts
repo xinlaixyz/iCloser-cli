@@ -52,7 +52,7 @@ export function renderBottomPanel(panel: BottomPanelState): string {
     const actionStr = panel.actions.map(a =>
       `${C.accent(`[${a.key}]`)} ${C.dim(a.label)}`
     ).join(`  ${C.dim('│')}  `);
-    out += `  ${C.dim('│')} ${actionStr}${' '.repeat(Math.max(0, w - stripAnsiLen(actionStr) - 2))} ${C.dim('│')}\n`;
+    out += `  ${C.dim('│')} ${actionStr}${' '.repeat(Math.max(0, w - displayWidth(actionStr) - 2))} ${C.dim('│')}\n`;
   }
 
   out += `  ${C.dim('╰')}${C.dim('─'.repeat(w))}${C.dim('╯')}`;
@@ -61,6 +61,13 @@ export function renderBottomPanel(panel: BottomPanelState): string {
 
 function stripAnsiLen(str: string): number {
   return str.replace(/\x1b\[[0-9;]*m/g, '').length;
+}
+
+const CJK_RX = /[一-鿿㐀-䶿豈-﫿　-〿＀-￯぀-ヿ가-힯⺀-⿟]/g;
+function displayWidth(str: string): number {
+  const clean = str.replace(/\x1b\[[0-9;]*m/g, '');
+  const cjkCount = (clean.match(CJK_RX) || []).length;
+  return clean.length + cjkCount;
 }
 
 export const DEFAULT_SHORTCUTS: BottomPanelState = {

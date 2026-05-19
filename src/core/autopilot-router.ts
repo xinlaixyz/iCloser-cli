@@ -58,7 +58,7 @@ function none(): AutopilotRoute {
 }
 
 function normalizeInput(input: string): string {
-  return input.trim().toLowerCase().replace(/[，。！？?！、]/g, ' ').replace(/s+/g, ' ');
+  return input.trim().toLowerCase().replace(/[，。！？?！、]/g, ' ').replace(/\s+/g, ' ');
 }
 
 function matches(input: string, patterns: RegExp[]): boolean {

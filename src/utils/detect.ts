@@ -12,20 +12,70 @@ export async function detectProject(rootPath: string): Promise<ProjectIdentity> 
   const goMod = await readGoMod(rootPath);
   const cargoToml = await readCargoToml(rootPath);
   const requirements = await readRequirements(rootPath);
-  const pyproject = await readJsonFile(rootPath, 'pyproject.toml');
+  const pyproject = await fileContent(rootPath, 'pyproject.toml'); // Read as text, not JSON
   const composer = await readJsonFile(rootPath, 'composer.json');
   const gemfile = await fileContent(rootPath, 'Gemfile');
   const buildGradle = await fileContent(rootPath, 'build.gradle') || await fileContent(rootPath, 'build.gradle.kts');
   const pomXml = await fileContent(rootPath, 'pom.xml');
 
-  const language = detectLanguage(files, { packageJson, goMod, cargoToml, requirements, pyproject, composer, gemfile, buildGradle, pomXml });
-  const framework = detectFramework(files, language, packageJson, goMod, requirements, buildGradle, pomXml);
-  const database = detectDatabase(files, packageJson, goMod, requirements, pyproject, buildGradle, pomXml);
-  const buildSystem = detectBuildSystem(files, language, packageJson);
+  // Count actual source-code files (not config, docs, data)
+  const codeFiles = files.filter(f => /\.(tsx?|jsx?|go|rs|py|java|kt|kts|cs|php|rb|swift|c|cpp|cc|cxx|m|mm)$/i.test(f));
+  const docFiles = files.filter(f => /\.(md|txt|rst|adoc)$/i.test(f) || /\b(README|LICENSE|CHANGELOG|CONTRIBUTING)\b/i.test(f));
+  const configFiles = files.filter(f => /\.(ya?ml|toml|ini|cfg|conf|json)$/i.test(f));
+  const dataFiles = files.filter(f => /\.(csv|tsv|jsonl|xml|sql|parquet|avro)$/i.test(f));
+  const iacFiles = files.filter(f => /\.(tf|hcl)$/i.test(f) || /\b(Dockerfile|docker-compose|ansible|playbook|helm|Chart\.yaml)\b/i.test(f));
+
+  let language = detectLanguage(files, { packageJson, goMod, cargoToml, requirements, pyproject, composer, gemfile, buildGradle, pomXml });
+
+  // If no code language detected, classify by file type composition
+  if (language === 'unknown') {
+    language = classifyProjectType(files, codeFiles, docFiles, configFiles, iacFiles, dataFiles);
+  }
+
+  let framework = detectFramework(files, language, packageJson, goMod, requirements, buildGradle, pomXml);
+  let database = detectDatabase(files, packageJson, goMod, requirements, pyproject, buildGradle, pomXml);
+
+  // Post-process: if subprojects reveal a stronger backend identity, adjust root identity
+  try {
+    const subs = await detectSubprojects(rootPath);
+    // Find the subproject with the most code files (strongest signal)
+    const rankedSubs = subs
+      .filter(s => ['Java', 'Kotlin', 'Go', 'Rust', 'Python', 'CSharp', 'TypeScript'].includes(s.language))
+      .sort((a, b) => (b.path || '').length - (a.path || '').length);
+    const backendSub = rankedSubs.find(s =>
+      ['Java', 'Kotlin', 'Go', 'Rust', 'Python', 'CSharp'].includes(s.language)
+    );
+    if (backendSub && ['typescript', 'javascript', 'unknown', 'documentation', 'config', 'objc', 'swift', 'c', 'cpp', 'php', 'ruby'].includes(language)) {
+      const backendLang = backendSub.language.toLowerCase() as LanguageType;
+      language = backendLang;
+      framework = (backendSub.framework as FrameworkType) || framework;
+    }
+    // Also inherit database from subproject when root detection was wrong
+    if (['postgresql', 'unknown'].includes(database)) {
+      const subWithDb = subs.find(s =>
+        s.name.includes('server') || s.name.includes('backend') || s.buildFile === 'pom.xml'
+      );
+      if (subWithDb && subWithDb.buildFile === 'pom.xml' && pomXml) {
+        const pomLower = pomXml.toLowerCase();
+        if (pomLower.includes('mysql')) database = 'mysql';
+        else if (pomLower.includes('postgresql')) database = 'postgresql';
+      }
+    }
+  } catch { /* subproject detection is best-effort */ }
+
+  // Compute remaining fields AFTER potential language override from subprojects
   const testFramework = detectTestFramework(files, packageJson, goMod, requirements, buildGradle);
-  const deploymentType = detectDeploymentType(files);
+  const buildSystem = detectBuildSystem(files, language, packageJson);
   const runtime = detectRuntime(language, packageJson, goMod, pyproject);
+  const deploymentType = detectDeploymentType(files, language);
   const languageVersion = detectLanguageVersion(language, packageJson, goMod, cargoToml, pyproject);
+
+  // Compute detection confidence
+  const hasBuildFile = !!(packageJson || goMod || cargoToml || pomXml || buildGradle || requirements || composer || gemfile);
+  const hasCode = codeFiles.length > 0;
+  const detectionConfidence: 'high' | 'medium' | 'low' =
+    (hasBuildFile && hasCode) ? 'high' :
+    (hasCode) ? 'medium' : 'low';
 
   return {
     language,
@@ -37,6 +87,7 @@ export async function detectProject(rootPath: string): Promise<ProjectIdentity> 
     deploymentType,
     packageManager: detectPackageManager(files, packageJson),
     languageVersion,
+    detectionConfidence,
   };
 }
 
@@ -53,7 +104,9 @@ function detectLanguage(
   const scores: Record<LanguageType, number> = {
     typescript: 0, javascript: 0, go: 0, rust: 0, python: 0,
     java: 0, kotlin: 0, csharp: 0, php: 0, ruby: 0,
-    swift: 0, c: 0, cpp: 0, unknown: 0,
+    swift: 0, objc: 0, c: 0, cpp: 0,
+    documentation: 0, config: 0, data: 0, infrastructure: 0, empty: 0,
+    unknown: 0,
   };
 
   // TypeScript indicators
@@ -90,17 +143,16 @@ function detectLanguage(
   // Kotlin indicators
   if (files.some(f => f.endsWith('.kt') || f.endsWith('.kts'))) scores.kotlin += 10;
 
-  // C# indicators
-  if (files.some(f => f.endsWith('.csproj') || f.endsWith('.sln'))) scores.csharp += 15;
+  // C# indicators — .csproj alone insufficient without .cs files
+  if (files.some(f => f.endsWith('.csproj') || f.endsWith('.sln')) && files.some(f => f.endsWith('.cs'))) scores.csharp += 15;
   if (files.some(f => f.endsWith('.cs'))) scores.csharp += 5;
 
   // PHP indicators
   if (composer) scores.php += 15;
   if (files.some(f => f.endsWith('.php'))) scores.php += 5;
 
-  // Ruby indicators
+  // Ruby indicators — Gemfile double-counting fix: only count fileContent result
   if (gemfile) scores.ruby += 15;
-  if (files.includes('Gemfile')) scores.ruby += 10;
   if (files.some(f => f.endsWith('.rb'))) scores.ruby += 5;
 
   // Swift indicators
@@ -108,16 +160,19 @@ function detectLanguage(
   if (files.some(f => f.includes('.xcodeproj') || f.includes('.xcworkspace'))) scores.swift += 10;
   if (files.some(f => f === 'Podfile' || f === 'Package.swift')) scores.swift += 5;
 
-  // Objective-C indicators (often alongside Swift in iOS projects)
-  if (files.some(f => f.endsWith('.m') || f.endsWith('.mm') || f.endsWith('.h'))) scores.swift += 3;
+  // Objective-C indicators
+  if (files.some(f => f.endsWith('.m') || f.endsWith('.mm'))) scores.objc += 15;
+  if (files.some(f => f.includes('.xcodeproj') || f.includes('.xcworkspace')) && !files.some(f => f.endsWith('.swift'))) scores.objc += 5;
+  // .h files are ambiguous (C/C++/ObjC headers), skip to avoid false positives
 
   // C/C++ indicators
   if (files.some(f => f.endsWith('.c'))) scores.c += 10;
   if (files.some(f => f.endsWith('.cpp') || f.endsWith('.cc') || f.endsWith('.cxx'))) scores.cpp += 10;
-  if (files.includes('CMakeLists.txt') || files.includes('Makefile')) {
-    scores.c += 3;
-    scores.cpp += 3;
-  }
+  if (files.includes('CMakeLists.txt')) { scores.c += 5; scores.cpp += 5; }
+
+  // IaC indicators — file-based, not requiring the iacFiles variable from outer scope
+  const hasIaC = files.filter(f => /\.(tf|hcl)$/i.test(f) || /\b(Dockerfile|docker-compose)\b/i.test(f)).length;
+  if (hasIaC >= 2) scores.infrastructure += 5;
 
   // Find highest scoring language
   let best: LanguageType = 'unknown';
@@ -129,7 +184,24 @@ function detectLanguage(
     }
   }
 
-  return bestScore > 3 ? best : 'unknown';
+  // Threshold: 8 (was 3, too low — a single .py file or package.json is not a project)
+  return bestScore >= 8 ? best : 'unknown';
+}
+
+/** Classify the project type based on file composition (no code files → non-code category) */
+function classifyProjectType(
+  files: string[], codeFiles: string[],
+  docFiles: string[], configFiles: string[], iacFiles: string[], dataFiles: string[]
+): LanguageType {
+  const total = files.length;
+  if (total === 0) return 'empty';
+  if (codeFiles.length > 0) return 'unknown'; // has code — let detectLanguage decide
+  if (iacFiles.length >= 2 || (iacFiles.length >= 1 && total <= 10)) return 'infrastructure';
+  if (docFiles.length / total > 0.6) return 'documentation';
+  if (dataFiles.length / total > 0.6) return 'data';
+  if (configFiles.length / total > 0.6) return 'config';
+  if (docFiles.length / total > 0.3) return 'documentation';
+  return 'unknown';
 }
 
 // ============================================================
@@ -171,8 +243,11 @@ function detectFramework(
   if (goMod) {
     const mod = goMod.toLowerCase();
     if (mod.includes('gin-gonic/gin')) return 'gin';
-    if (mod.includes('labstack/echo')) return 'express'; // closest match
+    if (mod.includes('labstack/echo')) return 'unknown'; // Go Echo — no matching FrameworkType
   }
+
+  // Non-code project types — framework is not applicable
+  if (['documentation', 'config', 'data', 'infrastructure', 'empty'].includes(language)) return 'unknown';
 
   // iOS / Swift frameworks
   if (language === 'swift') {
@@ -186,8 +261,7 @@ function detectFramework(
   }
 
   // iOS / ObjC frameworks
-  if (files.some(f => f.endsWith('.m') || f.endsWith('.mm'))) {
-    // ObjC is always UIKit era
+  if (language === 'objc' || files.some(f => f.endsWith('.m') || f.endsWith('.mm'))) {
     return 'uikit';
   }
 
@@ -214,7 +288,7 @@ function detectDatabase(
   packageJson: Record<string, unknown> | null,
   goMod: string | null,
   requirements: string | null,
-  pyproject: Record<string, unknown> | null,
+  _pyproject: string | null,
   buildGradle: string | null,
   pomXml: string | null,
 ): DatabaseType {
@@ -237,10 +311,10 @@ function detectDatabase(
   if (javaBuildText.includes('postgresql') || javaBuildText.includes('org.postgresql')) return 'postgresql';
   if (javaBuildText.includes('mongo') || javaBuildText.includes('mongodb')) return 'mongodb';
   if (javaBuildText.includes('redis') || javaBuildText.includes('jedis') || javaBuildText.includes('lettuce')) return 'redis';
-  if (javaBuildText.includes('oracle') || javaBuildText.includes('ojdbc')) return 'postgresql'; // best match
+  if (javaBuildText.includes('oracle') || javaBuildText.includes('ojdbc')) return 'unknown'; // Oracle not in DatabaseType union
   // Spring Boot JPA/Hibernate implies a database is used
   if (javaBuildText.includes('spring-boot-starter-data-jpa') || javaBuildText.includes('hibernate')) {
-    if (javaBuildText.includes('h2')) return 'postgresql'; // best match for embedded
+    if (javaBuildText.includes('h2')) return 'unknown'; // H2 not in DatabaseType union
     if (pomLower.includes('mysql') || gradleLower.includes('mysql')) return 'mysql';
     if (pomLower.includes('postgres') || gradleLower.includes('postgres')) return 'postgresql';
   }
@@ -351,13 +425,13 @@ function detectTestFramework(
 // ============================================================
 // Deployment Detection
 // ============================================================
-function detectDeploymentType(files: string[]): ProjectIdentity['deploymentType'] {
+function detectDeploymentType(files: string[], language: LanguageType): ProjectIdentity['deploymentType'] {
   if (files.some(f => f.includes('k8s') || f.includes('kubernetes') || f.endsWith('.k8s.yaml'))) return 'kubernetes';
   if (files.includes('Dockerfile') || files.includes('docker-compose.yml') || files.includes('docker-compose.yaml')) return 'docker';
   if (files.some(f => f.includes('serverless.yml') || f.includes('serverless'))) return 'serverless';
   if (files.some(f => f.includes('microservice'))) return 'microservices';
-  // iOS deployment
   if (files.some(f => f.includes('.xcodeproj') || f.includes('.xcworkspace') || f.includes('Info.plist'))) return 'ios-app';
+  if (language === 'infrastructure') return 'docker'; // IaC repos default to Docker-ish deployment
   return 'unknown';
 }
 
@@ -368,20 +442,26 @@ function detectRuntime(
   language: LanguageType,
   packageJson: Record<string, unknown> | null,
   goMod: string | null,
-  pyproject: Record<string, unknown> | null
+  _pyproject: string | null
 ): string {
   if (language === 'typescript' || language === 'javascript') {
     if (packageJson && (packageJson as Record<string, unknown>).engines) {
       return (packageJson as Record<string, Record<string, string>>).engines?.node || 'Node.js';
     }
-    // detect deno/bun
     return 'Node.js';
   }
   if (language === 'go') return 'Go Native';
   if (language === 'rust') return 'Rust Native';
   if (language === 'python') return 'CPython';
   if (language === 'java' || language === 'kotlin') return 'JVM';
-  return 'Unknown';
+  if (language === 'swift' || language === 'objc') return 'Apple Swift/ObjC';
+  if (language === 'c' || language === 'cpp') return 'Native';
+  if (language === 'csharp') return '.NET CLR';
+  if (language === 'php') return 'PHP Zend Engine';
+  if (language === 'ruby') return 'Ruby MRI';
+  if (language === 'infrastructure') return 'Container/Docker';
+  if (['documentation', 'config', 'data', 'empty'].includes(language)) return 'N/A';
+  return 'unknown';
 }
 
 // ============================================================
@@ -392,7 +472,7 @@ function detectLanguageVersion(
   packageJson: Record<string, unknown> | null,
   goMod: string | null,
   cargoToml: string | null,
-  pyproject: Record<string, unknown> | null
+  pyproject: string | null
 ): string {
   if (language === 'go' && goMod) {
     const match = goMod.match(/^go\s+(\S+)/m);
@@ -403,8 +483,9 @@ function detectLanguageVersion(
     if (match) return match[1];
   }
   if (language === 'python' && pyproject) {
-    const requires = (pyproject as Record<string, Record<string, string>>)?.project?.['requires-python'];
-    if (requires) return requires;
+    // TOML: requires-python = ">=3.9"
+    const match = pyproject.match(/requires-python\s*=\s*"([^"]+)"/);
+    if (match) return match[1];
   }
   return 'unknown';
 }
@@ -480,7 +561,7 @@ async function readJsonFile(rootPath: string, filename: string): Promise<Record<
     try {
       const content = await fse.readFile(path.join(dir, filename), 'utf-8');
       if (filename.endsWith('.json')) return JSON.parse(content);
-      return content as unknown as Record<string, unknown>;
+      return null; // Non-JSON files (TOML/XML/etc.) — callers handle null
     } catch { /* continue */ }
   }
   return null;
@@ -535,4 +616,230 @@ async function fileContent(rootPath: string, filename: string): Promise<string |
     }
   } catch { /* ignore */ }
   return null;
+}
+
+// ── P3-1: Monorepo subdirectory discovery ──
+export interface Subproject {
+  name: string;
+  path: string;        // relative to root
+  language: string;
+  framework?: string;
+  buildFile: string;   // e.g. "package.json", "pom.xml", "go.mod"
+  startCommand?: string;
+  port?: number;       // detected from config
+}
+
+/** Scan depth-2 subdirectories for nested project indicators */
+export async function detectSubprojects(rootPath: string): Promise<Subproject[]> {
+  const subs: Subproject[] = [];
+  try {
+    const entries = await fse.readdir(rootPath, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.name.startsWith('.') || entry.name === 'node_modules') continue;
+      const subPath = path.join(rootPath, entry.name);
+      const subName = entry.name;
+
+      // Check level 1
+      await checkDir(subPath, subName, subs);
+
+      // Check level 2 (monorepo packages/*)
+      try {
+        const subEntries = await fse.readdir(subPath, { withFileTypes: true });
+        for (const subEntry of subEntries) {
+          if (!subEntry.isDirectory() || subEntry.name.startsWith('.')) continue;
+          const sub2Path = path.join(subPath, subEntry.name);
+          await checkDir(sub2Path, `${subName}/${subEntry.name}`, subs);
+        }
+      } catch { /* skip */ }
+    }
+  } catch { /* skip */ }
+  return subs;
+}
+
+async function checkDir(dirPath: string, name: string, subs: Subproject[]): Promise<void> {
+  const files = await safeReaddir(dirPath);
+  const fileSet = new Set(files);
+
+  if (fileSet.has('package.json')) {
+    let framework: string | undefined;
+    try {
+      const pkg = await fse.readJson(path.join(dirPath, 'package.json'));
+      const deps = { ...pkg.dependencies, ...pkg.devDependencies };
+      if (deps.next) framework = 'Next.js';
+      else if (deps.react) framework = 'React';
+      else if (deps.vue) framework = 'Vue';
+      else if (deps.express) framework = 'Express';
+      else if (deps['@nestjs/core']) framework = 'NestJS';
+      if (pkg.scripts?.dev) {
+        subs.push({ name, path: name, language: 'TypeScript', framework, buildFile: 'package.json', startCommand: 'npm run dev' });
+      } else if (pkg.scripts?.start) {
+        subs.push({ name, path: name, language: 'TypeScript', framework, buildFile: 'package.json', startCommand: 'npm start' });
+      } else {
+        subs.push({ name, path: name, language: 'TypeScript', framework, buildFile: 'package.json' });
+      }
+    } catch {
+      subs.push({ name, path: name, language: 'TypeScript', buildFile: 'package.json' });
+    }
+    return;
+  }
+
+  if (fileSet.has('pom.xml')) {
+    let port: number | undefined;
+    try {
+      const content = await fse.readFile(path.join(dirPath, 'pom.xml'), 'utf-8');
+      const portM = content.match(/server\.port[=:]\s*(\d+)/);
+      if (portM) port = parseInt(portM[1]);
+    } catch { /* skip */ }
+    const hasWrapper = fileSet.has('mvnw') || fileSet.has('mvnw.cmd');
+    subs.push({
+      name, path: name, language: 'Java', framework: 'Spring Boot',
+      buildFile: 'pom.xml',
+      startCommand: hasWrapper ? './mvnw spring-boot:run' : 'mvn spring-boot:run',
+      port: port || 8080,
+    });
+    return;
+  }
+
+  if (fileSet.has('build.gradle') || fileSet.has('build.gradle.kts')) {
+    const hasWrapper = fileSet.has('gradlew') || fileSet.has('gradlew.bat');
+    subs.push({
+      name, path: name, language: 'Java', framework: 'Gradle',
+      buildFile: 'build.gradle',
+      startCommand: hasWrapper ? './gradlew bootRun' : 'gradle bootRun',
+      port: 8080,
+    });
+    return;
+  }
+
+  if (fileSet.has('go.mod')) {
+    subs.push({
+      name, path: name, language: 'Go',
+      buildFile: 'go.mod',
+      startCommand: 'go run .',
+    });
+    return;
+  }
+
+  if (fileSet.has('Cargo.toml')) {
+    subs.push({
+      name, path: name, language: 'Rust',
+      buildFile: 'Cargo.toml',
+      startCommand: 'cargo run',
+    });
+    return;
+  }
+
+  if (fileSet.has('Makefile')) {
+    subs.push({
+      name, path: name, language: 'unknown',
+      buildFile: 'Makefile',
+      startCommand: 'make',
+    });
+    return;
+  }
+
+  if (fileSet.has('requirements.txt') || fileSet.has('pyproject.toml') || fileSet.has('setup.py')) {
+    subs.push({
+      name, path: name, language: 'Python',
+      buildFile: fileSet.has('pyproject.toml') ? 'pyproject.toml' : 'requirements.txt',
+      startCommand: 'python -m uvicorn main:app --reload',
+    });
+  }
+}
+
+async function safeReaddir(dirPath: string): Promise<string[]> {
+  try { return await fse.readdir(dirPath); } catch { return []; }
+}
+
+// ── P3-3: Non-Node dependency checking ──
+export interface DepCheckResult {
+  ok: boolean;
+  language: string;
+  message: string;
+  toolMissing?: string;
+}
+
+export async function checkDependencies(
+  rootPath: string,
+  identity: { language: string },
+): Promise<DepCheckResult> {
+  const lang = identity.language?.toLowerCase() || '';
+
+  if (lang === 'java') {
+    // Check for Maven/Gradle wrapper
+    const hasMvnw = await fse.pathExists(path.join(rootPath, 'mvnw')) || await fse.pathExists(path.join(rootPath, 'mvnw.cmd'));
+    const hasGradlew = await fse.pathExists(path.join(rootPath, 'gradlew')) || await fse.pathExists(path.join(rootPath, 'gradlew.bat'));
+    const hasPom = await fse.pathExists(path.join(rootPath, 'pom.xml'));
+    const hasGradle = await fse.pathExists(path.join(rootPath, 'build.gradle')) || await fse.pathExists(path.join(rootPath, 'build.gradle.kts'));
+
+    if (hasPom && !hasMvnw) {
+      // Check if mvn is globally available
+      const mvnInstalled = await commandExists('mvn --version');
+      if (!mvnInstalled) {
+        return { ok: false, language: 'Java/Maven', message: 'Maven 未安装且项目无 mvnw wrapper', toolMissing: 'mvn' };
+      }
+    }
+    if (hasGradle && !hasGradlew) {
+      const gradleInstalled = await commandExists('gradle --version');
+      if (!gradleInstalled) {
+        return { ok: false, language: 'Java/Gradle', message: 'Gradle 未安装且项目无 gradlew wrapper', toolMissing: 'gradle' };
+      }
+    }
+    return { ok: true, language: 'Java', message: 'Java 依赖检查通过' };
+  }
+
+  if (lang === 'go') {
+    const hasGoSum = await fse.pathExists(path.join(rootPath, 'go.sum'));
+    if (!hasGoSum) {
+      return { ok: false, language: 'Go', message: 'go.sum 不存在，请运行 go mod tidy', toolMissing: 'go' };
+    }
+    const goInstalled = await commandExists('go version');
+    if (!goInstalled) {
+      return { ok: false, language: 'Go', message: 'Go 未安装', toolMissing: 'go' };
+    }
+    return { ok: true, language: 'Go', message: 'Go 依赖检查通过' };
+  }
+
+  if (lang === 'python') {
+    const hasRequirements = await fse.pathExists(path.join(rootPath, 'requirements.txt'));
+    const hasPyproject = await fse.pathExists(path.join(rootPath, 'pyproject.toml'));
+    if (!hasRequirements && !hasPyproject) {
+      return { ok: true, language: 'Python', message: '无依赖文件' }; // not an error
+    }
+    const pythonInstalled = await commandExists('python --version') || await commandExists('python3 --version');
+    if (!pythonInstalled) {
+      return { ok: false, language: 'Python', message: 'Python 未安装', toolMissing: 'python' };
+    }
+    return { ok: true, language: 'Python', message: 'Python 依赖检查通过' };
+  }
+
+  if (lang === 'rust') {
+    const cargoInstalled = await commandExists('cargo --version');
+    if (!cargoInstalled) {
+      return { ok: false, language: 'Rust', message: 'Cargo 未安装', toolMissing: 'cargo' };
+    }
+    const hasLock = await fse.pathExists(path.join(rootPath, 'Cargo.lock'));
+    if (!hasLock) {
+      return { ok: true, language: 'Rust', message: 'Cargo.lock 不存在（首次构建时生成）' };
+    }
+    return { ok: true, language: 'Rust', message: 'Rust 依赖检查通过' };
+  }
+
+  // TypeScript/JavaScript — already handled by node_modules check elsewhere
+  return { ok: true, language: lang, message: '依赖检查通过' };
+}
+
+async function commandExists(cmd: string): Promise<boolean> {
+  try {
+    const { execSync } = await import('child_process');
+    // Use lightweight 'where'/'which' instead of running the actual command
+    // (avoids side effects like Maven plugin downloads or Gradle daemon startup)
+    const checker = process.platform === 'win32'
+      ? `where ${cmd.split(' ')[0]}`
+      : `which ${cmd.split(' ')[0]}`;
+    execSync(checker, { stdio: 'ignore', timeout: 3000 });
+    return true;
+  } catch {
+    return false;
+  }
 }

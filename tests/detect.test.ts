@@ -49,7 +49,7 @@ describe('detectProject', () => {
       expect(identity.database).toBe('sqlite');
       expect(identity.packageManager).toBe('cocoapods');
       // deploymentType requires .xcodeproj or Info.plist — not in temp file set
-      expect(identity.runtime).toBe('Unknown');
+      expect(identity.runtime).toBe('Apple Swift/ObjC');
     });
   });
 

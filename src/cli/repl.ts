@@ -41,7 +41,7 @@ import {
   type RunnerUi,
 } from './system-runner.js';
 import { choicePrompt, parseChoiceInput, renderChoicePanel, type ChoicePanel } from './choice-panel.js';
-import { isLoopInterventionInput, renderLoopInterventionNotice, renderReplLoopPanel, renderReplLoopStatusBar } from './loop-panel.js';
+import { isLoopInterventionInput, renderLoopInterventionNotice } from './loop-panel.js';
 import { enableOutputSanitizer, printToolDegradationNotice, resetToolDegradationNotices } from './output.js';
 import { analyzeProjectAutopilot, planProjectTests, renderAutopilotReport, renderAutopilotTestPlan } from '../core/autopilot.js';
 import { buildDocWritePlan, writeDocs, type DocWritePlan } from '../core/autodoc.js';
@@ -133,7 +133,8 @@ function compressConversation() {
   if (state.conversation.length <= MAX_ARCHIVE) return;
   const userAgentPairs: { user?: string; assistant?: string }[] = [];
   let currentPair: { user?: string; assistant?: string } = {};
-  for (let i = MAX_FULL; i < state.conversation.length - MAX_FULL && i < MAX_ARCHIVE; i++) {
+  const archiveEnd = Math.min(MAX_ARCHIVE, state.conversation.length - MAX_FULL);
+  for (let i = MAX_FULL; i < archiveEnd; i++) {
     const msg = state.conversation[i];
     if (msg.role === 'user') {
       if (currentPair.user) { userAgentPairs.push(currentPair); currentPair = {}; }
@@ -160,6 +161,8 @@ let spinnerTimer: ReturnType<typeof setInterval> | null = null;
 let abortController: AbortController | null = null;
 let streamState: 'idle' | 'loading' | 'streaming' = 'idle';
 let streamLineBuf = '';
+let pendingInputStream: string[] = []; // buffered input during AI streaming
+let _promptCount = 0; // show /help hint on first few prompts
 let waitingStartTime = 0;
 let streamTokenCount = 0;
 let waitingActivity = '分析中';
@@ -182,7 +185,7 @@ const systemRunnerUi: RunnerUi = {
     console.log(`  ${I.err} ${formatRunnerMessage(message)}\n`);
   },
 };
-let pendingConfirm: 'write' | 'commit' | 'undo' | 'system' | 'autopilot-docs' | 'autopilot-tests' | 'autopilot-repair' | 'autopilot-rollback' | null = null;
+let pendingConfirm: 'write' | 'commit' | 'undo' | 'system' | 'clear' | 'autopilot-docs' | 'autopilot-tests' | 'autopilot-repair' | 'autopilot-rollback' | null = null;
 let pendingCommitMsg = '';
 
 let pendingSystemOperation: SystemOperation | null = null;
@@ -211,7 +214,10 @@ function printStatusLine(): void {
   const ctxMax = state.aiConfig.maxTokens || 4096;
   // Context-aware status line
   if (pendingSystemOperation) {
-    process.stdout.write(`\n  ${C.warn('⚡')} ${C.accent(pendingSystemOperation.title)} ${C.dim('─ [y] 允许 [n] 拒绝')}\n`);
+    // When a choice panel is also showing, don't show conflicting status line
+    if (!activeChoicePanel) {
+      process.stdout.write(`\n  ${C.warn('⚡')} ${C.accent(pendingSystemOperation.title)} ${C.dim('─ [y] 允许 [n] 拒绝')}\n`);
+    }
     return;
   }
   if (streamState !== 'idle') {
@@ -223,7 +229,11 @@ function printStatusLine(): void {
     process.stdout.write(`\n  ${C.success('▸')} ${files} ${themeColor(C.dim, chalk.bold)('─ /write 写入 /diff 预览 /clear 取消')}\n`);
     return;
   }
-  const ctxInfo = `─ /help /scan /diff /clear · ${(ctxTokens/1000).toFixed(1)}K/${(ctxMax/1000).toFixed(0)}K ─`;
+  const pendingLabel = pendingConfirm
+    ? ` · ${pendingConfirm === 'system' ? '等待确认执行' : pendingConfirm === 'clear' ? '确认清除' : pendingConfirm === 'commit' ? '确认提交' : '等待确认'}`
+    : '';
+  const phaseLabel = state.convPhase !== 'idle' ? ` · ${state.convPhase === 'task_created' ? '任务已创建' : state.convPhase === 'task_running' ? '任务执行中' : '任务已完成'}` : '';
+  const ctxInfo = `─ /help /scan /diff /clear · ${(ctxTokens/1000).toFixed(1)}K/${(ctxMax/1000).toFixed(0)}K${pendingLabel}${phaseLabel} ─`;
   process.stdout.write(`\n  ${themeColor(C.dim, chalk.bold)(ctxInfo)}\n`);
 }
 
@@ -255,7 +265,8 @@ function refreshPrompt(): void {
     rl.setPrompt(`${C.accent('选择')} ${C.dim('输入选项后回车')} ${C.accent('>')} `);
     return;
   }
-  rl.setPrompt(`${C.accent('◇')}  `);
+  if (pendingExitSince > 0) { rl.setPrompt(`${C.dim('[再次 Ctrl+C 退出]')} ${C.accent('◇')}  `); }
+  else { rl.setPrompt(`${C.accent('◇')}  `); }
 }
 
 function promptRepl(): void {
@@ -269,18 +280,46 @@ function promptRepl(): void {
 export async function startRepl(): Promise<void> {
   enableOutputSanitizer();
   await loadGlobalConfig(); await detectProjectContext(); const resumed = await loadSession();
+  // P2: Memory Kernel warmup — preload episodic/semantic, ready for recall
+  let memoryActive = false;
+  (async () => {
+    try {
+      const { getMemoryRuntime, isMemoryActive } = await import('../core/memory/integration.js');
+      await getMemoryRuntime(process.cwd());
+      memoryActive = isMemoryActive();
+      if (memoryActive && !resumed) {
+        const { memdbg } = await import('../core/memory/debug.js');
+        const status = (await import('../core/memory/integration.js'));
+
+        // Delayed: show the hint after welcome screen renders
+        setTimeout(() => {
+          console.log(notification('Memory Kernel 已激活 — 自动学习项目偏好、记录历史、提示风险', 'info'));
+          console.log(`  ${C.dim('ic mem status 查看状态  ·  ICLOSER_MEMORY_DEBUG=info 调试模式')}`);
+        }, 100);
+      }
+    } catch { /* memory is optional */ }
+  })();
   state.aiConfig.apiKey = resolveApiKeyForProvider(state.aiConfig.provider);
   const offlineReason = enableOfflineModeIfMissingKey();
-  console.log(welcomeScreen(state.aiConfig.provider, state.aiConfig.model, state.context.projectName || undefined));
+  // Build unified welcome screen with onboarding steps integrated
+  const steps = resumed ? [] : offlineReason
+    ? [`${C.accent('1')}  ${C.bright('粘贴 API Key')} ${C.dim('直接在对话中粘贴 Key 即可识别')}`, `${C.accent('2')}  ${C.bright('/apikey')} ${C.dim('安全输入 Key，不在屏幕回显')}`, `${C.accent('3')}  ${C.bright('直接输入需求')} ${C.dim('先用 mock 离线体验')}`]
+    : [`${C.accent('1')}  ${C.bright('直接输入需求')} ${C.dim('例如：帮我给登录模块加手机号验证码登录')}`, `${C.accent('2')}  ${C.bright('/scan')} ${C.dim('扫描项目')}`, `${C.accent('3')}  ${C.bright('/help')} ${C.dim('查看所有命令和快捷键')}`];
+  console.log(welcomeScreen(state.aiConfig.provider, state.aiConfig.model, state.context.projectName || undefined, steps));
   if (offlineReason) {
     console.log(notification(`${offlineReason.provider.toUpperCase()} API Key 未设置，已切换 mock 离线模式`, 'warn'));
     printProviderKeyHelp(offlineReason.provider);
   }
   resetToolDegradationNotices();
-  if (resumed) { console.log(notification(`已恢复上次会话 (${state.conversation.length} 条记录)`, 'info')); }
+  if (resumed) {
+    const lastUser = state.conversation.filter(m => m.role === 'user').pop();
+    const preview = lastUser ? lastUser.content.replace(/\n/g, ' ').substring(0, 50) : '';
+    console.log(notification(`已恢复上次会话 (${state.conversation.length} 条)` + (preview ? ` — ${preview}…` : ''), 'info'));
+  }
   if (state.context.projectName) { console.log(''); console.log(statusBar([{ label: 'PROJECT', value: state.context.projectName, color: 'accent' }, { label: 'LANG', value: state.context.language || '—', color: 'primary' }, { label: 'FRAMEWORK', value: state.context.framework || '—', color: 'primary' }, { label: 'AI', value: state.aiConfig.provider.toUpperCase(), color: 'success' }])); }
-  printFirstRunGuide(Boolean(offlineReason));
   printBottomBlock();
+  // Print onboarding hint as a separate line — user input goes to a clean prompt below
+  if (_promptCount === 0) console.log(`  ${C.dim('/help 命令 · /scan 扫描 · 直接输入需求开始')}\n`);
   // Use readline for proper IME/composition support (raw mode breaks CJK input)
   rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: true, historySize: 1000, completer: replCompleter });
   rl.on('close', () => { void shutdownRepl(); });
@@ -296,6 +335,14 @@ export async function startRepl(): Promise<void> {
       promptRepl();
       return;
     }
+    // Cancel any pending confirmation on Ctrl+C
+    if (pendingConfirm || pendingSystemOperation) {
+      const was = pendingSystemOperation?.title || pendingConfirm;
+      pendingConfirm = null; pendingSystemOperation = null; clearActiveChoicePanel();
+      console.log(`\n  ${C.dim('已取消: ' + was)}\n`);
+      promptRepl();
+      return;
+    }
     const now = Date.now();
     if (pendingExitSince > 0 && now - pendingExitSince <= 2000) {
       void shutdownRepl();
@@ -306,11 +353,20 @@ export async function startRepl(): Promise<void> {
     promptRepl();
   });
   promptRepl();
-  rl.on('line', async (line: string) => {
+  rl.on('line', (line: string) => { handleLine(line).catch(err => { if (!String(err).includes('aborted')) console.error('内部错误:', (err as Error).message); }); });
+  async function handleLine(line: string): Promise<void> {
     pendingExitSince = 0;
+    _promptCount++; // fade contextual hints after enough interactions
     const input = line.trim();
-    // During AI execution: block all input — just re-display cursor, no rendering
-    if (streamState !== 'idle') { rl?.prompt(); return; }
+    // During AI execution: buffer input for later processing
+    if (streamState !== 'idle') {
+      if (input && !/^[yhscdwq]$/.test(input)) {
+        pendingInputStream.push(input);
+        if (pendingInputStream.length === 1) process.stdout.write(`\r\x1b[K  ${C.dim('AI 执行中，输入将在完成后处理…')}\n`);
+        else process.stdout.write(`\r\x1b[K  ${C.dim(`已缓存 ${pendingInputStream.length} 条输入`)}\n`);
+      }
+      rl?.prompt(); return;
+    }
     // S20.8: history number selection (!1, !2, etc.)
     if (/^!\d+$/.test(input)) {
       const userMsgs = state.conversation.filter(m => m.role === 'user');
@@ -325,20 +381,21 @@ export async function startRepl(): Promise<void> {
       printBottomBlock(); if (state.running) promptRepl(); return;
     }
     // Direct single-key shortcuts (no panel lookup)
-    if (/^[yhscdwq]$/.test(input) && !activeChoicePanel) {
+    // Skip shortcuts when a pending confirm (clear/commit/undo) is waiting for y/n response
+    if (/^[yhscdwq]$/.test(input) && !activeChoicePanel && !pendingConfirm) {
       if (input === 'y' && pendingSystemOperation) { await handleSystemOperationApprove(); }
       else if (input === 'n' && pendingSystemOperation) { pendingSystemOperation = null; pendingConfirm = null; console.log(`  ${C.dim('已拒绝')}\n`); }
       else if (input === 'h') { console.log(commandHelp()); }
       else if (input === 's') { await cmdScan(); }
       else if (input === 'd') { await cmdDiff(); }
-      else if (input === 'c') { state.conversation = []; state.pendingFiles = []; console.log(`  ${I.ok} 对话历史已清除\n`); }
+      else if (input === 'c') { pendingConfirm = 'clear'; console.log(`  ${C.warn('!')} 确认清除全部对话历史？按 y 确认，其他键取消\n`); }
       else if (input === 'w') { await cmdWrite(); }
       else if (input === 'q') { await shutdownRepl(); }
       printBottomBlock(); if (state.running) promptRepl(); return;
     }
     // History search via ! prefix
     if (input.startsWith('!') && input.length > 1) {
-      await cmdHistorySearch(input.substring(1));
+      await cmdHistorySearch(input.substring(1).trimStart());
       printBottomBlock(); if (state.running) promptRepl(); return;
     }
     if (!input) { rl?.prompt(); return; }
@@ -347,7 +404,7 @@ export async function startRepl(): Promise<void> {
     if (await handleBottomSelection(input)) { printBottomBlock(); if (state.running) promptRepl(); return; }
     if (input.startsWith('/')) { await handleSlashCommand(input); } else { await handleChat(input); }
     printBottomBlock(); if (state.running) promptRepl();
-  });
+  }
 }
 
 async function shutdownRepl(): Promise<void> {
@@ -355,29 +412,21 @@ async function shutdownRepl(): Promise<void> {
   shuttingDown = true;
   state.running = false;
   try {
-    for (const proc of startedProcesses.splice(0)) {
-      await stopStartedProcess(proc);
+    const procs = startedProcesses.splice(0);
+    if (procs.length > 0) {
+      const list = procs.map(p => `  ${C.accent(p.label)}${p.url ? ' ' + C.dim(p.url) : ''}`).join('\n');
+      console.log(`\n  ${C.dim('正在停止 ' + procs.length + ' 个后台进程:')}\n${list}`);
     }
+    for (const proc of procs) {
+      const stopPromise = stopStartedProcess(proc);
+      const timeout = new Promise<void>(r => setTimeout(r, 5000));
+      await Promise.race([stopPromise, timeout]);
+    }
+    if (procs.length > 0) console.log(`  ${I.ok} 已全部停止\n`);
     await saveSession();
-  } catch {}
+  } catch (e) { console.log(`  ${C.warn('!')} 退出时出错: ${(e as Error).message}`); }
   console.log(chalk.dim('\n  iCloser 会话结束\n'));
   process.exit(0);
-}
-
-function printFirstRunGuide(offline: boolean): void {
-  const lines = offline
-    ? [
-        `${C.accent('1')}  ${C.bright('粘贴 API Key')} ${C.dim('接入真实模型')}`,
-        `${C.accent('2')}  ${C.bright('/apikey')} ${C.dim('安全输入 Key，不显示在屏幕上')}`,
-        `${C.accent('3')}  ${C.bright('直接输入需求')} ${C.dim('先用 mock 离线体验')}`,
-      ]
-    : [
-        `${C.accent('1')}  ${C.bright('直接输入需求')} ${C.dim('例如：帮我给登录模块加手机号验证码登录')}`,
-        `${C.accent('2')}  ${C.bright('/scan')} ${C.dim('扫描项目')}`,
-        `${C.accent('3')}  ${C.bright('/status')} ${C.dim('查看当前状态')}`,
-      ];
-  console.log('');
-  console.log(drawWideBox(lines.join('\n'), { title: offline ? '首次使用' : '下一步' }) + '\n');
 }
 
 function clearActiveChoicePanel(): void {
@@ -386,7 +435,6 @@ function clearActiveChoicePanel(): void {
 
 function clearPendingFileConfirmation(): void {
   state.pendingFiles = [];
-  if (pendingConfirm === 'write') pendingConfirm = null;
   clearActiveChoicePanel();
 }
 
@@ -533,17 +581,15 @@ async function handleInlineConfirm(input: string): Promise<boolean> {
     return true;
   }
 
-  // ═══ Pending slash-command confirmation ═══
-  if (pendingConfirm === 'write' && state.pendingFiles.length > 0) {
-    if (key === '1') {  pendingConfirm = null; clearActiveChoicePanel(); await cmdWrite([...state.pendingFiles]); return true; }
-    if (key === '2') {  pendingConfirm = null; clearActiveChoicePanel(); await cmdDiff(); return true; }
-    if (key === '3') {  console.log(`  ${C.dim('已取消')}\n`); pendingConfirm = null; clearActiveChoicePanel(); return true; }
-    return false;
-  }
   if (pendingConfirm === 'commit') {
     if (key === '1') {  pendingConfirm = null; clearActiveChoicePanel(); await doCommit(pendingCommitMsg); pendingCommitMsg = ''; return true; }
     if (key === '2') {  console.log(`  ${C.dim('已取消提交')}\n`); pendingConfirm = null; clearActiveChoicePanel(); pendingCommitMsg = ''; return true; }
     return false;
+  }
+  if (pendingConfirm === 'clear') {
+    pendingConfirm = null; clearActiveChoicePanel();
+    if (key === 'y') { state.conversation = []; state.pendingFiles = []; console.log(`  ${I.ok} 对话历史已清除\n`); return true; }
+    console.log(`  ${C.dim('已取消')}\n`); return true;
   }
   if (pendingConfirm === 'undo') {
     if (key === '1') {  pendingConfirm = null; clearActiveChoicePanel(); await doUndo(); return true; }
@@ -577,12 +623,13 @@ async function handleInlineConfirm(input: string): Promise<boolean> {
     return true;
   }
 
-  // ═══ File write confirmation (after chat) ═══
-  if (state.pendingFiles.length === 0) return false;
-
-  if (key === '1') {  await cmdWrite([...state.pendingFiles]); return true; }
-  if (key === '2') {  await cmdDiff(); return true; }
-  if (key === '3') {  console.log(`  ${C.dim('已取消')}\n`); state.pendingFiles = []; return true; }
+  // ═══ File write confirmation — only active when no choice panel is showing
+  // (choice panel routes through handleBottomSelection for per-file selection)
+  if (!activeChoicePanel && state.pendingFiles.length > 0) {
+    if (key === '1') {  await cmdWrite([...state.pendingFiles]); return true; }
+    if (key === '2') {  await cmdDiff(); return true; }
+    if (key === '3') {  console.log(`  ${C.dim('已取消')}\n`); state.pendingFiles = []; return true; }
+  }
   return false;
 }
 
@@ -678,7 +725,7 @@ async function recordReplUserInput(input: string, kind?: import('../types.js').U
       sessionId: state.sessionId,
       command: input.startsWith('/') ? input.split(/\s+/)[0] : undefined,
     });
-  } catch {}
+  } catch { /* best-effort */ }
 }
 
 function askReplQuestion(question: string, hidden = false): Promise<string> {
@@ -807,7 +854,7 @@ async function handleSlashCommand(input: string): Promise<void> {
     case '/brief': outputMode = 'brief'; console.log(`  ${I.ok} ${C.dim('简洁模式 — 代码块折叠，仅显示关键内容')}\n`); break;
     case '/full': outputMode = 'full'; console.log(`  ${I.ok} ${C.dim('详细模式 — 完整输出')}\n`); break;
     case '/exit': case '/quit': case '/q': await shutdownRepl(); break;
-    case '/clear': case '/c': state.conversation = []; state.pendingFiles = []; console.log(`  ${I.ok} 对话历史已清除\n`); break;
+    case '/clear': case '/c': pendingConfirm = 'clear'; console.log(`  ${C.warn('!')} 确认清除全部对话历史？按 y 确认，其他键取消\n`); break;
     case '/init': case '/i': await cmdInit(); break;
     case '/scan': case '/s': await cmdScan(); break;
     case '/verify': case '/v': await cmdVerify(); break;
@@ -834,7 +881,7 @@ async function handleSlashCommand(input: string): Promise<void> {
     case '/global': case '/gm': await cmdGlobalMemory(args); break;
     case '/memory': case '/mem': await cmdMemory(); break;
     case '/search': if (args) await cmdSearch(args); break;
-    case '/intel': case '/code': if (args) await cmdIntel(args); else console.log(`  ${C.dim('用法: /intel <函数名 | 文件 | 依赖>')}\n`); break;
+    case '/intel': case '/ci': if (args) await cmdIntel(args); else console.log(`  ${C.dim('用法: /intel <函数名 | 文件 | 依赖>')}\n`); break;
     case '/context': case '/ctx': await cmdContext(args); break;
     case '/docs': await cmdDocsSlash(args); break;
     case '/export': await cmdExport(args); break;
@@ -849,6 +896,99 @@ function printLoopStatus(_step: import('../core/task-loop.js').TaskLoopStepId, t
   if (title) console.log(`  ${C.primary('◉')} ${C.dim(title)}`);
 }
 // ============================================================
+// Chat with web/tool access — uses tool-loop for URL fetching and web search
+async function handleChatWithTools(input: string, prompt: import('../types.js').AIPrompt, provider: ReturnType<typeof createProvider>): Promise<void> {
+  stopWaitingPhase();
+  process.stdout.write(`\r\x1b[K  ${C.accent('◇')} ${chalk.bold('You')}  ${input}\n`);
+  state.conversation.push({ role: 'user', content: input, timestamp: new Date().toISOString() });
+
+  const tools = (await import('../core/tool-executor.js')).buildToolDefinitions();
+  const { runToolLoop } = await import('../core/tool-loop.js');
+  const toolSystemPrompt = await buildSystemPrompt(true);
+
+  // Inject assembled context: projectMeta as task suffix, code snippets + memory as preload
+  const contextSummary = prompt.context.projectMeta
+    ? `\n\n## 已注入项目上下文（无需重新扫描）\n${prompt.context.projectMeta}`
+    : '';
+  const enrichedTask = [
+    input,
+    contextSummary,
+  ].filter(Boolean).join('\n');
+
+  // Preload code snippets + memory into AI's first-round context
+  const preloadContext = (prompt.context.relevantCode.length > 0 || prompt.context.relevantMemory) ? {
+    codeSnippets: prompt.context.relevantCode
+      .filter(c => c.compression !== 'summary') // skip one-liners
+      .map(c => ({ file: c.file, content: c.content })),
+    memory: prompt.context.relevantMemory || undefined,
+  } : undefined;
+
+  // Analysis intents get more rounds (6) and higher token budget
+  const isAnalysis = isWholeProjectAnalysisIntent(input) || /(分析|检查|审查|review|audit|扫描|项目结构|技术栈|完成度|质量|怎么运行|如何启动)/.test(input);
+  const maxRounds = isAnalysis ? 6 : 3;
+  const tokenBudget = isAnalysis ? 120000 : 80000; // 120K chars ≈ 30K tokens for analysis
+
+  let currentLine = '';
+  process.stdout.write(`  ${C.primary('◉')} ${chalk.bold('AI')} ${C.dim('分析中...')}\n`);
+
+  const result = await runToolLoop({
+    task: enrichedTask,
+    systemPrompt: toolSystemPrompt,
+    provider: provider as any,
+    tools,
+    rootPath: process.cwd(),
+    preloadContext,
+    maxRounds,
+    tokenBudget,
+    onProgress: (ev) => {
+      if (ev.phase === 'tool_call') {
+        const args = ev.toolArgs || {};
+        const path = String(args.path || args.file || args.pattern || args.query || args.command || '');
+        const hint = path ? path.slice(0, 50) : '';
+        const icon = ev.toolName === 'read_file' ? '📖' : ev.toolName === 'search_code' ? '🔍' : ev.toolName === 'run_command' ? '⚡' : '🔧';
+        process.stdout.write(`\r\x1b[K  ${icon} ${C.dim(ev.toolName)} ${C.dim(hint)}\n`);
+      } else if (ev.phase === 'tool_result') {
+        const len = ev.resultLength || ev.toolResult?.length || 0;
+        const ok = ev.toolResult && !String(ev.toolResult).startsWith('错误') && !String(ev.toolResult).startsWith('未找到');
+        const status = ok ? C.success(' ✓') : C.warn(' ⚠');
+        process.stdout.write(`\r\x1b[K  ${C.dim('  ')}${status} ${C.dim(`${len} 字符`)}\n`);
+      } else if (ev.phase === 'done') {
+        process.stdout.write(`\r\x1b[K  ${C.success('●')} ${C.dim(`${ev.round} 轮完成`)}\n\n`);
+      }
+    },
+  });
+
+  if (result.finalResponse) {
+    const tw = Math.min(termWidth(), 160);
+    const contentW = tw - 4;
+    currentLine = result.finalResponse;
+    const lines = currentLine.split('\n');
+    for (const line of lines) {
+      renderMarkdownLine(line, contentW);
+    }
+    console.log();
+    // Brief summary
+    if (lines.length > 30) {
+      console.log(`  ${C.primary('◆')} ${C.dim(lines.find(l => l.trim() && l.trim().length > 10)?.substring(0, 100) || '')}`);
+      console.log(`  ${C.dim(`(${lines.length} 行 · 上方滚动查看完整内容)`)}\n`);
+    }
+  } else {
+    console.log(`  ${C.warn('!')} 未能获取响应\n`);
+  }
+
+  const finalContent = result.finalResponse || '(无响应)';
+  state.conversation.push({ role: 'assistant', content: finalContent, timestamp: new Date().toISOString() });
+  compressConversation();
+  streamState = 'idle';
+
+  // Process any pending inputs
+  const buffered = pendingInputStream.splice(0);
+  for (const buf of buffered) {
+    if (buf.startsWith('/')) await handleSlashCommand(buf);
+    else await handleChat(buf);
+  }
+}
+
 // Chat
 // ============================================================
 async function handleChat(input: string): Promise<void> {
@@ -944,11 +1084,41 @@ async function handleChat(input: string): Promise<void> {
 
   enableOfflineModeIfMissingKey();
   abortController = new AbortController(); const signal = abortController.signal;
+  // P0-1 + P1-1: Memory Kernel — sensory ingestion + recall trigger before AI call
+  const sessionTaskId = `repl-${Date.now().toString(36)}`;
+  (async () => {
+    try {
+      const { ingestUserInput, onTaskCreated, detectAndRecordPreference } = await import('../core/memory/integration.js');
+      const root = state.projectRoot || process.cwd();
+      await ingestUserInput(root, input);
+      await onTaskCreated(root, sessionTaskId, input);
+      // M6: Auto-detect user preferences from input patterns
+      await detectAndRecordPreference(root, input);
+    } catch { /* memory is optional */ }
+  })();
   try {
-    const history = state.conversation.slice(-6).map(m => `${m.role}: ${m.content}`).join('\n');
+    // Analysis intents get deeper conversation history (20 vs 6)
+    const isAnalysis = isWholeProjectAnalysisIntent(input) || /(分析|检查|审查|review|audit|项目结构|技术栈|完成度|质量|怎么运行|如何启动)/.test(input);
+    const historyLen = isAnalysis ? 20 : 6;
+    const history = state.conversation.slice(-historyLen).map(m => `${m.role}: ${m.content}`).join('\n');
     const richContext = await buildRichContext(input);
-    const prompt: AIPrompt = { systemPrompt: await buildSystemPrompt(), context: richContext, task: input, history };
+    const prompt: AIPrompt = { systemPrompt: await buildSystemPrompt(false), context: richContext, task: input, history };
     printToolDegradationNotice();
+    const provider = createProvider(state.aiConfig);
+    // Auto tool access — AI autonomously decides whether to call tools
+    if (provider.supportsToolUse && state.aiConfig.provider !== 'mock') {
+      await handleChatWithTools(input, prompt, provider);
+      // P0-2: Record tool-based AI interaction as episodic event
+      (async () => {
+        try {
+          const { onTaskCompleted } = await import('../core/memory/integration.js');
+          await onTaskCompleted(state.projectRoot || process.cwd(), sessionTaskId, {
+            summary: input.slice(0, 200),
+          });
+        } catch { /* memory is optional */ }
+      })();
+      return;
+    }
     console.log(`\n  ${C.accent('◇')} ${chalk.bold('You')}  ${input}`);
     state.conversation.push({ role: 'user', content: input, timestamp: new Date().toISOString() });
     streamState = 'loading'; streamLineBuf = '';
@@ -964,8 +1134,7 @@ async function handleChat(input: string): Promise<void> {
     let fullResponse = ''; let firstChunk = true; let inCodeBlock = false; let codeLang = ''; let suppressCodeBlock = false;
     let codeBlockLines = 0; let codeBlockFolded = false; const FOLD_THRESHOLD = 30; const FOLD_PREVIEW = 5;
     let lineCount = 0;
-    const aiStartTime = Date.now(); const tw = Math.min(termWidth(), 100); const contentW = tw - 4;
-    const provider = createProvider(state.aiConfig);
+    const aiStartTime = Date.now(); const tw = Math.min(termWidth(), 160); const contentW = tw - 4;
     const response = await provider.chatStream(prompt, (chunk: string) => {
       if (signal.aborted) return;
       streamTokenCount += Math.round(chunk.length / 3.5);
@@ -976,48 +1145,87 @@ async function handleChat(input: string): Promise<void> {
         lineCount++;
         if (line.trim().startsWith('``')) {
           if (!inCodeBlock) {
-            // Entering code block
             inCodeBlock = true; codeBlockLines = 0; codeBlockFolded = false;
             codeLang = line.trim().slice(3).trim();
             suppressCodeBlock = shouldHideWriteJsonBlock(input, codeLang) || outputMode === 'brief';
-            if (!suppressCodeBlock) process.stdout.write(`  ${C.dim(codeLang ? '```' + codeLang : '```')}\n`);
-            else if (outputMode === 'brief') process.stdout.write(`  ${C.dim('```')} ${C.accent(codeLang || 'code')} ${C.dim('(简洁模式隐藏)')}\n`);
+            if (!suppressCodeBlock) {
+              process.stdout.write('\n');
+              process.stdout.write(`  ${C.dim('┌')} ${C.accent(codeLang || 'code')}\n`);
+            } else if (outputMode === 'brief') {
+              process.stdout.write(`  ${C.dim('```')} ${C.accent(codeLang || 'code')} ${C.dim('(简洁模式隐藏)')}\n`);
+            }
           } else {
             // Exiting code block
             if (codeBlockFolded) {
-              process.stdout.write(`  ${C.dim(`… (${codeBlockLines - FOLD_PREVIEW - 2} 行折叠)`)}\n`);
+              process.stdout.write(`  ${C.dim('│')} ${C.dim(`… (${codeBlockLines - FOLD_PREVIEW - 2} 行折叠)`)}\n`);
             }
-            if (!suppressCodeBlock) process.stdout.write(`  ${C.dim('```')}\n`);
+            if (!suppressCodeBlock) {
+              process.stdout.write(`  ${C.dim('└')} ${C.dim(codeBlockLines + ' 行')}\n`);
+              process.stdout.write('\n');
+            }
             inCodeBlock = false; suppressCodeBlock = false;
           }
         } else if (inCodeBlock) {
           if (suppressCodeBlock) continue;
           codeBlockLines++;
+          const prefix = `  ${C.dim('│')} `;
           if (codeBlockLines <= FOLD_PREVIEW) {
-            process.stdout.write(`  ${C.dim(line)}\n`);
+            process.stdout.write(prefix + C.dim(line) + '\n');
           } else if (codeBlockLines > FOLD_PREVIEW && codeBlockLines <= FOLD_THRESHOLD) {
-            process.stdout.write(`  ${C.dim(line)}\n`);
+            process.stdout.write(prefix + C.dim(line) + '\n');
           } else if (codeBlockLines === FOLD_THRESHOLD + 1) {
             codeBlockFolded = true;
-            // Don't print — start folding
-          } else {
-            // Still folding, don't print
+            process.stdout.write(prefix + C.dim('… (后续内容已折叠，完成后显示行数)') + '\n');
           }
         } else { renderMarkdownLine(line, contentW); }
       }
     });
     const elapsed = Date.now() - aiStartTime;
-    if (signal.aborted) { stopWaitingPhase(); process.stdout.write(`\n  ${C.warn('⚡ 已中断')}\n\n`); streamState = 'idle'; return; }
-    if (streamLineBuf) { renderMarkdownLine(streamLineBuf, contentW); lineCount++; }
+    if (signal.aborted) { stopWaitingPhase(); if (inCodeBlock && !suppressCodeBlock) process.stdout.write(`  ${C.dim('└')} ${C.dim('[中断]')}\n`); flushTableBuffer(contentW); pendingInputStream.length = 0; process.stdout.write(`\n  ${C.warn('⚡ 已中断')}\n\n`); streamState = 'idle'; if (fullResponse) { state.conversation.push({ role: 'assistant', content: fullResponse + '\n\n[已中断]', timestamp: new Date().toISOString() }); } return; }
+    if (streamLineBuf) {
+      // Handle trailing code fence — close code block properly instead of rendering as text
+      if (inCodeBlock && streamLineBuf.trim().startsWith('`')) {
+        inCodeBlock = false;
+      } else {
+        renderMarkdownLine(streamLineBuf, contentW); lineCount++;
+      }
+    }
+    flushTableBuffer(contentW); // flush any incomplete table at end of stream
     if (inCodeBlock && !suppressCodeBlock) {
       if (codeBlockFolded) process.stdout.write(`  ${C.dim(`… (${codeBlockLines - FOLD_PREVIEW - 2} 行折叠)`)}\n`);
-      process.stdout.write(`  ${C.dim('```')}\n`);
+      process.stdout.write(`  ${C.dim('└')} ${C.dim(codeBlockLines + ' 行')}\n\n`);
     }
     // Clear progress line and show final status
     const tokens = response.tokensUsed > 0 ? response.tokensUsed : streamTokenCount;
-    process.stdout.write(`\r\x1b[K  ${C.success('✓')} ${C.dim(`[${(elapsed/1000).toFixed(1)}s]  ${lineCount} 行  ${tokens.toLocaleString()} tokens`)}\n`);
+    const meta = lineCount > 5 ? `  ${C.dim(`${lineCount} 行 · ${(elapsed/1000).toFixed(1)}s`)}` : '';
+    process.stdout.write(`\r\x1b[K  ${C.success('✓')} ${meta}\n`);
     stopWaitingPhase(); streamState = 'idle'; streamLineBuf = '';
+    // Flush any input buffered during streaming
+    const bufferedInputs = pendingInputStream.splice(0);
+    if (bufferedInputs.length > 0) {
+      process.stdout.write(`  ${C.dim('正在处理缓存的 ' + bufferedInputs.length + ' 条输入…')}\n`);
+      for (const bufInput of bufferedInputs) {
+        if (bufInput.startsWith('/')) await handleSlashCommand(bufInput);
+        else await handleChat(bufInput);
+      }
+    }
     state.conversation.push({ role: 'assistant', content: fullResponse || response.content, timestamp: new Date().toISOString() });
+    // P0-2: Record chat-based AI interaction as episodic event
+    (async () => {
+      try {
+        const { onTaskCompleted, onUserFeedback } = await import('../core/memory/integration.js');
+        const root = state.projectRoot || process.cwd();
+        const respSummary = (fullResponse || response.content || '').slice(0, 200);
+        await onTaskCompleted(root, sessionTaskId, {
+          summary: `${input.slice(0, 80)} → ${respSummary}`,
+          filesChanged: state.lastWrittenFiles.slice(-3).map(f => f.path),
+        });
+        // If user appears to be correcting, also record feedback
+        if (/不对|不是|错了|wrong|不要|不能|改.*成|correct|fix|change/.test(input)) {
+          await onUserFeedback(root, sessionTaskId, input);
+        }
+      } catch { /* memory is optional */ }
+    })();
     // M3+M4: Task boundary checkpoint + conversation compression
     if (state.convPhase !== 'idle') {
       conversationCheckpoint(state.currentTaskId);
@@ -1059,8 +1267,16 @@ async function handleChat(input: string): Promise<void> {
   } catch (err) {
     stopSpinner(); streamState = 'idle'; if (signal.aborted) { abortController = null; return; }
     const msg = (err as Error).message || String(err as Error);
-    if ((msg.includes('ECONNREFUSED') || msg.includes('fetch') || msg.includes('timeout') || msg.includes('500') || msg.includes('Premature close') || msg.includes('premature')) && (state._retryCount || 0) < 2) { state._retryCount = (state._retryCount || 0) + 1; console.log(`  ${C.warn('!')} 网络异常，2s 后重试 (${state._retryCount}/2)`); await new Promise(r => setTimeout(r, 2000)); await handleChat(input); return; }
-    state._retryCount = 0; console.log(`  ${I.err} ${msg}\n`);
+    if ((msg.includes('ECONNREFUSED') || msg.includes('fetch') || msg.includes('timeout') || msg.includes('500') || msg.includes('Premature close') || msg.includes('premature')) && (state._retryCount || 0) < 2) { state._retryCount = (state._retryCount || 0) + 1; for (let i = 2; i >= 0; i--) { process.stdout.write(`\r\x1b[K  ${C.warn('!')} 网络异常，${i > 0 ? i + 's 后' : ''}重试 (${state._retryCount}/2)`); if (i > 0) await new Promise(r => setTimeout(r, 1000)); } process.stdout.write('\n'); await handleChat(input); return; }
+    state._retryCount = 0;
+    const hint = msg.includes('apiKey') || msg.includes('auth') || msg.includes('401') || msg.includes('403') || msg.includes('Incorrect API key')
+      ? `  ${C.dim('建议: /apikey 检查 Key 配置  |  /doctor 诊断状态')}\n`
+      : msg.includes('model') || msg.includes('429') || msg.includes('rate')
+      ? `  ${C.dim('建议: /config model 切换模型重试')}\n`
+      : msg.includes('undefined') || msg.includes('null')
+      ? `  ${C.dim('内部错误，请重试  |  若持续出现，重启 REPL')}\n`
+      : `  ${C.dim('建议: /doctor 诊断系统状态  |  /status 查看配置')}\n`;
+    console.log(`  ${I.err} ${msg}\n${hint}`);
   } finally { abortController = null; }
 }
 
@@ -1398,165 +1614,19 @@ function isWrittenFilesQuestion(input: string): boolean {
     /(写到哪里|保存到哪里|文件路径|文档路径)/.test(normalized);
 }
 
-// S2: Scan subdirectories (depth 2) for project indicators
+// S2: Scan subdirectories (depth 2) for project indicators — see src/cli/startup.ts
 async function scanForSubProjects(
   cwd: string, fsp: any, path: any
 ): Promise<{ type: string; command: string; args: string[]; label: string; needsInstall: boolean; cwd: string; dir: string }[]> {
-  const results: { type: string; command: string; args: string[]; label: string; needsInstall: boolean; cwd: string; dir: string }[] = [];
-  // S2: Also check workspace config at root level
-  try {
-    const rootPkg = await fsp.readFile(path.join(cwd, 'package.json'), 'utf-8').catch(() => null);
-    if (rootPkg) {
-      const pkg = JSON.parse(rootPkg);
-      if (Array.isArray(pkg.workspaces) || Array.isArray(pkg.workspaces?.packages)) {
-        // npm/yarn/pnpm workspace — don't return root, will be discovered as sub-projects
-      }
-    }
-  } catch {}
-  try {
-    const entries = await fsp.readdir(cwd, { withFileTypes: true });
-    for (const entry of entries) {
-      if (!entry.isDirectory() || entry.name.startsWith('.') || entry.name === 'node_modules') continue;
-      const subDir = path.join(cwd, entry.name);
-      const info = await detectProjectStartInfo(subDir, fsp, path);
-      if (info) { results.push({ ...info, cwd: subDir, dir: entry.name }); continue; }
-      // S2: Scan one level deeper for nested projects (e.g. packages/groupA/service)
-      try {
-        const subEntries = await fsp.readdir(subDir, { withFileTypes: true });
-        for (const subEntry of subEntries) {
-          if (!subEntry.isDirectory() || subEntry.name.startsWith('.') || subEntry.name === 'node_modules') continue;
-          const nestedDir = path.join(subDir, subEntry.name);
-          const nestedInfo = await detectProjectStartInfo(nestedDir, fsp, path);
-          if (nestedInfo) results.push({ ...nestedInfo, cwd: nestedDir, dir: `${entry.name}/${subEntry.name}` });
-        }
-      } catch {}
-    }
-  } catch {}
-  return results;
+  const { scanForSubProjects: scan } = await import('./startup.js');
+  return scan(cwd, fsp, path);
 }
 
 async function detectProjectStartInfo(
   dir: string, fsp: any, path: any
 ): Promise<{ type: string; command: string; args: string[]; label: string; needsInstall: boolean } | null> {
-  // 1. npm/Node.js
-  try {
-    const pkg = JSON.parse(await fsp.readFile(path.join(dir, 'package.json'), 'utf-8'));
-    const scripts = pkg.scripts || {};
-    const scriptName = ['dev', 'start', 'serve', 'preview'].find((n: string) => scripts[n]);
-    if (scriptName) {
-      const pm = await detectPackageManager(dir);
-      const nmMissing = !(await fsp.stat(path.join(dir, 'node_modules')).catch(() => null));
-      const hasDeps = Object.keys({ ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) }).length > 0;
-      const cmd = pm === 'yarn' ? 'yarn' : pm === 'pnpm' ? 'pnpm' : 'npm';
-      return { type: `Node.js (${pm})`, command: cmd, args: ['run', scriptName], label: `${cmd} run ${scriptName}`, needsInstall: nmMissing && hasDeps };
-    }
-  } catch {}
-
-  // 2. Java/Maven
-  try {
-    const pom = await fsp.readFile(path.join(dir, 'pom.xml'), 'utf-8').catch(() => null);
-    const mvnw = await fsp.stat(path.join(dir, 'mvnw.cmd')).catch(() => null)
-      || await fsp.stat(path.join(dir, 'mvnw')).catch(() => null);
-    if (pom) {
-      const cmd = mvnw ? (process.platform === 'win32' ? 'mvnw.cmd' : './mvnw') : 'mvn';
-      return { type: 'Spring Boot (Maven)', command: cmd, args: ['spring-boot:run'], label: `${cmd} spring-boot:run`, needsInstall: false };
-    }
-  } catch {}
-
-  // 3. Java/Gradle
-  try {
-    const gradle = await fsp.stat(path.join(dir, 'build.gradle')).catch(() => null)
-      || await fsp.stat(path.join(dir, 'build.gradle.kts')).catch(() => null);
-    const gradlew = await fsp.stat(path.join(dir, 'gradlew')).catch(() => null);
-    if (gradle) {
-      const cmd = gradlew ? (process.platform === 'win32' ? 'gradlew.bat' : './gradlew') : 'gradle';
-      return { type: 'Java (Gradle)', command: cmd, args: ['bootRun'], label: `${cmd} bootRun`, needsInstall: false };
-    }
-  } catch {}
-
-  // 4. Go (S1: also check cmd/*/main.go pattern)
-  try {
-    const goMod = await fsp.readFile(path.join(dir, 'go.mod'), 'utf-8').catch(() => null);
-    const hasMain = await fsp.readFile(path.join(dir, 'main.go'), 'utf-8').catch(() => null);
-    if (goMod) {
-      if (hasMain) {
-        const mf = await fsp.readFile(path.join(dir, 'Makefile'), 'utf-8').catch(() => null);
-        return mf ? { type: 'Go (Makefile)', command: 'make', args: ['run'], label: 'make run', needsInstall: false }
-          : { type: 'Go', command: 'go', args: ['run', '.'], label: 'go run .', needsInstall: false };
-      }
-      // Check cmd/*/main.go for idiomatic Go layout
-      const cmdStat = await fsp.stat(path.join(dir, 'cmd')).catch(() => null);
-      if (cmdStat?.isDirectory()) {
-        const cmdEntries = await fsp.readdir(path.join(dir, 'cmd'), { withFileTypes: true }).catch(() => []);
-        for (const entry of cmdEntries) {
-          if (entry.isDirectory() || entry.name === 'main.go') {
-            const mainPath = entry.isDirectory() ? `cmd/${entry.name}` : 'cmd';
-            const mainExists = await fsp.readFile(path.join(dir, mainPath, 'main.go'), 'utf-8').catch(() => null)
-              || (entry.name === 'main.go' ? true : null);
-            if (mainExists || entry.name === 'main.go') {
-              return { type: 'Go', command: 'go', args: ['run', `./${mainPath}/`], label: `go run ./${mainPath}/`, needsInstall: false };
-            }
-          }
-        }
-      }
-    }
-  } catch {}
-
-  // 5. Python (S1: Django/Flask/FastAPI/uvicorn/streamlit detection)
-  try {
-    const py = process.platform === 'win32' ? 'python' : 'python3';
-    const pyproject = await fsp.readFile(path.join(dir, 'pyproject.toml'), 'utf-8').catch(() => null);
-    const mainPy = await fsp.readFile(path.join(dir, 'main.py'), 'utf-8').catch(() => null)
-      || await fsp.readFile(path.join(dir, 'app.py'), 'utf-8').catch(() => null);
-    const managePy = await fsp.stat(path.join(dir, 'manage.py')).catch(() => null);
-    // Django: manage.py present
-    if (managePy) return { type: 'Python (Django)', command: py, args: ['manage.py', 'runserver'], label: `${py} manage.py runserver`, needsInstall: false };
-    if (pyproject) {
-      const pyText = pyproject.toLowerCase();
-      if (pyText.includes('fastapi')) return { type: 'Python (FastAPI)', command: py, args: mainPy ? [mainPy === 'main.py' ? 'main.py' : 'app.py'] : ['-m', 'uvicorn', 'main:app', '--reload'], label: 'FastAPI dev', needsInstall: false };
-      if (pyText.includes('django')) return { type: 'Python (Django)', command: py, args: ['manage.py', 'runserver'], label: `${py} manage.py runserver`, needsInstall: false };
-      if (pyText.includes('flask')) return { type: 'Python (Flask)', command: py, args: mainPy ? [mainPy === 'main.py' ? 'main.py' : 'app.py'] : ['-m', 'flask', 'run'], label: 'Flask dev', needsInstall: false };
-      if (pyText.includes('streamlit')) return { type: 'Python (Streamlit)', command: 'streamlit', args: ['run', mainPy === 'main.py' ? 'main.py' : 'app.py' || 'app.py'], label: 'streamlit run', needsInstall: false };
-      if (pyText.includes('uvicorn')) return { type: 'Python (uvicorn)', command: py, args: ['-m', 'uvicorn', 'main:app', '--reload'], label: `${py} -m uvicorn main:app --reload`, needsInstall: false };
-    }
-    if (mainPy) {
-      // Check file content for framework hints
-      const content = mainPy || '';
-      if (typeof content === 'string' && content.includes('Flask')) return { type: 'Python (Flask)', command: py, args: [content === mainPy ? 'main.py' : 'app.py'], label: `${py} ${content === mainPy ? 'main.py' : 'app.py'}`, needsInstall: false };
-      if (typeof content === 'string' && content.includes('fastapi')) return { type: 'Python (FastAPI)', command: py, args: [content === mainPy ? 'main.py' : 'app.py'], label: `${py} ${content === mainPy ? 'main.py' : 'app.py'}`, needsInstall: false };
-      return { type: 'Python', command: py, args: [mainPy === 'main.py' ? 'main.py' : 'app.py'], label: `${py} ${mainPy === 'main.py' ? 'main.py' : 'app.py'}`, needsInstall: false };
-    }
-  } catch {}
-
-  // 6. Rust
-  try {
-    const cargoToml = await fsp.readFile(path.join(dir, 'Cargo.toml'), 'utf-8').catch(() => null);
-    if (cargoToml) return { type: 'Rust', command: 'cargo', args: ['run'], label: 'cargo run', needsInstall: false };
-  } catch {}
-
-  // 6b. .NET (S1)
-  try {
-    const csproj = await fsp.stat(path.join(dir, '*.csproj')).catch(() => null)
-      || (await fsp.readdir(dir).catch(() => [])).find((f: string) => f.endsWith('.csproj'));
-    if (csproj) return { type: '.NET', command: 'dotnet', args: ['run'], label: 'dotnet run', needsInstall: false };
-    const sln = (await fsp.readdir(dir).catch(() => [])).find((f: string) => f.endsWith('.sln'));
-    if (sln) return { type: '.NET Solution', command: 'dotnet', args: ['run'], label: 'dotnet run', needsInstall: false };
-  } catch {}
-
-  // 7. Docker Compose
-  try {
-    const dc = await fsp.readFile(path.join(dir, 'docker-compose.yml'), 'utf-8').catch(() => null)
-      || await fsp.readFile(path.join(dir, 'docker-compose.yaml'), 'utf-8').catch(() => null);
-    if (dc) return { type: 'Docker Compose', command: 'docker-compose', args: ['up'], label: 'docker-compose up', needsInstall: false };
-  } catch {}
-
-  // 8. Makefile-only
-  try {
-    const mf = await fsp.readFile(path.join(dir, 'Makefile'), 'utf-8').catch(() => null);
-    if (mf) return { type: 'Makefile', command: 'make', args: [], label: 'make', needsInstall: false };
-  } catch {}
-
-  return null;
+  const { detectProjectStartInfo: detect } = await import('./startup.js');
+  return detect(dir, fsp, path);
 }
 
 function isStartProjectIntent(input: string): boolean {
@@ -1565,8 +1635,8 @@ function isStartProjectIntent(input: string): boolean {
   const isQuestion = /^(怎么|如何|怎样|你知道|请问|谁能|谁知道|啥是|什么是|为什么)/i.test(normalized) ||
     /(怎么启动|如何启动|怎样启动|怎么运行|如何运行|怎么跑|如何跑)/i.test(normalized);
   if (isQuestion) return false;
-  return /(启动|运行|跑起来|打开|起服务|启动服务|运行项目|启动项目|跑项目|start|serve|npmrundev)/i.test(normalized) &&
-    /(项目|服务|前端|后端|vite|react|app|应用|dev|serve|start)/i.test(normalized);
+  return /(启动|运行|跑起来|打开|起服务|启动服务|运行项目|启动项目|跑项目|start|serve|yarn|pnpm|run|docker|npmrundev|launch)/i.test(normalized) &&
+    /(项目|服务|前端|后端|vite|react|app|应用|dev|serve|start|up)/i.test(normalized);
 }
 
 function isDoItIntent(input: string): boolean {
@@ -1670,12 +1740,12 @@ function summarizeProjectIndex(index: ProjectIndex): ProjectIndexSummary {
 async function buildProjectIndex(cwd: string, identity: { language: string; framework: string; database: string; buildSystem: string; testFramework: string }): Promise<ProjectIndexSummary> {
   const { readdir } = await import('fs/promises'); const { join, relative } = await import('path');
   let fileCount = 0; const modules = new Map<string, number>(); let apiCount = 0;
-  async function walk(dir: string, depth: number) { if (depth > 5) return; try { const entries = await readdir(dir, { withFileTypes: true }); for (const e of entries) { if (e.name.startsWith('.') || e.name === 'node_modules' || e.name === 'dist') continue; if (e.isDirectory()) await walk(join(dir, e.name), depth + 1); else { fileCount++; const rel = relative(cwd, join(dir, e.name)); const modName = rel.split(/[/\\]/)[0]; modules.set(modName, (modules.get(modName) || 0) + 1); if (rel.includes('route') || rel.includes('handler') || rel.includes('api')) apiCount++; } } } catch {} }
+  async function walk(dir: string, depth: number) { if (depth > 5) return; try { const entries = await readdir(dir, { withFileTypes: true }); for (const e of entries) { if (e.name.startsWith('.') || e.name === 'node_modules' || e.name === 'dist') continue; if (e.isDirectory()) await walk(join(dir, e.name), depth + 1); else { fileCount++; const rel = relative(cwd, join(dir, e.name)); const modName = rel.split(/[/\\]/)[0]; modules.set(modName, (modules.get(modName) || 0) + 1); if (rel.includes('route') || rel.includes('handler') || rel.includes('api')) apiCount++; } } } catch { /* best-effort */ } }
   await walk(cwd, 0); const mdNames = Array.from(modules.keys());
   const arch = mdNames.some(m => m === 'src') ? '模块化' : mdNames.length > 10 ? '多模块' : '单体';
   const deps: { name: string; version: string }[] = [];
-  try { const pkgRaw = await (await import('fs/promises')).readFile(join(cwd, 'package.json'), 'utf-8'); const pkg = JSON.parse(pkgRaw); for (const [k, v] of Object.entries({ ...pkg.dependencies, ...pkg.devDependencies } as Record<string, string>)) deps.push({ name: k, version: v }); } catch {}
-  let fileTree = ''; try { const ents = await readdir(cwd); for (const e of ents.slice(0, 30)) { if (e.startsWith('.') || e === 'node_modules') continue; fileTree += `${e}\n`; } } catch {}
+  try { const pkgRaw = await (await import('fs/promises')).readFile(join(cwd, 'package.json'), 'utf-8'); const pkg = JSON.parse(pkgRaw); for (const [k, v] of Object.entries({ ...pkg.dependencies, ...pkg.devDependencies } as Record<string, string>)) deps.push({ name: k, version: v }); } catch { /* best-effort */ }
+  let fileTree = ''; try { const ents = await readdir(cwd); for (const e of ents.slice(0, 30)) { if (e.startsWith('.') || e === 'node_modules') continue; fileTree += `${e}\n`; } } catch { /* best-effort */ }
   return { language: identity.language, framework: identity.framework, database: identity.database, buildSystem: identity.buildSystem, testFramework: identity.testFramework, moduleCount: modules.size, fileCount, apiCount, modules: Array.from(modules.entries()).map(([name, files]) => ({ name, files, responsibility: '' })), apis: [], dependencies: deps.slice(0, 20), architecture: arch, fileTree };
 }
 
@@ -1701,16 +1771,16 @@ async function cmdScan(): Promise<void> {
     state.projectIndex = summarizeProjectIndex(result.index);
 
     let fc = 0; const byExt: Record<string, number> = {};
-    async function w(dir: string) { try { const es = await readdir(dir, { withFileTypes: true }); for (const e of es) { if (e.name.startsWith('.') || e.name === 'node_modules') continue; if (e.isDirectory()) await w(join(dir, e.name)); else { fc++; const ext = e.name.split('.').pop() || 'o'; byExt[ext] = (byExt[ext] || 0) + 1; } } } catch {} }
+    async function w(dir: string) { try { const es = await readdir(dir, { withFileTypes: true }); for (const e of es) { if (e.name.startsWith('.') || e.name === 'node_modules') continue; if (e.isDirectory()) await w(join(dir, e.name)); else { fc++; const ext = e.name.split('.').pop() || 'o'; byExt[ext] = (byExt[ext] || 0) + 1; } } } catch { /* best-effort */ } }
     await w(cwd);
 
     process.stdout.write('\r\x1b[K'); const top = Object.entries(byExt).sort((a, b) => b[1] - a[1]).slice(0, 8); console.log(drawWideBox(`文件总数  ${C.accent(String(fc))}\n分布      ${top.map(([k, v]) => C.primary('.' + k) + C.dim(' ×' + v)).join('  ')}`, { title: '项目扫描' }) + '\n');
-  } catch { process.stdout.write('\r\x1b[K'); console.log(`  ${I.err} 扫描失败\n`); }
+  } catch { process.stdout.write('\r\x1b[K'); console.log(`  ${I.err} 扫描失败  ${C.dim('建议: /scan 重试')}\n`); }
 }
 
 async function cmdVerify(): Promise<void> {
   process.stdout.write(`  ${C.primary('◇')} 验证中 `);
-  try { const { execFileSync } = await import('child_process'); const cwd = process.cwd(); const lang = state.context.language; const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm'; let cmd = npmCmd; let args = ['run', 'build']; if (lang === 'go') { cmd = 'go'; args = ['vet', './...']; } try { const out = execFileSync(cmd, args, { cwd, timeout: 60000, encoding: 'utf-8', stdio: 'pipe' }); process.stdout.write('\r\x1b[K'); console.log(`  ${I.ok} 验证通过\n`); } catch (err) { process.stdout.write('\r\x1b[K'); const e = err as { stdout?: string; stderr?: string }; console.log(`  ${I.err} 验证失败\n`); } } catch { process.stdout.write('\r\x1b[K'); console.log(`  ${I.err} 无法运行\n`); }
+  try { const { execFileSync } = await import('child_process'); const cwd = process.cwd(); const lang = state.context.language; const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm'; let cmd = npmCmd; let args = ['run', 'build']; if (lang === 'go') { cmd = 'go'; args = ['vet', './...']; } try { const out = execFileSync(cmd, args, { cwd, timeout: 60000, encoding: 'utf-8', stdio: 'pipe' }); process.stdout.write('\r\x1b[K'); console.log(`  ${I.ok} 验证通过\n`); } catch (err) { process.stdout.write('\r\x1b[K'); const e = err as { stdout?: string; stderr?: string }; const errOut = (e.stderr || e.stdout || '').split('\n').slice(0, 3).join('\n'); console.log(`  ${I.err} 验证失败${errOut ? '\n  ' + C.dim(errOut) : ''}\n`); } } catch { process.stdout.write('\r\x1b[K'); console.log(`  ${I.err} 无法运行  ${C.dim('建议: 检查构建工具是否安装')}\n`); }
 }
 
 async function cmdStopProject(): Promise<void> {
@@ -1749,6 +1819,7 @@ async function cmdRestartProject(): Promise<void> {
     for (const proc of mine) {
       await stopStartedProcess(proc);
     }
+    await new Promise(r => setTimeout(r, 500));
     console.log(`  ${I.ok} 已停止，准备重新启动\n`);
   }
 
@@ -1791,30 +1862,141 @@ async function cmdStartProject(): Promise<void> {
     const fsp = await import('fs/promises');
     const path = await import('path');
 
-    // S2: Scan for subdirectory projects (monorepo support)
-    const projects = await scanForSubProjects(cwd, fsp, path);
+    // Gate-3: Dependency check before startup (best-effort, non-blocking)
+    try {
+      const { checkDependencies } = await import('../utils/detect.js');
+      const startupConfig = await loadConfig(cwd);
+      if (!startupConfig) return;
+      const depResult = await checkDependencies(cwd, startupConfig.project.identity);
+      if (!depResult.ok) {
+        console.log(drawWideBox(
+          `依赖检查未通过\n${C.warn(depResult.message)}${depResult.toolMissing ? `\n\n缺失工具: ${C.accent(depResult.toolMissing)}\n请安装后重试 ${C.accent('/start')}` : ''}`,
+          { title: '依赖检查' }
+        ) + '\n');
+      }
+    } catch { /* non-blocking best-effort check */ }
 
-    // If multiple sub-projects found, list them and start all
+    // S2: Load subprojects from index first, fall back to live scan (Gap-3)
+    let projects: Awaited<ReturnType<typeof scanForSubProjects>> = [];
+    try {
+      const { loadProjectIndex } = await import('../core/scanner.js');
+      const idx = await loadProjectIndex(cwd);
+      if (idx?.subprojects && idx.subprojects.length > 0) {
+        // Use cached subproject data from last scan
+        projects = idx.subprojects.map(sp => ({
+          type: sp.language + (sp.framework ? ` (${sp.framework})` : ''),
+          command: sp.startCommand?.split(' ')[0] || 'npm',
+          args: sp.startCommand ? sp.startCommand.split(' ').slice(1) : ['run', 'dev'],
+          label: sp.startCommand || 'npm run dev',
+          needsInstall: false,
+          cwd: path.join(cwd, sp.path),
+          dir: sp.name,
+        }));
+        console.log(`  ${C.dim(`使用索引中 ${projects.length} 个子项目`)}`);
+      }
+    } catch { /* best-effort */ }
+    // Fall back to live scan if index had no subprojects
+    if (projects.length === 0) {
+      projects = await scanForSubProjects(cwd, fsp, path);
+    }
+
+    // S2.5: AI-powered startup analysis — understand what commands actually do
+    let startupAnalysis: import('./startup-analysis.js').StartupAnalysis | null = null;
+    if (projects.length > 0 && state.aiConfig.provider !== 'mock') {
+      try {
+        const { analyzeStartupPlan } = await import('./startup-analysis.js');
+        const { createProvider } = await import('../ai/provider.js');
+        printLoopStatus('take-action', 'AI 启动分析');
+        startupAnalysis = await analyzeStartupPlan(
+          projects, cwd, createProvider(state.aiConfig), fsp, path,
+        );
+        if (startupAnalysis) printLoopStatus('take-action', 'AI 分析完成');
+      } catch { /* best-effort; fall through to raw detection */ }
+    }
+
+    // If multiple sub-projects found, show unified approval panel
     if (projects.length > 1) {
       printLoopStatus('take-action', '多服务启动');
-      console.log(drawWideBox(
-        `发现 ${projects.length} 个可启动服务:\n${projects.map(p => `  ${C.accent(p.dir)} — ${C.accent(p.type)} → ${p.label}`).join('\n')}\n\n输入 ${C.accent('1')} 全部启动  ${C.accent('2')} 选择启动  ${C.accent('3')} 取消`,
-        { title: '多服务发现' }
-      ) + '\n');
+
+      const steps = projects.flatMap(p => [
+        ...(p.needsInstall ? [{ label: `${p.dir}: install`, command: p.command, args: ['install'], display: `${p.command} install`, cwd: p.cwd }] : []),
+        { label: `${p.dir}: ${p.label}`, command: p.command, args: p.args, display: `${p.label}`, background: true, cwd: p.cwd },
+      ]);
 
       pendingSystemOperation = {
         title: '启动全部服务',
-        reason: `启动 ${projects.length} 个服务: ${projects.map(p => p.dir).join(', ')}`,
+        reason: `启动 ${projects.length} 个子项目`,
         impact: `共 ${projects.length} 个进程`,
         cwd,
         approvalKey: `start:all:${projects.map(p => p.dir).join(',')}`,
-        steps: projects.flatMap(p => [
-          ...(p.needsInstall ? [{ label: `${p.dir}: install`, command: p.command, args: ['install'], display: `${p.dir}: ${p.command} install` }] : []),
-          { label: `${p.dir}: ${p.label}`, command: p.command, args: p.args, display: `${p.dir}: ${p.label}`, background: true, cwd: p.cwd },
-        ]),
+        steps,
       };
+
+      if (approvedSystemOperations.has(pendingSystemOperation.approvalKey)) {
+        const operation = pendingSystemOperation;
+        pendingSystemOperation = null;
+        await executeStartProjectOperation(operation);
+        return;
+      }
+
+      // Single unified panel: service list + AI analysis + commands + actions
+      const serviceLines = projects.map(p =>
+        `  ${C.accent(p.dir)}  ${C.dim(p.type)}`
+      );
+      const cmdPreview = steps.map(s =>
+        `  ${C.dim('$')} ${C.accent(s.display)}`
+      );
+
+      // Build body with optional AI analysis enrichment
+      const bodyLines: string[] = [...serviceLines];
+
+      if (startupAnalysis) {
+        bodyLines.push('', `  ${C.primary('◉')} ${C.bright('AI 启动分析')}`);
+
+        // Suggested startup order
+        if (startupAnalysis.suggestedOrder.length > 1) {
+          const orderStr = startupAnalysis.suggestedOrder.join(` ${C.primary('→')} `);
+          bodyLines.push(`  ${C.dim('建议顺序:')} ${C.accent(orderStr)}`);
+        }
+
+        // Per-service warnings and prerequisites
+        for (const svc of startupAnalysis.services) {
+          for (const w of svc.warnings) {
+            bodyLines.push(`  ${C.warn('!')} ${C.accent(svc.dir)} ${C.dim('—')} ${C.warn(w)}`);
+          }
+          for (const p of svc.prerequisites) {
+            bodyLines.push(`  ${C.dim('○')} ${C.accent(svc.dir)} ${C.dim('—')} ${p}`);
+          }
+          if (!svc.isServer) {
+            bodyLines.push(`  ${C.warn('!')} ${C.accent(svc.dir)} ${C.warn('— 可能不是服务进程，请确认')}`);
+          }
+        }
+
+        // Overall warnings
+        for (const w of startupAnalysis.overallWarnings) {
+          bodyLines.push(`  ${C.warn('!')} ${C.warn(w)}`);
+        }
+
+        // Confidence
+        const conf = startupAnalysis.confidence;
+        const confColor = conf === 'high' ? C.success : conf === 'medium' ? C.warn : C.dim;
+        bodyLines.push(`  ${C.dim('AI 置信度:')} ${confColor(conf)}`);
+      }
+
+      bodyLines.push('', ...cmdPreview);
+
+      activeChoicePanel = {
+        title: `发现 ${projects.length} 个可启动服务`,
+        bodyLines,
+        options: [
+          { id: 1, label: '全部启动' },
+          { id: 2, label: '记住并启动（本次会话不再询问）' },
+          { id: 3, label: '取消' },
+        ],
+        hint: '输入 1 / 2 / 3 后回车确认',
+      };
+      process.stdout.write(renderChoicePanel(activeChoicePanel));
       pendingConfirm = 'system';
-      printSystemOperationConfirm(pendingSystemOperation);
       return;
     }
 
@@ -1847,22 +2029,43 @@ async function cmdStartProject(): Promise<void> {
           });
           try {
             const j = JSON.parse((resp.content.match(/\{[\s\S]*\}/)?.[0] || '{}'));
-            console.log(drawWideBox(
-              `🤖 AI 启动建议\n${C.accent(cwd)}\n\n${C.accent(j.command || '未知')}\n\n${j.reasoning || ''}${j.install ? '\n\n📦 ' + j.install : ''}`,
-              { title: 'AI 启动顾问' }
-            ) + '\n');
             if (j.command) {
-              // S5: Offer one-click execution of AI-suggested command
-              const answer = await new Promise<string>(resolve => {
-                rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-                rl.question(`  ${C.accent('◇')} 执行此命令？(y/n) `, (ans: string) => { rl.close(); resolve(ans.trim().toLowerCase()); });
-              });
-              if (answer === 'y' || answer === 'yes') {
-                printLoopStatus('take-action', 'AI 建议执行');
-                const { spawn } = await import('child_process');
-                const child = spawn(j.command, { cwd, shell: true, stdio: 'inherit' });
-                await new Promise<void>((res, rej) => { child.on('close', (code: number) => code === 0 ? res() : rej(new Error(`exit ${code}`))); child.on('error', rej); });
+              printLoopStatus('take-action', 'AI 建议执行');
+              pendingSystemOperation = {
+                title: '执行 AI 建议命令',
+                reason: j.reasoning || 'AI 分析项目后建议的命令',
+                impact: j.command,
+                cwd,
+                approvalKey: `ai-cmd:${cwd}:${j.command}`,
+                steps: [process.platform === 'win32'
+                  ? { label: j.command, command: j.command, args: [], display: j.command, background: true }
+                  : { label: j.command, command: '/bin/sh', args: ['-c', j.command], display: j.command, background: true }],
+              };
+              if (approvedSystemOperations.has(pendingSystemOperation.approvalKey)) {
+                const op = pendingSystemOperation;
+                pendingSystemOperation = null;
+                await executeStartProjectOperation(op);
+                return;
               }
+              activeChoicePanel = {
+                title: 'AI 启动建议',
+                bodyLines: [
+                  `目录 ${cwd}`,
+                  j.install ? `📦 ${C.accent(j.install)}` : '',
+                  '',
+                  `${C.accent('$')} ${C.accent(j.command)}`,
+                  j.reasoning ? '' : '',
+                  j.reasoning ? `${C.dim(j.reasoning)}` : '',
+                ].filter(l => l !== undefined),
+                options: [
+                  { id: 1, label: '确认执行' },
+                  { id: 2, label: '记住并执行（本次会话不再询问）' },
+                  { id: 3, label: '取消' },
+                ],
+                hint: '输入 1 / 2 / 3 后回车确认',
+              };
+              process.stdout.write(renderChoicePanel(activeChoicePanel));
+              pendingConfirm = 'system';
             }
           } catch { console.log(drawWideBox(resp.content.slice(0, 600), { title: 'AI 启动建议' }) + '\n'); }
           return;
@@ -1872,12 +2075,13 @@ async function cmdStartProject(): Promise<void> {
       return;
     }
 
-    // Show what we found and how we'll start
+    // Single unified panel: project info + commands + actions
     printLoopStatus('take-action', '启动项目');
-    console.log(drawWideBox(
-      `检测到 ${C.accent(startInfo.type)} 项目\n${C.accent(cwd)}\n\n启动命令: ${C.accent(startInfo.label)}${startInfo.needsInstall ? '\n\n⚠ 需要先安装依赖' : ''}\n\n输入 ${C.accent('1')} 确认执行  ${C.accent('2')} 记住  ${C.accent('3')} 取消`,
-      { title: '启动项目' }
-    ) + '\n');
+
+    const installStep = startInfo.needsInstall
+      ? [{ label: '安装依赖', command: startInfo.command, args: ['install'], display: `${startInfo.command} install` }]
+      : [];
+    const runStep = [{ label: startInfo.label, command: startInfo.command, args: startInfo.args, display: startInfo.label, background: true }];
 
     pendingSystemOperation = {
       title: '启动项目',
@@ -1885,10 +2089,7 @@ async function cmdStartProject(): Promise<void> {
       impact: startInfo.label,
       cwd,
       approvalKey: `start:${cwd}:${startInfo.label}`,
-      steps: startInfo.needsInstall
-        ? [{ label: '安装依赖', command: startInfo.command, args: ['install'], display: `${startInfo.command} install` },
-           { label: startInfo.label, command: startInfo.command, args: startInfo.args, display: startInfo.label, background: true }]
-        : [{ label: startInfo.label, command: startInfo.command, args: startInfo.args, display: startInfo.label, background: true }],
+      steps: [...installStep, ...runStep],
     };
 
     if (approvedSystemOperations.has(pendingSystemOperation.approvalKey)) {
@@ -1897,10 +2098,51 @@ async function cmdStartProject(): Promise<void> {
       await executeStartProjectOperation(operation);
       return;
     }
+
+    const body = [
+      `项目 ${C.accent(startInfo.type)}`,
+      `目录 ${cwd}`,
+      ...(startInfo.needsInstall ? ['', `⚠ 需要先安装依赖`] : []),
+    ];
+
+    // Enrich with AI analysis if available
+    if (startupAnalysis && startupAnalysis.services.length > 0) {
+      const svc = startupAnalysis.services[0];
+      body.push('', `  ${C.primary('◉')} ${C.bright('AI 启动分析')}`);
+      if (!svc.isServer) {
+        body.push(`  ${C.warn('!')} ${C.warn('可能不是服务进程，请确认命令是否正确')}`);
+      }
+      if (svc.port) {
+        body.push(`  ${C.dim('端口:')} ${C.accent(String(svc.port))}`);
+      }
+      for (const w of svc.warnings) {
+        body.push(`  ${C.warn('!')} ${C.warn(w)}`);
+      }
+      for (const p of svc.prerequisites) {
+        body.push(`  ${C.dim('○')} ${p}`);
+      }
+      if (startupAnalysis.confidence) {
+        const conf = startupAnalysis.confidence;
+        const confColor = conf === 'high' ? C.success : conf === 'medium' ? C.warn : C.dim;
+        body.push(`  ${C.dim('AI 置信度:')} ${confColor(conf)}`);
+      }
+    }
+
+    body.push('', ...pendingSystemOperation.steps.map(s => `  ${C.dim('$')} ${C.accent(s.display)}`));
+    activeChoicePanel = {
+      title: '启动项目',
+      bodyLines: body,
+      options: [
+        { id: 1, label: '确认执行' },
+        { id: 2, label: '记住并启动（本次会话不再询问）' },
+        { id: 3, label: '取消' },
+      ],
+      hint: '输入 1 / 2 / 3 后回车确认',
+    };
+    process.stdout.write(renderChoicePanel(activeChoicePanel));
     pendingConfirm = 'system';
-    printSystemOperationConfirm(pendingSystemOperation);
   } catch (err) {
-    console.log(`  ${I.err} 启动失败：${(err as Error).message}\n`);
+    console.log(`  ${I.err} 启动失败：${(err as Error).message}  ${C.dim('建议: 检查 package.json scripts 或项目配置')}\n`);
   }
 }
 
@@ -2049,7 +2291,7 @@ async function cmdUndo(): Promise<void> {
 
 async function doUndoFiles(): Promise<void> {
   const fsp = await import('fs/promises'); const path = await import('path'); const cwd = process.cwd(); let undone = 0;
-  for (const pf of state.lastWrittenFiles) { try { const full = pf.fullPath || path.resolve(cwd, pf.path); if (pf.previousContent !== undefined) { if (pf.previousContent === '') await fsp.unlink(full); else await fsp.writeFile(full, pf.previousContent, 'utf-8'); undone++; } } catch {} }
+  for (const pf of state.lastWrittenFiles) { try { const full = pf.fullPath || path.resolve(cwd, pf.path); if (pf.previousContent !== undefined) { if (pf.previousContent === '') await fsp.unlink(full); else await fsp.writeFile(full, pf.previousContent, 'utf-8'); undone++; } } catch (e) { console.log(`  ${C.warn('!')} 无法撤销 ${pf.path}: ${(e as Error).message}`); } }
   state.lastWrittenFiles = []; console.log(`  ${I.ok} ${C.success(String(undone))} 个文件已撤销\n`);
 }
 
@@ -2171,8 +2413,23 @@ async function cmdAgentSlash(args: string): Promise<void> {
     console.log(`  ${C.dim('用法: /agent [list|create <name>|start <id>|stop <id>|status <id>]')}\n`);
   }
 }
-async function cmdGlobalMemory(query: string): Promise<void> { try { const fsp = await import('fs/promises'); const path = await import('path'); const home = process.env.HOME || process.env.USERPROFILE || '~'; const mp = path.join(home, '.icloser', 'global-memory', 'memory.json'); if (query) { let mem: Record<string, unknown> = { entries: [] }; try { mem = JSON.parse(await fsp.readFile(mp, 'utf-8')); } catch {} (mem.entries as Array<unknown>).push({ content: query, ts: new Date().toISOString() }); await fsp.mkdir(path.dirname(mp), { recursive: true }); await fsp.writeFile(mp, JSON.stringify(mem, null, 2), 'utf-8'); console.log(`  ${I.ok} 已记录\n`); } else { try { const mem = JSON.parse(await fsp.readFile(mp, 'utf-8')); console.log(`  条目: ${(mem.entries as Array<unknown>).length}\n`); } catch { console.log(`  ${C.dim('全局记忆为空')}\n`); } } } catch { console.log(`  ${C.dim('无法读取全局记忆')}\n`); } }
-async function cmdMemory(): Promise<void> { console.log(drawWideBox(`对话 ${C.accent(String(state.conversation.length))} 轮\n已写 ${C.accent(String(state.lastWrittenFiles.length))} 个文件`, { title: '会话记忆' }) + '\n'); }
+async function cmdGlobalMemory(query: string): Promise<void> { try { const fsp = await import('fs/promises'); const path = await import('path'); const home = process.env.HOME || process.env.USERPROFILE || '~'; const mp = path.join(home, '.icloser', 'global-memory', 'memory.json'); if (query) { let mem: Record<string, unknown> = { entries: [] }; try { mem = JSON.parse(await fsp.readFile(mp, 'utf-8')); } catch { /* best-effort */ } (mem.entries as Array<unknown>).push({ content: query, ts: new Date().toISOString() }); await fsp.mkdir(path.dirname(mp), { recursive: true }); await fsp.writeFile(mp, JSON.stringify(mem, null, 2), 'utf-8'); console.log(`  ${I.ok} 已记录\n`); } else { try { const mem = JSON.parse(await fsp.readFile(mp, 'utf-8')); console.log(`  条目: ${(mem.entries as Array<unknown>).length}\n`); } catch { console.log(`  ${C.dim('全局记忆为空')}\n`); } } } catch { console.log(`  ${C.dim('无法读取全局记忆')}\n`); } }
+async function cmdMemory(): Promise<void> {
+  const userMsgs = state.conversation.filter(m => m.role === 'user').slice(-5);
+  const assistantMsgs = state.conversation.filter(m => m.role === 'assistant').slice(-5);
+  const timeline = userMsgs.map((u, i) => {
+    const a = assistantMsgs[i];
+    const uPreview = u.content.replace(/\n/g, ' ').substring(0, 60);
+    const aPreview = a ? a.content.replace(/\n/g, ' ').substring(0, 40) : '';
+    return `  ${C.accent('◇')} ${uPreview}${aPreview ? '\n  ' + C.dim('◆') + ' ' + C.dim(aPreview) : ''}`;
+  }).join('\n');
+  const lines = [
+    `对话 ${C.accent(String(state.conversation.length))} 轮  ·  已写 ${C.accent(String(state.lastWrittenFiles.length))} 个文件`,
+    ...(timeline ? ['', timeline] : []),
+    ...(state.lastWrittenFiles.length > 0 ? ['', `最近写入: ${state.lastWrittenFiles.slice(-3).map(f => C.accent(f.path)).join(', ')}`] : []),
+  ];
+  console.log(drawWideBox(lines.join('\n'), { title: '会话记忆' }) + '\n');
+}
 
 async function cmdPrintLastWrittenFiles(): Promise<void> {
   if (state.lastWrittenFiles.length === 0) {
@@ -2198,7 +2455,7 @@ async function cmdReplStatus(): Promise<void> {
   console.log(drawWideBox(`模型 ${C.accent(state.aiConfig.provider)}${C.dim(' / ' + state.aiConfig.model)}\n项目 ${state.context.projectName || C.dim('—')}\n工作目录 ${C.accent(process.cwd())}\n语言 ${state.context.language || C.dim('—')}${state.context.framework ? '  |  ' + state.context.framework : ''}\n索引 ${idx ? C.accent(idx.fileCount + '文件 ' + idx.moduleCount + '模块') : C.dim('未扫描')}\n对话 ${C.accent(String(state.conversation.length))} 轮\n上下文 ${C.primary(String(st))} / ${C.accent(String(state.aiConfig.maxTokens))} ${C.dim('(' + tp + '%)')}`, { title: '会话状态' }) + '\n');
   await printReplVerifyStatus();
 }
-async function printReplVerifyStatus(): Promise<void> { try { const { listTasks } = await import('../core/task-engine.js'); const tasks = await listTasks(process.cwd()); const withVr = tasks.filter(t => t.verifyResult); if (withVr.length === 0) return; const latest = withVr[0]; const vr = latest.verifyResult!; console.log(`  ${thinDivider()}`); console.log(`  ${C.dim('验证结果')}  ${vr.overall === 'pass' ? C.success('通过') : C.error('失败')}  ${C.dim('任务 ' + latest.id.substring(0, 10))}`); for (const s of vr.stages) { const icon = s.status === 'pass' ? I.ok : s.status === 'fail' ? I.err : I.warn; const dur = s.duration > 0 ? ' ' + C.dim((s.duration / 1000).toFixed(1) + 's') : ''; const ec = s.exitCode != null ? ' ' + C.dim('退出码=' + s.exitCode) : ''; const stageStatus = s.status === 'pass' ? '通过' : s.status === 'fail' ? '失败' : '警告'; console.log('  ' + icon + ' ' + s.stage.padEnd(16) + C.dim(stageStatus) + dur + ec); if (s.command) console.log('    ' + C.dim('$ ' + s.command.substring(0, 65))); if (s.status === 'fail') { const et = s.stderr || s.errorDetails || ''; if (et.trim()) { for (const l of et.trim().split('\n').filter((l: string) => l.trim()).slice(0, 3)) console.log('    ' + C.error(l.substring(0, 80).trim())); } } } console.log(''); } catch {} }
+async function printReplVerifyStatus(): Promise<void> { try { const { listTasks } = await import('../core/task-engine.js'); const tasks = await listTasks(process.cwd()); const withVr = tasks.filter(t => t.verifyResult); if (withVr.length === 0) return; const latest = withVr[0]; const vr = latest.verifyResult!; console.log(`  ${thinDivider()}`); console.log(`  ${C.dim('验证结果')}  ${vr.overall === 'pass' ? C.success('通过') : C.error('失败')}  ${C.dim('任务 ' + latest.id.substring(0, 10))}`); for (const s of vr.stages) { const icon = s.status === 'pass' ? I.ok : s.status === 'fail' ? I.err : I.warn; const dur = s.duration > 0 ? ' ' + C.dim((s.duration / 1000).toFixed(1) + 's') : ''; const ec = s.exitCode != null ? ' ' + C.dim('退出码=' + s.exitCode) : ''; const stageStatus = s.status === 'pass' ? '通过' : s.status === 'fail' ? '失败' : '警告'; console.log('  ' + icon + ' ' + s.stage.padEnd(16) + C.dim(stageStatus) + dur + ec); if (s.command) console.log('    ' + C.dim('$ ' + s.command.substring(0, 65))); if (s.status === 'fail') { const et = s.stderr || s.errorDetails || ''; if (et.trim()) { for (const l of et.trim().split('\n').filter((l: string) => l.trim()).slice(0, 3)) console.log('    ' + C.error(l.substring(0, 80).trim())); } } } console.log(''); } catch { /* best-effort */ } }
 
 async function cmdDoctor(): Promise<void> {
   const cwd = process.cwd();
@@ -2210,7 +2467,7 @@ async function cmdDoctor(): Promise<void> {
   try {
     await fsp.access(indexPath);
     indexExists = true;
-  } catch {}
+  } catch { /* best-effort */ }
 
   const providerStatus = config ? getProviderStatus(config.ai) : getProviderStatus(state.aiConfig);
   const ready = Boolean(config && providerStatus.ready && indexExists);
@@ -2253,47 +2510,125 @@ async function cmdDoctor(): Promise<void> {
 // ============================================================
 // Renderers
 // ============================================================
-let tableHeaderSeen = false;
+const tableBuffer: string[][] = [];
+let tableAligns: ('left' | 'center' | 'right')[] = [];
+let tableHasHeader = false;
+
+function flushTableBuffer(maxW: number): void {
+  if (tableBuffer.length === 0) return;
+  const rows = tableBuffer;
+  const cols = rows[0].length;
+  const aligns = tableAligns.length === cols ? tableAligns : Array(cols).fill('left');
+
+  // Calculate column widths from actual content (strip ANSI)
+  const colWidths: number[] = Array(cols).fill(4);
+  for (const row of rows) {
+    for (let i = 0; i < cols; i++) {
+      colWidths[i] = Math.max(colWidths[i], displayWidth(row[i]) + 2);// +2 padding
+    }
+  }
+  // Cap total width, distributing cuts from rightmost column first
+  const borderOverhead = 4 + (cols - 1) * 3; // "  │ │ " style
+  let totalW = colWidths.reduce((a, b) => a + b, 0) + borderOverhead;
+  if (totalW > maxW) {
+    let excess = totalW - maxW;
+    for (let i = cols - 1; i >= 0 && excess > 0; i--) {
+      const cut = Math.min(excess, Math.max(0, colWidths[i] - 5)); // keep at least 5 display units wide
+      colWidths[i] -= cut;
+      excess -= cut;
+    }
+  }
+
+  const padCell = (text: string, w: number, align: string): string => {
+    const clean = text.replace(/\x1b\[[0-9;]*m/g, '');
+    const len = displayWidth(text);
+    if (len >= w) {
+      if (w <= 3) return '…';
+      // Truncate by display width, not JS char count
+      let dw = 0; let cut = 0;
+      for (const ch of clean) { const cw = CJK_RX.test(ch) ? 2 : 1; if (dw + cw > w - 1) break; dw += cw; cut++; }
+      return clean.substring(0, cut) + '…';
+    }
+    const pad = w - len;
+    if (align === 'right') return ' '.repeat(pad) + text;
+    if (align === 'center') {
+      const left = Math.floor(pad / 2);
+      return ' '.repeat(left) + text + ' '.repeat(pad - left);
+    }
+    return text + ' '.repeat(pad); // left
+  };
+
+  const borderTop = C.dim('╭' + colWidths.map(w => '─'.repeat(w)).join('┬') + '╮');
+  const borderMid = C.dim('├' + colWidths.map(w => '─'.repeat(w)).join('┼') + '┤');
+  const borderBot = C.dim('╰' + colWidths.map(w => '─'.repeat(w)).join('┴') + '╯');
+
+  process.stdout.write(`  ${borderTop}\n`);
+
+  const headerRow = rows[0];
+  const dataStart = tableHasHeader ? 1 : 0;
+  if (tableHasHeader && rows.length > 0) {
+    const rendered = headerRow.map((c, i) => chalk.bold(padCell(c, colWidths[i], aligns[i]))).join(C.dim(' │ '));
+    process.stdout.write(`  ${C.dim('│')} ${rendered} ${C.dim('│')}\n`);
+    process.stdout.write(`  ${borderMid}\n`);
+  }
+
+  for (let r = dataStart; r < rows.length; r++) {
+    const rendered = rows[r].map((c, i) => padCell(renderInlineFormatting(c), colWidths[i], aligns[i])).join(C.dim(' │ '));
+    process.stdout.write(`  ${C.dim('│')} ${rendered} ${C.dim('│')}\n`);
+  }
+
+  process.stdout.write(`  ${borderBot}\n`);
+  tableBuffer.length = 0;
+  tableAligns = [];
+  tableHasHeader = false;
+}
+
 function renderMarkdownLine(line: string, maxW: number): void {
-  if (line.trim() === '') { tableHeaderSeen = false; process.stdout.write('\n'); return; }
-  const hM = line.match(/^(#{1,4})\s+(.+)/); if (hM) { tableHeaderSeen = false; const t = hM[2]; process.stdout.write('  ' + (hM[1].length === 1 ? chalk.bold.underline(C.bright(t)) : chalk.bold(C.bright(t))) + '\n'); return; }
-  if (line.trim().startsWith('> ')) { tableHeaderSeen = false; process.stdout.write(`  ${C.dim('▎')} ${C.dim(line.trim().slice(2))}\n`); return; }
-  if (/^[-*_]{3,}\s*$/.test(line.trim())) { tableHeaderSeen = false; process.stdout.write(`  ${C.dim('─'.repeat(Math.min(maxW, 60)))}\n`); return; }
-  const ulM = line.match(/^(\s*)[-*+]\s+(.+)/); if (ulM) { tableHeaderSeen = false; process.stdout.write('  ' + C.primary('•') + ' ' + renderInlineFormatting(ulM[2]) + '\n'); return; }
-  const olM = line.match(/^(\s*)(\d+)\.\s+(.+)/); if (olM) { tableHeaderSeen = false; process.stdout.write('  ' + C.dim(olM[2] + '.') + ' ' + renderInlineFormatting(olM[3]) + '\n'); return; }
-  // Table rows
+  if (line.trim() === '') { flushTableBuffer(maxW); process.stdout.write('\n'); return; }
+  const hM = line.match(/^(#{1,4})\s+(.+)/); if (hM) { flushTableBuffer(maxW); if (hM[1].length <= 2) process.stdout.write('\n'); const t = hM[2]; process.stdout.write('  ' + (hM[1].length === 1 ? chalk.bold.underline(C.bright(t)) : chalk.bold(C.bright(t))) + '\n'); return; }
+  if (line.trim().startsWith('> ')) { flushTableBuffer(maxW); process.stdout.write(`  ${C.dim('▎')} ${C.dim(line.trim().slice(2))}\n`); return; }
+  if (/^[-*_]{3,}\s*$/.test(line.trim())) { flushTableBuffer(maxW); process.stdout.write(`  ${C.dim('─'.repeat(Math.min(maxW, 60)))}\n`); return; }
+  const ulM = line.match(/^(\s*)[-*+]\s+(.+)/); if (ulM) { flushTableBuffer(maxW); process.stdout.write('  ' + C.primary('•') + ' ' + renderInlineFormatting(ulM[2]) + '\n'); return; }
+  const olM = line.match(/^(\s*)(\d+)\.\s+(.+)/); if (olM) { flushTableBuffer(maxW); process.stdout.write('  ' + C.dim(olM[2] + '.') + ' ' + renderInlineFormatting(olM[3]) + '\n'); return; }
+
+  // Table rows — buffer for column-width calculation
   if (line.trim().startsWith('|') && line.trim().endsWith('|')) {
     const cells = line.trim().split('|').filter(c => c.trim()).map(c => c.trim());
-    if (cells.length === 0) { tableHeaderSeen = false; process.stdout.write('\n'); return; }
-    // Separator row: |---|----|
+    if (cells.length === 0) return;
+    // Separator row: |---|----| — parse alignment
     if (cells.every(c => /^:?-{3,}:?$/.test(c))) {
-      tableHeaderSeen = true;
-      const colW = Math.max(8, Math.floor((maxW - 4 - cells.length * 3) / cells.length));
-      process.stdout.write(`  ${C.dim('├' + cells.map(() => '─'.repeat(colW + 2)).join('┼') + '┤')}\n`);
+      tableAligns = cells.map(c => {
+        if (c.startsWith(':') && c.endsWith(':')) return 'center';
+        if (c.endsWith(':')) return 'right';
+        return 'left';
+      });
+      tableHasHeader = true;
       return;
     }
-    const isHeader = !tableHeaderSeen && cells.length > 0;
-    if (isHeader) tableHeaderSeen = true;
-    // Calculate cell width based on terminal width and column count
-    const colW = Math.max(8, Math.floor((maxW - 4 - cells.length * 3) / cells.length));
-    const rendered = cells.map((_c, i) => {
-      const c = cells[i];
-      const display = c.length > colW ? c.substring(0, colW - 1) + '…' : c.padEnd(colW);
-      return isHeader ? chalk.bold(display) : renderInlineFormatting(display);
-    }).join(C.dim(' │ '));
-    process.stdout.write(`  ${C.dim('│')} ${rendered} ${C.dim('│')}\n`);
+    tableBuffer.push(cells);
     return;
   }
-  tableHeaderSeen = false;
+
+  // Not a table row — flush any buffered table, then render normal line
+  flushTableBuffer(maxW);
   process.stdout.write('  ' + renderInlineFormatting(line) + '\n');
 }
-function renderInlineFormatting(text: string): string { let t = text; t = t.replace(/\*\*(.+?)\*\*/g, (_, m) => chalk.bold(m)); t = t.replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, (_, m) => chalk.italic(m)); t = t.replace(/`([^`]+)`/g, (_, m) => C.accent(m)); return t; }
+function renderInlineFormatting(text: string): string { if (!text) return ''; let t = text; t = t.replace(/\*\*(.+?)\*\*/g, (_, m) => chalk.bold(m)); t = t.replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, (_, m) => chalk.italic(m)); t = t.replace(/`([^`]+)`/g, (_, m) => C.accent(m)); return t; }
 
 function printFooter(_hasFiles: boolean): void {
   // S20 panel handles file confirmation — old inline system disabled
 }
 
-function stripAnsiLen(str: string): number { return str.replace(/\x1b\[[0-9;]*m/g, '').length; }
+function stripAnsiLen(str: string): number { if (!str) return 0; return str.replace(/\x1b\[[0-9;]*m/g, '').length; }
+
+// Terminal display width — CJK/fullwidth chars count as 2 columns
+const CJK_RX = /[一-鿿㐀-䶿豈-﫿　-〿＀-￯぀-ヿ가-힯⺀-⿟]/g;
+function displayWidth(str: string): number {
+  if (!str) return 0;
+  const clean = str.replace(/\x1b\[[0-9;]*m/g, '');
+  const cjkCount = (clean.match(CJK_RX) || []).length;
+  return clean.length + cjkCount; // CJK chars count as 1 in .length, add 1 more for terminal width
+}
 
 // S20.2 Waiting UX — three-phase feedback
 const WAIT_PULSE = ['◉', '◔', '◑', '◕'];
@@ -2311,12 +2646,8 @@ function startWaitingPhase(): void {
     if (streamState === 'idle') { stopWaitingPhase(); return; }
     const elapsed = ((Date.now() - waitingStartTime) / 1000).toFixed(1);
     const pulse = WAIT_PULSE[spinnerIdx];
-    const barLen = 20;
-    const progI = Math.min(Math.floor((tick * 3) % barLen), barLen - 1);
-    const bar = WAIT_BAR.repeat(progI) + WAIT_BAR_EMPTY.repeat(barLen - progI);
-    process.stdout.write(`\r  ${C.primary(pulse)} ${chalk.bold('AI')} ${C.dim(waitingActivity)} ${C.primary(`[${elapsed}s]`)}  ${C.dim(bar)}`);
+    process.stdout.write(`\r  ${C.primary(pulse)} ${chalk.bold('AI')} ${C.dim(waitingActivity)} ${C.dim(`[${elapsed}s]`)}`);
     spinnerIdx = (spinnerIdx + 1) % WAIT_PULSE.length;
-    // Show hint after 10s
     if (tick === 125) {
       process.stdout.write(`\n  ${C.dim('复杂任务可能需要 10-30 秒，Ctrl+C 可中断')}`);
     }
@@ -2338,7 +2669,7 @@ function startSpinner(): void { startWaitingPhase(); }
 function stopSpinner(): void { stopWaitingPhase(); }
 
 export async function replCompleter(line: string): Promise<[string[], string]> {
-  if (!line.startsWith('/')) return [[], line];
+  if (!line.startsWith('/') && !line.startsWith('!')) return [[], line];
 
   const providerNames = getAvailableProviders().map(provider => provider.name);
   const trimmedRight = line.replace(/\s+$/, '');
@@ -2453,7 +2784,7 @@ const ALL_PALETTE = [
 ];
 
 async function cmdCommandPalette(query: string): Promise<void> {
-  const filtered = query ? ALL_PALETTE.filter(c => c.name.includes(query) || c.desc.includes(query) || c.aliases.includes(query)) : ALL_PALETTE;
+  const q = query.toLowerCase(); const filtered = query ? ALL_PALETTE.filter(c => c.name.toLowerCase().includes(q) || c.desc.includes(query) || c.aliases.toLowerCase().includes(q)) : ALL_PALETTE;
   console.log(`\n  ${C.accent('╭─')} ${C.accent('命令面板')} ${C.dim(`(${filtered.length} 个)`)} ${C.accent('─'.repeat(50)) + '╮'}`);
   if (query) console.log(`  ${C.accent('│')} ${C.dim('搜索:')} ${C.accent(query)}`);
   console.log(`  ${C.accent('│')}`);
@@ -2494,17 +2825,20 @@ function resolveApiKeyForProvider(provider: AIProvider): string {
   return '';
 }
 
+let _offlineNotified = false;
 function enableOfflineModeIfMissingKey(): { provider: AIProvider } | null {
   const status = getProviderStatus(state.aiConfig);
   if (status.ready || !status.requiresApiKey) return null;
 
-  // Key is missing — fall back to mock so the system still works,
-  // but remember the user's intended provider for when they add a key
   const previousProvider = state.aiConfig.provider;
   state._pendingKeyProvider = previousProvider;
   state.aiConfig.provider = 'mock';
   state.aiConfig.model = getProviderInfo('mock').defaultModel;
   state.aiConfig.apiKey = '';
+  if (!_offlineNotified) {
+    _offlineNotified = true;
+    console.log(`  ${C.dim('已自动切换到 mock 模式（Key 未配置）。输入 /apikey 配置真实模型。')}\n`);
+  }
   return { provider: previousProvider };
 }
 
@@ -2519,9 +2853,9 @@ function printProviderKeyHelp(provider: AIProvider): void {
   console.log('');
 }
 
-async function loadGlobalConfig(): Promise<void> { try { const fsp = await import('fs/promises'); const path = await import('path'); const home = process.env.HOME || process.env.USERPROFILE || '~'; const cp = path.join(home, '.icloser', 'config.json'); const cfg = JSON.parse(await fsp.readFile(cp, 'utf-8')); const ai = cfg.ai || {}; if (ai.provider) state.aiConfig.provider = ai.provider; if (ai.model) state.aiConfig.model = ai.model; if (ai.apiKey) state.aiConfig.apiKey = ai.apiKey; if (ai.maxTokens) state.aiConfig.maxTokens = ai.maxTokens; } catch {} }
-async function saveSession(): Promise<void> { try { const fsp = await import('fs/promises'); const path = await import('path'); const home = process.env.HOME || process.env.USERPROFILE || '~'; const sp = path.join(home, '.icloser', 'session.json'); const cwd = process.cwd(); const recentFiles = state.lastWrittenFiles.slice(-20).map(file => ({ path: file.path, fullPath: file.fullPath, lines: file.lines, content: '' })); await fsp.mkdir(path.dirname(sp), { recursive: true }); await fsp.writeFile(sp, JSON.stringify({ projectRoot: cwd, projectName: state.context.projectName, language: state.context.language, framework: state.context.framework, conversation: state.conversation.slice(-20), lastWrittenFiles: recentFiles, savedAt: new Date().toISOString() }, null, 2), 'utf-8'); } catch {} }
-async function loadSession(): Promise<boolean> { try { const fsp = await import('fs/promises'); const path = await import('path'); const home = process.env.HOME || process.env.USERPROFILE || '~'; const sp = path.join(home, '.icloser', 'session.json'); const data = JSON.parse(await fsp.readFile(sp, 'utf-8')); if (Date.now() - new Date(data.savedAt as string).getTime() > 86400000) return false; const savedRoot = data.projectRoot ? path.resolve(String(data.projectRoot)) : ''; const currentRoot = path.resolve(process.cwd()); if (savedRoot !== currentRoot) return false; if (data.conversation) state.conversation = data.conversation as Message[]; if (Array.isArray(data.lastWrittenFiles)) state.lastWrittenFiles = data.lastWrittenFiles.map((file: Partial<PendingFile>) => ({ path: file.path || '', fullPath: file.fullPath, lines: file.lines || 0, content: '' })).filter((file: PendingFile) => file.path); return state.conversation.length > 0 || state.lastWrittenFiles.length > 0; } catch { return false; } }
+async function loadGlobalConfig(): Promise<void> { try { const fsp = await import('fs/promises'); const path = await import('path'); const home = process.env.HOME || process.env.USERPROFILE || '~'; const cp = path.join(home, '.icloser', 'config.json'); const raw = await fsp.readFile(cp, 'utf-8'); try { const cfg = JSON.parse(raw); const ai = cfg.ai || {}; if (ai.provider) state.aiConfig.provider = ai.provider; if (ai.model) state.aiConfig.model = ai.model; if (ai.apiKey) state.aiConfig.apiKey = ai.apiKey; if (ai.maxTokens) state.aiConfig.maxTokens = ai.maxTokens; } catch { const fsp2 = await import('fs/promises'); const path2 = await import('path'); const bak = cp + '.corrupted.' + Date.now(); await fsp2.copyFile(cp, bak).catch(() => {}); await fsp2.unlink(cp).catch(() => {}); console.log(`  ${C.warn('!')} 配置文件损坏，已备份至 ${path2.basename(bak)} 并重置\n`); } } catch { /* best-effort */ } }
+async function saveSession(): Promise<void> { try { const fsp = await import('fs/promises'); const path = await import('path'); const home = process.env.HOME || process.env.USERPROFILE || '~'; const sp = path.join(home, '.icloser', 'session.json'); const cwd = process.cwd(); const recentFiles = state.lastWrittenFiles.slice(-20).map(file => ({ path: file.path, fullPath: file.fullPath, lines: file.lines, content: '' })); const KEY_RX = /\b(sk-ant-[a-zA-Z0-9_-]{20,}|sk-or-[a-zA-Z0-9_-]{20,}|dashscope-[a-zA-Z0-9_-]{10,}|sk-[a-zA-Z0-9]{20,})\b/g; const sanitize = (c: Message) => ({ ...c, content: typeof c.content === 'string' ? c.content.replace(KEY_RX, '***API_KEY_MASKED***') : c.content }); const conversation = state.conversation.slice(-20).map(sanitize); await fsp.mkdir(path.dirname(sp), { recursive: true }); await fsp.writeFile(sp, JSON.stringify({ projectRoot: cwd, projectName: state.context.projectName, language: state.context.language, framework: state.context.framework, conversation, lastWrittenFiles: recentFiles, savedAt: new Date().toISOString() }, null, 2), 'utf-8'); } catch { /* best-effort */ } }
+async function loadSession(): Promise<boolean> { try { const fsp = await import('fs/promises'); const path = await import('path'); const home = process.env.HOME || process.env.USERPROFILE || '~'; const sp = path.join(home, '.icloser', 'session.json'); const data = JSON.parse(await fsp.readFile(sp, 'utf-8')); if (Date.now() - new Date(data.savedAt as string).getTime() > 86400000) { const ageH = Math.round((Date.now() - new Date(data.savedAt as string).getTime()) / 3600000); console.log(`  ${C.dim('上次会话已过期（' + ageH + ' 小时前），已打开新会话')}\n`); return false; } const savedRoot = data.projectRoot ? path.resolve(String(data.projectRoot)) : ''; const currentRoot = path.resolve(process.cwd()); if (savedRoot !== currentRoot) return false; if (data.conversation) state.conversation = data.conversation as Message[]; if (Array.isArray(data.lastWrittenFiles)) state.lastWrittenFiles = data.lastWrittenFiles.map((file: Partial<PendingFile>) => ({ path: file.path || '', fullPath: file.fullPath, lines: file.lines || 0, content: '' })).filter((file: PendingFile) => file.path); return state.conversation.length > 0 || state.lastWrittenFiles.length > 0; } catch { return false; } }
 async function detectProjectContext(): Promise<void> {
   const path = await import('path');
   const cwd = process.cwd();
@@ -2552,33 +2886,56 @@ async function detectProjectContext(): Promise<void> {
       state.context.language = 'Rust';
       state.context.buildSystem = 'cargo';
     }
-  } catch {}
+  } catch { /* best-effort */ }
 }
-async function buildSystemPrompt(): Promise<string> {
+async function buildSystemPrompt(withTools = false): Promise<string> {
   const ctx = state.context;
   const idx = state.projectIndex;
   const cwd = process.cwd();
   let p = '你是 iCloser Agent Shell，运行在用户当前项目目录里的终端 AI 工程助手。\n';
-  p += '你可以基于 iCloser 已注入的项目索引、相关源码片段和记忆进行分析。';
-  p += '不要回答”我无法访问文件系统/当前路径/目录”；如果上下文不足，应说明已掌握的路径和建议用户运行 /scan 或指定更具体范围。\n\n';
+  if (withTools) {
+    p += '**你拥有完整的工具调用能力，可以自主决定何时使用工具。**\n';
+    p += '可用工具：\n';
+    p += '  - get_project_overview(deep?): 一键获取项目完整画像（技术栈/模块/测试/架构），分析项目时优先调用\n';
+    p += '  - read_file(path): 读取任何文件（含 PDF/HTML/PPTX/DOCX/XLSX 自动解析）\n';
+    p += '  - search_code(pattern): 正则搜索项目代码\n';
+    p += '  - code_intel(file, symbol?): 查询符号定义/引用\n';
+    p += '  - run_command(command): 执行命令（构建/测试等）\n';
+    p += '  - web_search(query): 搜索网络\n';
+    p += '  - web_fetch(url): 抓取网页全文\n';
+    p += '规则：\n';
+    p += '  1. 需要读取文件时直接调用 read_file——不要问用户，不要说我无法访问\n';
+    p += '  2. 不确定文件路径时先用 search_code 定位\n';
+    p += '  3. 获取工具结果后必须基于实际内容回答，不要编造\n';
+    p += '  4. 工具调用是自动的——你说"让我查看..."就是调用工具，不要说"我无法调用"\n\n';
+    p += '## 项目分析策略（分析项目时的必读清单）\n';
+    p += '分析项目时，你必须先定位构建文件来确定真实技术栈。不要只看根目录文件名就下结论。\n';
+    p += '按优先级搜索 (第1个找到并成功读取即停止):\n';
+    p += '  - Java/Maven: 查找 pom.xml (可能在根目录/server/backend/ 下)\n';
+    p += '  - Java/Gradle: 查找 build.gradle / build.gradle.kts / settings.gradle\n';
+    p += '  - Spring Boot: pom.xml 中有 spring-boot-starter 依赖 → Java + Spring Boot 项目\n';
+    p += '  - Node/JS/TS: 查找 package.json (可能在根目录/web/frontend/app/ 下)\n';
+    p += '  - Angular: package.json 中有 @angular/core → Angular 项目\n';
+    p += '  - React: package.json 中有 react → React 项目\n';
+    p += '  - Go: 查找 go.mod\n';
+    p += '  - Rust: 查找 Cargo.toml\n';
+    p += '  - Python: 查找 requirements.txt / pyproject.toml / setup.py\n';
+    p += '  - Docker: 查找 Dockerfile / docker-compose.yml (可能在根目录/database/deploy/ 下)\n';
+    p += '  - 数据库: 检查 docker-compose.yml 的 services 字段 / .env 中的 DATABASE_URL\n';
+    p += '重点：子目录中存在多个构建文件 = 多模块/多语言项目。每个子项目的构建文件都要读。\n\n';
+  } else {
+    p += '**重要：这里是对话模式，你无法调用工具（read_file/search_code/run_command）。**\n';
+    p += '你的所有分析必须基于下方已注入的项目上下文。不要说”让我读取文件”或”我先检查”——你没有这个能力。\n';
+    p += '直接基于已注入的索引、源码片段和记忆给出分析结论，不要描述你”将要”做什么。\n\n';
+  }
   p += '## 当前工作目录\n' + cwd + '\n\n';
   p += '## 项目\n- 名称: ' + (ctx.projectName || cwd.split(/[/\\]/).pop() || '—') + '\n- 语言: ' + (ctx.language || '—') + '\n- 框架: ' + (ctx.framework || '—') + '\n- OS: ' + process.platform;
 
-  // S17.1: Tool capability injection
-  try {
-    let capabilities: { name: string; status: string; purpose: string; fallback: string }[] = [];
-    try { const mod = await import('../core/tool-registry.js'); capabilities = mod.buildToolCapabilitySnapshot().capabilities; } catch {}
-    p += '\n\n## 本地工具能力（S17.1）';
-    p += '\n' + capabilities.map(c => {
-      if (c.status === 'available') return `- ${c.name}：${c.purpose}`;
-      return `- ${c.name}（降级）：${c.fallback}`;
-    }).join('\n');
-  } catch { /* non-critical */ }
-
   if (idx) {
-    p += '\n\n## 结构\n文件: ' + idx.fileCount + ' | 模块: ' + idx.moduleCount + ' | 架构: ' + idx.architecture + '\n' + idx.modules.slice(0, 10).map(m => '- ' + m.name + ' (' + m.files + ' 文件)').join('\n');
+    p += '\n\n## 项目索引（已注入，可直接引用）\n文件: ' + idx.fileCount + ' | 模块: ' + idx.moduleCount + ' | 架构: ' + idx.architecture + '\n' + idx.modules.slice(0, 10).map(m => '- ' + m.name + ' (' + m.files + ' 文件)').join('\n');
   }
-  p += '\n\n## 回答规则\n1. 用户要求分析当前目录、整个目录、代码质量、项目结构时，直接基于已注入上下文分析，不要要求用户粘贴文件\n2. 需要写文件时，只输出一个 JSON 代码块\n3. JSON 结构为 {“summary”:”本次修改摘要”,”changes”:[{“file”:”相对路径”,”operation”:”write”,”content”:”完整文件内容”,”reasoning”:”为什么修改”}]}\n4. changes 至少 1 项，operation 只能是 write，content 必须是完整文件内容\n5. 中文说明写在 summary/reasoning 中，代码术语保留英文\n6. 不需要写文件时，简洁直接回复，并列出依据的文件/模块';
+  p += '\n\n## 回答规则\n1. 直接分析，不要描述过程。用”该项目是...”而不是”让我先...”\n2. 分析时引用具体模块名和文件数（从上方索引获取）\n3. 如果需要更深入的信息，建议用户运行 /scan 更新索引';
+  if (!withTools) p += '\n4. 不要尝试或模拟任何工具调用';
   return p;
 }
 
@@ -2586,6 +2943,7 @@ async function buildRichContext(input: string): Promise<ContextPackage> {
   const rootPath = state.projectRoot || process.cwd();
   try {
     const { assembleContextFromProject } = await import('../core/context.js');
+    const isAnalysisIntent = isWholeProjectAnalysisIntent(input) || /(分析|检查|审查|review|audit|项目结构|技术栈|完成度|质量)/.test(input);
     const context = await assembleContextFromProject(
       rootPath,
       {
@@ -2602,7 +2960,12 @@ async function buildRichContext(input: string): Promise<ContextPackage> {
         maxRetries: 3,
         agentExecutions: [],
       },
-      { maxTokens: 24000, scanIfMissing: true }
+      {
+        maxTokens: isAnalysisIntent ? 80000 : 24000, // analysis gets 80K token budget
+        scanIfMissing: true,
+        deep: isAnalysisIntent,
+        includeTests: isAnalysisIntent,
+      }
     );
 
     const { loadProjectIndex } = await import('../core/scanner.js');
@@ -2644,7 +3007,7 @@ async function buildFallbackDirectoryContext(rootPath: string): Promise<ContextP
         if (entry.isDirectory()) await walk(full, depth + 1);
         else files.push(path.relative(rootPath, full).replace(/\\/g, '/'));
       }
-    } catch {}
+    } catch { /* best-effort */ }
   }
   await walk(rootPath, 0);
   return {
@@ -2965,7 +3328,7 @@ async function cmdDocsSlash(args: string): Promise<void> {
     if (sub === 'ask' || sub === 'a') {
       if (!rest) { console.log(`  ${C.dim('用法: /docs ask 你的问题')}\n`); return; }
       console.log(`  ${C.primary('◉')} ${C.dim('查询文档中...')}`);
-      const index = state.projectIndex as unknown as import('../types.js').ProjectIndex || { modules: [], identity: { language: 'unknown', framework: 'unknown', database: 'unknown', buildSystem: 'unknown', testFramework: 'unknown', runtime: 'node', languageVersion: 'unknown', deploymentType: 'unknown', packageManager: 'npm' } };
+      const index = state.projectIndex as unknown as import('../types.js').ProjectIndex || { modules: [], identity: { language: 'unknown', framework: 'unknown', database: 'unknown', buildSystem: 'unknown', testFramework: 'unknown', runtime: 'node', languageVersion: 'unknown', deploymentType: 'unknown', packageManager: 'npm', detectionConfidence: 'low' as const } };
       const answer = await askDocs(process.cwd(), rest, index, { ai: config.ai });
       console.log(`\n  ${answer}\n`);
     } else if (sub === 'summarize' || sub === 's') {

@@ -20,6 +20,177 @@ function recordToolUse(name: string, success: boolean): void {
   toolStats.set(name, s);
 }
 
+// ── P1-3: Adaptive retry tracking ──
+interface ToolAttempt {
+  tool: string;
+  args: Record<string, unknown>;
+  resultSummary: string;  // "found 5 matches" | "empty" | "error"
+  timestamp: number;
+}
+const toolAttemptsPerTask = new Map<string, ToolAttempt[]>();
+
+export function recordToolAttempt(taskId: string, tool: string, args: Record<string, unknown>, resultSummary: string): void {
+  if (!toolAttemptsPerTask.has(taskId)) toolAttemptsPerTask.set(taskId, []);
+  const history = toolAttemptsPerTask.get(taskId)!;
+  history.push({ tool, args, resultSummary, timestamp: Date.now() });
+  // Keep only last 20 attempts per task
+  if (history.length > 20) history.splice(0, history.length - 20);
+}
+
+export function getAdaptiveStrategyHint(taskId: string): string {
+  const history = toolAttemptsPerTask.get(taskId);
+  if (!history || history.length < 3) return '';
+
+  const recent = history.slice(-3);
+  const allEmpty = recent.every(a => a.resultSummary.includes('empty') || a.resultSummary.includes('未找到') || a.resultSummary.includes('0 条'));
+  const sameTool = new Set(recent.map(a => a.tool)).size === 1;
+
+  if (allEmpty && sameTool) {
+    const toolName = recent[0].tool;
+    const hints: Record<string, string> = {
+      search_code: `[策略提示] 最近 3 次 ${toolName} 均未找到结果。建议: (1) 更换搜索关键词 (2) 改用 read_file 直接查看文件 (3) 用 code_intel 查询符号。`,
+      read_file: `[策略提示] 最近 3 次 ${toolName} 读取失败。建议检查文件路径是否正确，或用 search_code 定位文件。`,
+      run_command: `[策略提示] 最近 3 次 ${toolName} 执行失败。建议改用 read_file 或 search_code 代替命令。`,
+    };
+    return hints[toolName] || `[策略提示] 最近 3 次 ${toolName} 均未成功。建议切换工具重试。`;
+  }
+  return '';
+}
+
+export function clearToolAttempts(taskId: string): void {
+  toolAttemptsPerTask.delete(taskId);
+}
+
+// ── P1-2: Shared result compression ──
+
+function compressFileContent(lines: string[], totalLines: number): string {
+  if (totalLines <= 200) return lines.join('\n');
+  const keyLines = lines.filter((l, i) =>
+    i < 30 || i > totalLines - 10 ||
+    /^(import|export|function|class|interface|type|const|let|var|public|private|#|##|\/\/|func |def |package )/.test(l)
+  );
+  return keyLines.slice(0, 100).join('\n') + `\n... (${totalLines} 行，已压缩为关键行)`;
+}
+
+function compressSearchResults(results: string[], maxFull: number, tailKeep: number): string {
+  if (results.length <= maxFull) {
+    return `找到 ${results.length} 条匹配:\n${results.join('\n')}`;
+  }
+  const head = results.slice(0, maxFull);
+  const tail = results.slice(-tailKeep);
+  const header = `找到 ${results.length} 条匹配 (显示前 ${maxFull} + 后 ${tailKeep}):\n`;
+  return header + head.join('\n') + `\n... 省略 ${results.length - maxFull - tailKeep} 条 ...\n` + tail.join('\n') +
+    '\n(结果过多，请缩小搜索范围或用更精确的关键词)';
+}
+
+function compressCommandOutput(output: string): string {
+  const lines = output.split('\n');
+  const maxLines = 300;
+  if (lines.length <= maxLines) {
+    return output.length > 2000 ? output.slice(0, 2000) + '\n... (输出已截断至 2000 字符)' : output;
+  }
+  const head = lines.slice(0, 50);
+  const tail = lines.slice(-20);
+  return head.join('\n') + `\n... 省略 ${lines.length - 70} 行 ...\n` + tail.join('\n') +
+    `\n(输出共 ${lines.length} 行，已压缩为关键行)`;
+}
+
+// ── P1-4: Platform-aware command auto-conversion ──
+
+const WIN_CMD_MAP: Record<string, string> = {
+  ls: 'dir', grep: 'findstr /n', cat: 'type',
+  tail: 'powershell -Command "Get-Content -Tail', head: 'powershell -Command "Get-Content -Head',
+  which: 'where', wget: 'curl -o', cp: 'copy', mv: 'move',
+  mkdir: 'mkdir', rm: 'del /q', chmod: 'attrib', diff: 'fc',
+  wc: 'powershell -Command "(Get-Content %f | Measure-Object -Line).Lines"',
+  sort: 'sort', uniq: 'powershell -Command "Get-Unique"', tar: 'tar',
+  env: 'set', kill: 'taskkill /f /im', ps: 'tasklist',
+  awk: 'powershell -Command', sed: 'powershell -Command',
+  xargs: 'powershell -Command "ForEach-Object"', uname: 'ver',
+  touch: 'type nul >', clear: 'cls', pwd: 'cd', whoami: 'whoami',
+  hostname: 'hostname', date: 'date /t', sleep: 'timeout /t',
+  // Multi-language build tools
+  mvnw: 'mvnw.cmd', gradlew: 'gradlew.bat',
+  python3: 'python', pip3: 'pip',
+};
+
+const WIN_CMD_REWRITE: Record<string, (args: string[]) => string> = {
+  tail: (args) => `powershell -Command "Get-Content -Tail ${args[0] || '10'} ${args.slice(1).join(' ')}"`,
+  head: (args) => `powershell -Command "Get-Content -Head ${args[0] || '10'} ${args.slice(1).join(' ')}"`,
+  find: (args) => `dir /s /b ${args.join(' ')} 2>nul`,
+  grep: (args) => `findstr /n /i ${args.join(' ')}`,
+  tar: (args) => `tar ${args.join(' ')}`,
+};
+
+// Gate-3: Tool-strategy validator — verify tool calls match intent strategy
+export async function validateToolCallForIntent(
+  toolName: string,
+  intentCategory: string,
+): Promise<{ valid: boolean; suggestion?: string }> {
+  // Lazy-load strategy module to avoid circular deps
+  const { getStrategyForIntent } = await import('./tool-strategy.js');
+  const strategy = getStrategyForIntent(intentCategory as any);
+  if (!strategy || strategy.steps.length === 0) return { valid: true }; // no strategy = no validation
+
+  const toolInStrategy = strategy.steps.some((s: any) => s.tool === toolName);
+  if (!toolInStrategy) {
+    const expectedTools = strategy.steps.map((s: any) => s.tool).join(', ');
+    return {
+      valid: false,
+      suggestion: `工具 "${toolName}" 不在意图 "${intentCategory}" 的推荐策略中。推荐: ${expectedTools}`,
+    };
+  }
+  return { valid: true };
+}
+
+function isWindows(): boolean { return process.platform === 'win32'; }
+
+async function autoAdaptCommand(command: string, rootPath: string): Promise<{ adapted: string; wasAdapted: boolean }> {
+  if (!isWindows()) return { adapted: command, wasAdapted: false };
+
+  const trimmed = command.trim();
+  const parts = trimmed.split(/\s+/);
+  const cmd = parts[0].toLowerCase().replace(/\.exe$/, '');
+  const args = parts.slice(1);
+
+  // Check for windows-native commands (no adaptation needed)
+  const windowsNative = /^(dir|type|findstr|copy|move|del|fc|set|tasklist|taskkill|ver|cls|whoami|hostname|date|timeout|node|npm|npx(\.cmd)?|tsx|tsc|vitest|jest|pnpm|yarn|cargo|dotnet|msbuild)\b/i;
+  if (windowsNative.test(cmd)) return { adapted: command, wasAdapted: false };
+
+  // Check for mvnw/gradlew — prefer local wrappers
+  if (cmd === 'mvn' || cmd === 'mvnw') {
+    const mvnwPath = [rootPath, 'mvnw.cmd'].join('/').replace(/\/+/g, '/');
+    const mvnwAlt = [rootPath, 'mvnw'].join('/').replace(/\/+/g, '/');
+    if (await fileExists(mvnwPath)) return { adapted: 'mvnw.cmd ' + args.join(' '), wasAdapted: true };
+    if (await fileExists(mvnwAlt)) return { adapted: 'mvnw ' + args.join(' '), wasAdapted: true };
+    return { adapted: 'mvn ' + args.join(' '), wasAdapted: false };
+  }
+  if (cmd === 'gradle' || cmd === 'gradlew') {
+    const gradlewPath = [rootPath, 'gradlew.bat'].join('/').replace(/\/+/g, '/');
+    const gradlewAlt = [rootPath, 'gradlew'].join('/').replace(/\/+/g, '/');
+    if (await fileExists(gradlewPath)) return { adapted: 'gradlew.bat ' + args.join(' '), wasAdapted: true };
+    if (await fileExists(gradlewAlt)) return { adapted: 'gradlew ' + args.join(' '), wasAdapted: true };
+    return { adapted: 'gradle ' + args.join(' '), wasAdapted: false };
+  }
+
+  // Rewrite rules for commands with complex argument remapping
+  if (WIN_CMD_REWRITE[cmd]) {
+    return { adapted: WIN_CMD_REWRITE[cmd](args), wasAdapted: true };
+  }
+
+  // Simple 1:1 mapping
+  if (WIN_CMD_MAP[cmd]) {
+    return { adapted: WIN_CMD_MAP[cmd] + ' ' + args.join(' '), wasAdapted: true };
+  }
+
+  // Go/Python/Cargo: add .cmd/.exe if on Windows for known toolchains
+  if (/^(go|python3?|pip3?|rustc|rustup)$/i.test(cmd)) {
+    return { adapted: command, wasAdapted: false }; // these work via PATH on Windows too
+  }
+
+  return { adapted: command, wasAdapted: false };
+}
+
 export function getToolStats(): Record<string, { success: number; failure: number; lastUsed: number }> {
   return Object.fromEntries(toolStats);
 }
@@ -104,25 +275,90 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
       required: [],
     },
   },
+  {
+    name: 'web_fetch',
+    description: '抓取网页全文并提取正文内容（Markdown 格式）。用于获取网页的详细内容进行分析。',
+    parameters: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: '要抓取的网页 URL' },
+      },
+      required: ['url'],
+    },
+  },
+  {
+    name: 'list_dir',
+    description: '列出目录中的文件和子目录。用于探索项目结构、发现可用文件。',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: '要列出的目录路径（相对于项目根目录，默认为根目录）' },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'get_project_overview',
+    description: '获取项目完整画像：技术栈、模块列表、构建文件、测试统计、API端点、架构模式。分析项目时优先调用此工具，一次获得全局视角。',
+    parameters: {
+      type: 'object',
+      properties: {
+        deep: { type: 'boolean', description: '是否深度扫描（含 AST 解析、调用图、架构检测）。默认 true' },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'read_pdf',
+    description: '读取 PDF 文件内容。提取文本信息用于分析。',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'PDF 文件路径（相对于项目根目录）' },
+      },
+      required: ['path'],
+    },
+  },
 ];
 
 export function buildToolDefinitions(): ToolDefinition[] {
   const tools = [...TOOL_DEFINITIONS];
   if (!isWebSearchAvailable()) {
-    return tools.filter(t => t.name !== 'web_search');
+    return tools.filter(t => t.name !== 'web_search' && t.name !== 'web_fetch');
   }
   return tools;
 }
 
-export async function executeToolCall(name: string, args: Record<string, unknown>, rootPath: string): Promise<string> {
+export async function executeToolCall(name: string, args: Record<string, unknown>, rootPath: string, taskId?: string): Promise<string> {
   try {
     const result = await _executeTool(name, args, rootPath);
-    recordToolUse(name, !result.startsWith('错误') && !result.startsWith('命令执行失败') && !result.startsWith('搜索错误'));
+    const success = !result.startsWith('错误') && !result.startsWith('命令执行失败') && !result.startsWith('搜索错误');
+    recordToolUse(name, success);
+
+    // P1-3: Track attempt for adaptive retry
+    if (taskId) {
+      const summary = success ? (result.includes('找到') ? 'found' : result.includes('命令执行成功') ? 'ok' : 'ok') : result.slice(0, 50);
+      recordToolAttempt(taskId, name, args, summary);
+    }
+
     return result;
   } catch (e) {
     recordToolUse(name, false);
+    if (taskId) recordToolAttempt(taskId, name, args, 'error: ' + (e as Error).message.slice(0, 80));
     return `工具执行异常: ${(e as Error).message}`;
   }
+}
+
+/** Resolve path: absolute paths used directly, relative paths joined with rootPath */
+function resolvePath(p: string, rootPath: string): string {
+  if (!p) return '';
+  // Windows absolute: C:\... or D:\...
+  if (/^[a-zA-Z]:[\\/]/.test(p)) return p;
+  // Unix absolute
+  if (p.startsWith('/')) return p;
+  // Network path
+  if (p.startsWith('\\\\')) return p;
+  return [rootPath, p].join('/').replace(/\\/g, '/').replace(/\/+/g, '/');
 }
 
 async function _executeTool(name: string, args: Record<string, unknown>, rootPath: string): Promise<string> {
@@ -131,19 +367,25 @@ async function _executeTool(name: string, args: Record<string, unknown>, rootPat
       const filePath = (args.path as string) || '';
       if (!filePath) return '错误：缺少 path 参数';
       if (filePath.includes('..')) return '错误：不允许访问上级目录';
-      const fullPath = [rootPath, filePath].join('/').replace(/\/+/g, '/');
+      const fullPath = resolvePath(filePath, rootPath);
+
+      // PDF/HTML document reading
+      try {
+        const { readDocumentFile } = await import('./doc-reader.js');
+        const doc = await readDocumentFile(fullPath);
+        if (doc) {
+          const meta = [];
+          if (doc.metadata.title) meta.push(`标题: ${doc.metadata.title}`);
+          if (doc.metadata.pageCount) meta.push(`页数: ${doc.metadata.pageCount}`);
+          const header = meta.length > 0 ? `[${doc.metadata.type.toUpperCase()} ${meta.join(', ')}]\n\n` : `[${doc.metadata.type.toUpperCase()}]\n\n`;
+          return header + doc.text;
+        }
+      } catch { /* not a document or parse failed, fall through */ }
+
       try {
         const content = await readFile(fullPath);
         const lines = content.split('\n');
-        // TI3: Compress large results — skeleton mode for >200 lines
-        if (lines.length > 200) {
-          const keyLines = lines.filter((l, i) =>
-            i < 30 || i > lines.length - 10 ||
-            /^(import|export|function|class|interface|type|const|let|var|public|private|#|##|\/\/|func |def |package )/.test(l)
-          );
-          return keyLines.slice(0, 100).join('\n') + `\n... (${lines.length} 行，已压缩为关键行)`;
-        }
-        return content;
+        return compressFileContent(lines, lines.length);
       } catch { return `错误：无法读取 ${filePath}`; }
     }
 
@@ -172,40 +414,48 @@ async function _executeTool(name: string, args: Record<string, unknown>, rootPat
           } catch { /* skip */ }
         }
         if (results.length === 0) return `未找到匹配 "${pattern}" 的结果。建议: 尝试不同关键词或 read_file 直接查看文件。`;
-        // TI3: summary line
-        return `找到 ${results.length} 条匹配:\n${results.join('\n')}${results.length >= 15 ? '\n(结果已截断，缩小搜索范围可获取更精确结果)' : ''}`;
+        return compressSearchResults(results, 20, 5);
       } catch (e) { return `搜索错误：${(e as Error).message}`; }
     }
 
     case 'run_command': {
       const command = (args.command as string) || '';
       if (!command) return '错误：缺少 command 参数';
-      // TI2: Platform-aware adaptation
-      const isWin = process.platform === 'win32';
-      const unixOnly = /^(ls|find|grep|cat|sed|awk|tail|head|which|wget|curl)\b/i;
-      if (isWin && unixOnly.test(command.trim())) {
-        const alt: Record<string, string> = {
-          ls: 'dir', find: 'dir /s /b', grep: 'findstr', cat: 'type',
-          tail: 'powershell Get-Content -Tail', head: 'powershell Get-Content -Head',
-          which: 'where', wget: 'curl -o', cp: 'copy', mv: 'move',
-          mkdir: 'New-Item -ItemType Directory -Force', rm: 'Remove-Item',
-          chmod: 'icacls', diff: 'Compare-Object', wc: 'Measure-Object -Line',
-          sort: 'Sort-Object', uniq: 'Get-Unique', tar: 'Compress-Archive',
-          env: 'Get-ChildItem env:', kill: 'Stop-Process', ps: 'Get-Process',
-          awk: 'powershell -Command', sed: 'powershell -Command',
-          xargs: 'ForEach-Object', uname: 'Get-ComputerInfo',
-        };
-        const cmd = command.trim().split(/\s+/)[0].toLowerCase();
-        return `平台: Windows。命令 "${cmd}" 不可用。替代: ${alt[cmd] || 'powershell Get-ChildItem'}。请改用替代命令或 read_file 代替。`;
-      }
-      const dangerous = /rm\s+-r|rm\s+-f|sudo|chmod\s+777|>\/dev\/|mkfs|dd\s+if=|fork\s*bomb|del\s+\/f|format\s+[a-z]:|diskpart/i;
-      if (dangerous.test(command)) return '错误：命令被安全策略拦截（危险操作）';
+
+      // Safety check — deny-list for dangerous operations
+      const isDangerous = (cmd: string): boolean => {
+        const patterns = [
+          /\brm\s+.*-(?:[rR]\S*[fF]|[fF]\S*[rR])\b/,  // rm with both -r and -f (any order, e.g. rm -rf, rm -fr, rm -r -f)
+          /\brmdir\s+\/s\b/i, /\brd\s+\/s\b/i,           // Windows recursive delete
+          /\bsudo\b/i, /\bchmod\s+777\b/i,                // privilege escalation / overbroad permissions
+          /\bmkfs\b/i, /\bdd\s+if=/i,                     // format / raw disk write
+          /\bformat\s+[a-z]:/i, /\bdiskpart\b/i,          // Windows format / disk partition
+          /\bdel\s+\/[fF]\b/, /\bdel\s+\/[sS]\b/,         // Windows force/recursive delete (not /q=quiet)
+          />\s*\/dev\//i,                                 // redirect to device
+        ];
+        return patterns.some(p => p.test(cmd));
+      };
+
+      if (isDangerous(command)) return '错误：命令被安全策略拦截（危险操作）';
+
+      // P1-4: Platform-aware auto-adaptation (auto-translate + execute)
+      const { adapted, wasAdapted } = await autoAdaptCommand(command, rootPath);
+
+      // Re-check adapted command — adaptation may have introduced danger
+      if (wasAdapted && isDangerous(adapted)) return '错误：命令适配后被安全策略拦截（危险操作）';
+
       try {
         const { execSync } = await import('child_process');
-        const output = execSync(command, { cwd: rootPath, timeout: 30000, encoding: 'utf-8', maxBuffer: 1024 * 1024 });
-        // TI3: Truncate large output
-        return (output || '(命令执行成功，无输出)').slice(0, 1500);
-      } catch (e) { return `命令执行失败：${(e as Error).message}。建议: 用 read_file 代替命令，或检查命令是否正确。`; }
+        const output = execSync(adapted, { cwd: rootPath, timeout: 30000, encoding: 'utf-8', maxBuffer: 1024 * 1024 });
+        const resultText = output || '(命令执行成功，无输出)';
+        const compressed = compressCommandOutput(resultText);
+        return wasAdapted ? `[已自动适配: ${adapted}]\n${compressed}` : compressed;
+      } catch (e) {
+        const hint = wasAdapted
+          ? `命令执行失败：${(e as Error).message}。已自动适配为: ${adapted}。建议: 用 read_file 代替命令，或检查命令是否正确。`
+          : `命令执行失败：${(e as Error).message}。建议: 用 read_file 代替命令，或检查命令是否正确。`;
+        return hint;
+      }
     }
 
     case 'web_search': {
@@ -221,7 +471,7 @@ async function _executeTool(name: string, args: Record<string, unknown>, rootPat
       const file = (args.file as string) || '';
       if (!file) return '错误：缺少 file 参数';
       try {
-        const fullPath = [rootPath, file].join('/').replace(/\/+/g, '/');
+        const fullPath = resolvePath(file, rootPath);
         const { parseSourceFile } = await import('./ast-parser.js');
         const parsed = await parseSourceFile(fullPath);
         if (parsed.error) return `解析错误：${parsed.error}`;
@@ -243,14 +493,134 @@ async function _executeTool(name: string, args: Record<string, unknown>, rootPat
 
     case 'git_status': {
       const action = (args.action as string) || 'status';
+      // Allowlist: only known safe git read-only subcommands
+      const ALLOWED: Record<string, string[]> = {
+        status: ['status', '--short'],
+        log: ['log', '--oneline', '-10'],
+        diff: ['diff', '--stat'],
+        branch: ['branch', '-a'],
+      };
+      const gitArgs = ALLOWED[action] || ALLOWED.status;
       try {
-        const { execSync } = await import('child_process');
-        const cmd = action === 'log' ? 'git log --oneline -10' :
-          action === 'diff' ? 'git diff --stat' :
-          action === 'branch' ? 'git branch -a' : 'git status --short';
-        const output = execSync(cmd, { cwd: rootPath, timeout: 10000, encoding: 'utf-8' });
+        const { execFileSync } = await import('child_process');
+        const output = execFileSync('git', gitArgs, { cwd: rootPath, timeout: 10000, encoding: 'utf-8' });
         return output.slice(0, 1000) || '(无输出)';
       } catch { return 'Git 不可用或非 Git 仓库'; }
+    }
+
+    case 'web_fetch': {
+      const url = (args.url as string) || '';
+      if (!url) return '错误：缺少 url 参数';
+      try {
+        const { fetchWebPage } = await import('./web-fetcher.js');
+        const page = await fetchWebPage(url, { timeout: 10000, maxContentLength: 20000 });
+        return [
+          `标题: ${page.title}`,
+          page.siteName ? `来源: ${page.siteName}` : '',
+          page.publishedAt ? `发布时间: ${page.publishedAt}` : '',
+          `\n${page.content}`,
+        ].filter(Boolean).join('\n');
+      } catch (err) { return `网页抓取失败: ${(err as Error).message}`; }
+    }
+
+    case 'list_dir': {
+      const dirPath = (args.path as string) || '.';
+      try {
+        const { listDir, fileExists } = await import('../utils/fs.js');
+        const targetPath = resolvePath(dirPath, rootPath);
+        if (!(await fileExists(targetPath))) return `错误：目录不存在 ${dirPath}`;
+        const entries = await listDir(targetPath);
+        if (entries.length === 0) return `目录 ${dirPath} 为空`;
+        // Show with size info when possible
+        const lines: string[] = [`目录 ${dirPath} (${entries.length} 项):`];
+        for (const name of entries.slice(0, 50)) {
+          const isDir = !name.includes('.') || name.endsWith('/');
+          lines.push(`  ${isDir ? '📁' : '📄'} ${name}`);
+        }
+        if (entries.length > 50) lines.push(`  ... 共 ${entries.length} 项`);
+        return lines.join('\n');
+      } catch (err) { return `列出目录失败: ${(err as Error).message}`; }
+    }
+
+    case 'read_pdf': {
+      const pdfPath = (args.path as string) || '';
+      if (!pdfPath) return '错误：缺少 path 参数';
+      const fullPath = resolvePath(pdfPath, rootPath);
+      try {
+        const pdfModule: any = await import('pdf-parse');
+        const fsPromises = await import('fs/promises');
+        const buf = await fsPromises.readFile(fullPath);
+        const parser = new pdfModule.PDFParse(new Uint8Array(buf));
+        await parser.load();
+        const data: any = await parser.getText();
+        const text = (data.text || '').trim();
+        const numPages = data.pages?.length || data.total || '未知';
+        if (!text) return `PDF 解析完成但无文本内容（可能为扫描件或图片 PDF）。页数: ${numPages}`;
+        const maxLen = 15000;
+        const truncated = text.length > maxLen ? text.slice(0, maxLen) + `\n...(PDF 共 ${numPages} 页，${text.length} 字符，已截断至 ${maxLen})` : text;
+        return `PDF: ${pdfPath}\n页数: ${numPages}\n\n${truncated}`;
+      } catch (err) {
+        const msg = (err as Error).message;
+        if (msg.includes('password') || msg.includes('encrypted')) {
+          return `PDF 加密: ${pdfPath} 需要密码才能读取。请提供密码或使用解密后的文件。`;
+        }
+        if (msg.includes('Cannot find module') || msg.includes('pdf-parse')) {
+          return `PDF 读取不可用: pdf-parse 未安装。`;
+        }
+        return `PDF 读取失败: ${msg}`;
+      }
+    }
+
+    case 'get_project_overview': {
+      const deep = args.deep !== false; // default true
+      try {
+        const { assembleContextFromProject } = await import('./context.js');
+        const task: import('../types.js').Task = {
+          id: `overview-${Date.now().toString(36)}`,
+          description: '项目全景分析',
+          status: 'queued',
+          priority: 'normal',
+          createdAt: new Date().toISOString(),
+          changes: [],
+          diffs: [],
+          reasoning: [],
+          errorLog: [],
+          retryCount: 0,
+          maxRetries: 1,
+          agentExecutions: [],
+        };
+        const ctx = await assembleContextFromProject(rootPath, task, {
+          maxTokens: 50000,
+          scanIfMissing: true,
+          deep,
+          includeTests: true,
+        });
+        // Return the assembled project meta + relevant code summaries
+        const lines: string[] = [];
+        lines.push('## 项目画像');
+        lines.push('');
+        if (ctx.projectMeta) {
+          lines.push(ctx.projectMeta);
+        }
+        if (ctx.relevantCode.length > 0) {
+          lines.push(`\n## 关键代码文件 (${ctx.relevantCode.length} 个)`);
+          lines.push(ctx.relevantCode.slice(0, 20).map(c =>
+            `- ${c.file} (${c.compression})`
+          ).join('\n'));
+        }
+        if (ctx.relevantMemory) {
+          lines.push(`\n## 项目记忆`);
+          lines.push(ctx.relevantMemory);
+        }
+        if (ctx.astHints) {
+          lines.push(`\n## 代码调用关系`);
+          lines.push(ctx.astHints);
+        }
+        lines.push(`\nToken 用量: ${ctx.totalTokens} / 预算: ${ctx.budgetUsed}%`);
+        return lines.join('\n');
+      } catch (err) {
+        return `项目画像获取失败: ${(err as Error).message}。请尝试运行 /scan 初始化项目索引。`;
+      }
     }
 
     default:

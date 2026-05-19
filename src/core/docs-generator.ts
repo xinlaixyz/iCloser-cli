@@ -32,8 +32,8 @@ export async function detectDocGaps(
   for (const template of DOC_TEMPLATES) {
     const docPath = path.join(rootPath, template.filename);
     const docsPath = path.join(docsDir, template.filename);
-    try { await fs.access(docPath); existing.push(template.type); continue; } catch {}
-    try { await fs.access(docsPath); existing.push(template.type); continue; } catch {}
+    try { await fs.access(docPath); existing.push(template.type); continue; } catch { /* best-effort */ }
+    try { await fs.access(docsPath); existing.push(template.type); continue; } catch { /* best-effort */ }
   }
 
   const missing = DOC_TEMPLATES.filter(t => !existing.includes(t.type)).map(t => t.type);
@@ -59,7 +59,7 @@ export async function assembleDocsContext(
     for (const m of featureMatches) {
       if (!m[1].includes('http') && m[1].length > 5) features.push(m[1].trim().slice(0, 80));
     }
-  } catch {}
+  } catch { /* best-effort */ }
 
   // API routes
   const apiRoutes: { method: string; path: string; handler: string }[] = [];
@@ -85,7 +85,7 @@ export async function assembleDocsContext(
             if (!configKeys.includes(m[1])) configKeys.push(m[1]);
           }
         }
-      } catch {}
+      } catch { /* best-effort */ }
     }
   }
 
@@ -520,8 +520,8 @@ export async function generateChangelog(
 ): Promise<string> {
   let gitLog = '';
   try {
-    const { execSync } = await import('child_process');
-    gitLog = execSync('git log --oneline -30', { cwd: rootPath, encoding: 'utf-8', timeout: 5000 });
+    const { execFileSync } = await import('child_process');
+    gitLog = execFileSync('git', ['log', '--oneline', '-30'], { cwd: rootPath, encoding: 'utf-8', timeout: 5000 });
   } catch { return '  无法读取 git 历史（需在 git 仓库中运行）'; }
   if (!gitLog.trim()) return '  Git 历史为空';
   const prompt = `将以下 git 提交记录整理为结构化的 CHANGELOG。按类型分组(feat/fix/docs/chore)，用中文描述。
@@ -639,6 +639,104 @@ export async function reviewDocument(
   const resp = await providerAdapter.chat({
     systemPrompt: '你是文档审查专家。检查文档的完整性、准确性、清晰度。标注具体问题（位置+问题+建议）。输出审查报告。',
     task: `审查文档: ${filename}\n\n${content.slice(0, 5000)}\n\n请标注: 1)不清晰的表述 2)缺失的信息 3)矛盾之处 4)格式问题`,
+    context: { projectMeta: '', relevantCode: [], relevantMemory: '', totalTokens: 0, budgetUsed: 0 },
+    history: '',
+  });
+  return resp.content;
+}
+
+// ── D3: Cross-document relation analysis ──
+export async function relateDocuments(
+  docs: Record<string, string>,
+  query: string,
+  providerAdapter: { chat: (p: { systemPrompt: string; task: string; context: { projectMeta: string; relevantCode: never[]; relevantMemory: string; totalTokens: number; budgetUsed: number }; history: string }) => Promise<{ content: string }> },
+): Promise<string> {
+  const docList = Object.entries(docs).map(([name, content]) =>
+    `### ${name}\n${content.slice(0, 1500)}`
+  ).join('\n\n');
+  const resp = await providerAdapter.chat({
+    systemPrompt: [
+      '你是跨文档关联分析专家。分析以下文档之间的关系。',
+      '关注: 1)概念依赖 (A 定义的概念被 B 引用)',
+      '      2)流程关联 (A 描述步骤 X, B 描述步骤 Y, X→Y)',
+      '      3)矛盾冲突 (A 和 B 对同一事物的描述不一致)',
+      '      4)信息缺口 (A 提到但 B 缺失的关键信息)',
+      '输出格式: 关联图 + 每条关联的(源文档→目标文档: 关系类型: 说明)',
+    ].join('\n'),
+    task: `查询: ${query}\n\n文档内容:\n${docList.slice(0, 8000)}`,
+    context: { projectMeta: '', relevantCode: [], relevantMemory: '', totalTokens: 0, budgetUsed: 0 },
+    history: '',
+  });
+  return resp.content;
+}
+
+// ── D4: Document translation ──
+export async function translateDocument(
+  content: string,
+  targetLang: string,
+  filename: string,
+  providerAdapter: { chat: (p: { systemPrompt: string; task: string; context: { projectMeta: string; relevantCode: never[]; relevantMemory: string; totalTokens: number; budgetUsed: number }; history: string }) => Promise<{ content: string }> },
+): Promise<string> {
+  const resp = await providerAdapter.chat({
+    systemPrompt: `你是专业文档翻译专家。将以下 Markdown 文档翻译为${targetLang}。保持所有 markdown 格式（标题、代码块、表格、链接）不变。代码块内的代码、URL、命令不翻译。技术术语保留原文或使用业界标准译名。`,
+    task: `翻译文档: ${filename}\n\n${content.slice(0, 6000)}`,
+    context: { projectMeta: '', relevantCode: [], relevantMemory: '', totalTokens: 0, budgetUsed: 0 },
+    history: '',
+  });
+  return resp.content;
+}
+
+// ── D5: Format conversion (MD↔HTML↔JSON outline) ──
+export function convertDocFormat(content: string, from: string, to: string): string {
+  if (from === 'md' && to === 'html') {
+    let html = content
+      .replace(/^#### (.+)$/gm, '<h4>$1</h4>')
+      .replace(/^### (.+)$/gm, '<h3>$1</h3>')
+      .replace(/^## (.+)$/gm, '<h2>$1</h2>')
+      .replace(/^# (.+)$/gm, '<h1>$1</h1>')
+      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+      .replace(/\*(.+?)\*/g, '<em>$1</em>')
+      .replace(/`([^`]+)`/g, '<code>$1</code>')
+      .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>')
+      .replace(/^- (.+)$/gm, '<li>$1</li>')
+      .replace(/\n\n/g, '</p><p>');
+    return `<html><body><p>${html}</p></body></html>`;
+  }
+  if (from === 'md' && to === 'json-outline') {
+    const sections: { level: number; title: string }[] = [];
+    for (const line of content.split('\n')) {
+      const m = line.match(/^(#{1,4})\s+(.+)/);
+      if (m) sections.push({ level: m[1].length, title: m[2].trim() });
+    }
+    return JSON.stringify({ title: 'Document Outline', sections }, null, 2);
+  }
+  if (from === 'html' && to === 'md') {
+    return content
+      .replace(/<h1>(.+?)<\/h1>/gi, '# $1')
+      .replace(/<h2>(.+?)<\/h2>/gi, '## $1')
+      .replace(/<h3>(.+?)<\/h3>/gi, '### $1')
+      .replace(/<h4>(.+?)<\/h4>/gi, '#### $1')
+      .replace(/<strong>(.+?)<\/strong>/gi, '**$1**')
+      .replace(/<em>(.+?)<\/em>/gi, '*$1*')
+      .replace(/<code>(.+?)<\/code>/gi, '`$1`')
+      .replace(/<a href="(.+?)">(.+?)<\/a>/gi, '[$2]($1)')
+      .replace(/<li>(.+?)<\/li>/gi, '- $1')
+      .replace(/<p>(.+?)<\/p>/gi, '$1\n\n')
+      .replace(/<[^>]+>/g, '');
+  }
+  throw new Error(`不支持的格式转换: ${from} → ${to}。支持: md→html, md→json-outline, html→md`);
+}
+
+// ── D10: AI-powered document diff review ──
+export async function diffReviewDocuments(
+  oldContent: string,
+  newContent: string,
+  filename: string,
+  providerAdapter: { chat: (p: { systemPrompt: string; task: string; context: { projectMeta: string; relevantCode: never[]; relevantMemory: string; totalTokens: number; budgetUsed: number }; history: string }) => Promise<{ content: string }> },
+): Promise<string> {
+  const resp = await providerAdapter.chat({
+    systemPrompt: '你是文档变更审查专家。对比两个版本的文档，生成结构化差异报告（新增/删除/语义变化/审查意见）。',
+    task: `文件: ${filename}\n\n## 旧版本\n\`\`\`\n${oldContent.slice(0, 3000)}\n\`\`\`\n\n## 新版本\n\`\`\`\n${newContent.slice(0, 3000)}\n\`\`\``,
     context: { projectMeta: '', relevantCode: [], relevantMemory: '', totalTokens: 0, budgetUsed: 0 },
     history: '',
   });

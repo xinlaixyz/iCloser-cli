@@ -140,7 +140,7 @@ let stdoutPatched = false;
 export function enableOutputSanitizer(): void {
   if (stdoutPatched) return;
   const orig = process.stdout.write.bind(process.stdout);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   
   (process.stdout.write as any) = (data: string | Uint8Array, encoding?: BufferEncoding, cb?: (err?: Error | null) => void): boolean => {
     const cleaned = sanitizeOutput(typeof data === 'string' ? data : new TextDecoder().decode(data));
     return orig(cleaned, encoding, cb);
@@ -323,6 +323,15 @@ ${chalk.bold('核心命令')}
   ${chalk.cyan('ic r')}                     查看最近任务报告
   ${chalk.cyan('ic g <task-id>')}           门禁检查（6 道门禁）
   ${chalk.cyan('ic d <task-id>')}           查看代码 diff
+
+${chalk.bold('代码工具 (C9-C12)')}
+  ${chalk.cyan('ic code new <描述>')}         AI 上下文感知代码生成
+  ${chalk.cyan('ic code refactor <描述>')}    AI 多文件重构 (--safe 安全模式)
+  ${chalk.cyan('ic code fix')}                AI 错误驱动修复
+  ${chalk.cyan('ic code complete <文件>')}    AI 补全未完成代码
+  ${chalk.cyan('ic code review [文件]')}      AI 代码审查 (安全/风格/bug/性能)
+  ${chalk.cyan('ic code lint-fix [--go]')}    AI 批量 lint 修复
+  ${chalk.cyan('ic code scaffold <类型> <名>')} 脚手架生成 (crud/middleware/route/component)
 
 ${chalk.bold('项目管理')}
   ${chalk.cyan('ic scan')}                  扫描项目并更新索引

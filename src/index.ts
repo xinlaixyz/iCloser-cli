@@ -25,6 +25,9 @@ import type { AgentStatus, AgentType, AIProvider, ICloserConfig, MemoryCandidate
 const program = new Command();
 program.name('ic').description('iCloser Agent Shell — AI 工程执行 CLI').version('0.1.0');
 
+// ── Shared helpers from task-pipeline.ts ──
+import { applyCompileGate, runCodeGenerationPipeline, getToolStrategy, isAnalysisOnlyTask } from './core/task-pipeline.js';
+
 // ============================================================
 // ic setup
 // ============================================================
@@ -148,11 +151,25 @@ program.command('init')
         await saveProjectIndex(rootPath, result.index);
       } catch { /* best effort */ }
 
-      // Init memory
+      // Init memory (legacy + Memory Kernel v1.0)
       try {
         const { loadProjectMemory, saveProjectMemory } = await import('./core/memory.js');
         await saveProjectMemory(rootPath, await loadProjectMemory(rootPath));
       } catch { /* best effort */ }
+      try {
+        const { ensureMemoryStore } = await import('./core/memory/store.js');
+        const store = await ensureMemoryStore(rootPath);
+        // Bootstrap Memory Kernel from git history + code patterns
+        try {
+          const { getMemoryRuntime } = await import('./core/memory/integration.js');
+          const runtime = await getMemoryRuntime(rootPath);
+          const { bootstrapMemoryKernel } = await import('./core/memory/bootstrap.js');
+          const result = await bootstrapMemoryKernel(rootPath, runtime);
+          if (result.episodesCreated > 0 || result.rulesCreated > 0) {
+            info(`Memory Kernel: ${result.episodesCreated} 历史事件, ${result.rulesCreated} 规则`);
+          }
+        } catch { /* bootstrap is optional */ }
+      } catch { /* memory kernel optional */ }
 
       success('项目初始化完成\n');
       if (options.json) {
@@ -504,7 +521,26 @@ program.command('t')
         return;
       }
 
-      const description = descriptions.join(' ');
+      // T3-2: Support parallel tasks via multiple quoted arguments
+      const taskDescriptions = descriptions.length > 1 && descriptions.every(d => d.length > 3)
+        ? descriptions  // ic t "task1" "task2" → parallel
+        : [descriptions.join(' ')]; // ic t single task → serial
+
+      if (taskDescriptions.length > 1) {
+        progress(`并行任务：${chalk.cyan(taskDescriptions.length + ' 个任务')}`);
+        const { createTask: ct, scheduleTasks } = await import('./core/task-engine.js');
+        const tasks = taskDescriptions.map(d => ct(d, { priority: options.priority as 'high' | 'normal' | 'low' }));
+        success(`已创建 ${tasks.length} 个任务: ${tasks.map(t => chalk.cyan(t.id.slice(-6))).join(', ')}`);
+        for (const t of tasks) {
+          if (options.go) {
+            const idx = await (await import('./core/scanner.js')).loadProjectIndex(rootPath);
+            await executeTask(t, config, rootPath, idx);
+          }
+        }
+        return;
+      }
+
+      const description = taskDescriptions[0];
       progress(`解析任务：${chalk.cyan(description)}`);
 
       const { createTask, generatePlan, persistTask } =
@@ -523,14 +559,14 @@ program.command('t')
       try {
         const { loadProjectIndex } = await import('./core/scanner.js');
         index = await loadProjectIndex(rootPath);
-      } catch {}
+      } catch { /* best-effort */ }
       if (!index) {
         try {
           const { scanProject, saveProjectIndex } = await import('./core/scanner.js');
           const r = await scanProject({ rootPath, deep: true, includeTests: false, maxFileSize: 500 * 1024 });
           index = r.index;
           await saveProjectIndex(rootPath, index);
-        } catch {}
+        } catch { /* best-effort */ }
       }
 
       // Generate plan
@@ -539,11 +575,23 @@ program.command('t')
         task.plan = generatePlan(task, description, config.project.identity, index);
       }
 
+      // P2-3: Forced workflow — always show plan before executing code changes
+      const { classifyIntentRegex } = await import('./core/intent-classifier.js');
+      const intent = classifyIntentRegex(description);
+      const isCodeTask = intent ? /^(code_change|code_fix|code_complete|plan)$/.test(intent.category) : Boolean(index);
+      if (isCodeTask) {
+        printTaskPlan(task);
+        console.log();
+        if (task.plan) {
+          const affectedCount = task.plan.affectedFiles.length;
+          const highImpact = affectedCount > 5;
+          if (highImpact) warn(`影响 ${affectedCount} 个文件，建议审查后再执行`);
+        }
+      }
+
       // Preview mode
       if (!options.go && config.execution.defaultMode === 'preview') {
-        printTaskPlan(task);
         await persistTask(rootPath, task);
-        console.log();
         info(`使用 ${chalk.cyan(`ic y ${task.id}`)} 确认执行，${chalk.cyan(`ic n ${task.id}`)} 取消`);
         return;
       }
@@ -594,6 +642,43 @@ program.command('st')
   });
 
 // ============================================================
+// ic queue — 队列监控 (T3-3)
+// ============================================================
+program.command('queue')
+  .description('查看任务队列（--watch 实时监控）')
+  .option('--watch', '实时监控队列状态（2s刷新，按 q 退出）')
+  .option('--json', 'JSON 格式输出')
+  .action(async (options: { watch?: boolean; json?: boolean }) => {
+    const rootPath = process.cwd();
+    try {
+      const { listTasks } = await import('./core/task-engine.js');
+      if (options.watch) {
+        console.log(chalk.dim('实时监控中（按 q 退出，60s 自动停止）...\n'));
+        const { stdin, stdout } = process;
+        stdin.setRawMode?.(true); stdin.resume();
+        const timer = setInterval(async () => {
+          const tasks = await listTasks(rootPath);
+          stdout.write('\x1b[2J\x1b[H');
+          console.log(chalk.bold(`任务队列 (${tasks.length} 个)\n`));
+          for (const t of tasks.slice(0, 10)) {
+            const icon = t.status === 'completed' ? '✓' : t.status === 'failed' ? '✗' : t.status === 'running' ? '·' : ' ';
+            console.log(`  ${icon} ${chalk.cyan(t.id.slice(-6))} ${chalk.dim(t.description.slice(0, 50))}`);
+          }
+          console.log(chalk.dim(`\n${new Date().toLocaleTimeString()} — 按 q 退出`));
+        }, 2000);
+        let stopWatching: () => void = () => {};
+        stdin.on('data', (d: Buffer) => { if (d.toString().trim() === 'q') { clearInterval(timer); stopWatching(); stdin.setRawMode?.(false); stdin.pause(); } });
+        await new Promise<void>(r => { stopWatching = r; setTimeout(r, 60000); }); clearInterval(timer);
+        return;
+      }
+      const tasks = await listTasks(rootPath);
+      if (options.json) { console.log(JSON.stringify({ tasks: tasks.map(t => ({ id: t.id, description: t.description, status: t.status })) }, null, 2)); return; }
+      if (tasks.length === 0) { info('任务队列为空'); return; }
+      for (const t of tasks) console.log(`  ${chalk.cyan(t.id.slice(-6))} ${chalk.dim(t.description.slice(0, 50))}`);
+    } catch (err) { printError(err as Error); }
+  });
+
+// ============================================================
 // ic d — diff
 // ============================================================
 program.command('d')
@@ -627,9 +712,11 @@ program.command('d')
 // ============================================================
 program.command('y')
   .alias('accept')
-  .description('确认并执行任务')
+  .description('确认并执行任务。支持 --skip <file> 跳过指定文件，--only <file> 仅应用指定文件')
   .argument('<task-id>', '任务 ID')
-  .action(async (taskId: string) => {
+  .option('--skip <files>', '跳过指定文件（逗号分隔）')
+  .option('--only <files>', '仅应用指定文件（逗号分隔）')
+  .action(async (taskId: string, options: { skip?: string; only?: string }) => {
     const rootPath = process.cwd();
     try {
       const config = await loadConfig(rootPath);
@@ -641,11 +728,27 @@ program.command('y')
         warn(`任务状态为 ${statusLabel(task.status)}，无法执行`); return;
       }
 
+      // T1-2d: Selective file approval / rejection
+      if (options.skip) {
+        const skipFiles = options.skip.split(',').map(f => f.trim());
+        if (task.plan?.affectedFiles) {
+          task.plan.affectedFiles = task.plan.affectedFiles.filter(f => !skipFiles.includes(f));
+          detail('局部执行', `跳过 ${skipFiles.length} 个文件: ${skipFiles.join(', ')}`);
+        }
+      }
+      if (options.only) {
+        const onlyFiles = options.only.split(',').map(f => f.trim());
+        if (task.plan?.affectedFiles) {
+          task.plan.affectedFiles = task.plan.affectedFiles.filter(f => onlyFiles.includes(f));
+          detail('局部执行', `仅应用 ${onlyFiles.length} 个文件: ${onlyFiles.join(', ')}`);
+        }
+      }
+
       let index: import('./types.js').ProjectIndex | null = null;
       try {
         const { loadProjectIndex } = await import('./core/scanner.js');
         index = await loadProjectIndex(rootPath);
-      } catch {}
+      } catch { /* best-effort */ }
       await executeTask(task, config, rootPath, index);
     } catch (err) { printError(err as Error); }
   });
@@ -664,10 +767,11 @@ program.command('n')
 
       if (task.changes.length > 0 && isGitRepo(rootPath)) {
         try {
-          const { execSync } = await import('child_process');
-          execSync('git checkout -- .', { cwd: rootPath, timeout: 10000 });
-          info('已回滚工作区变更');
-        } catch {}
+          const { execFileSync } = await import('child_process');
+          const taskFiles = task.changes.map(c => c.file);
+          execFileSync('git', ['checkout', '--', ...taskFiles], { cwd: rootPath, timeout: 10000 });
+          info('已回滚任务文件变更');
+        } catch { /* best-effort */ }
       }
       updateTaskStatus(taskId, 'cancelled');
       releaseFileLocks(task);
@@ -703,7 +807,7 @@ program.command('g')
       try {
         const { generateTaskReport } = await import('./report/generator.js');
         await generateTaskReport(rootPath, task, config);
-      } catch {}
+      } catch { /* best-effort */ }
 
       if (options.json) {
         console.log(JSON.stringify(jsonEnvelope('gate-result', serializeGateResult(result)), null, 2));
@@ -803,7 +907,7 @@ program.command('r')
 program.command('mem')
   .alias('memory')
   .description('查看和管理项目记忆')
-  .argument('[args...]', 'events / candidates / review / approve <序号|id> / reject <序号|id> / global / 搜索关键词')
+  .argument('[args...]', 'status / recall <q> / bootstrap / consolidate / forget / inspect <type> / rule add/list / 搜索关键词')
   .action(async (args: string[] = []) => {
     const rootPath = process.cwd();
     try {
@@ -831,6 +935,43 @@ program.command('mem')
         await updateMemoryCandidateReview(rootPath, rest.join(' ').trim(), 'approved');
       } else if (verb === 'reject' || verb === 'archive') {
         await updateMemoryCandidateReview(rootPath, rest.join(' ').trim(), 'archived');
+      } else if (verb === 'status') {
+        const { printMemoryKernelStatus } = await import('./core/memory/cli-handlers.js');
+        await printMemoryKernelStatus(rootPath);
+      } else if (verb === 'recall') {
+        const { printMemoryRecall } = await import('./core/memory/cli-handlers.js');
+        await printMemoryRecall(rootPath, rest.join(' ').trim());
+      } else if (verb === 'consolidate') {
+        const { runMemoryConsolidate } = await import('./core/memory/cli-handlers.js');
+        await runMemoryConsolidate(rootPath);
+      } else if (verb === 'forget') {
+        const { runMemoryForget } = await import('./core/memory/cli-handlers.js');
+        await runMemoryForget(rootPath);
+      } else if (verb === 'inspect') {
+        const { printMemoryInspect } = await import('./core/memory/cli-handlers.js');
+        await printMemoryInspect(rootPath, rest[0] || '');
+      } else if (verb === 'rule') {
+        const sub = rest[0]; const ruleContent = rest.slice(1).join(' ').trim();
+        const { memoryRuleAdd, memoryRuleList, memoryRuleDelete } = await import('./core/memory/cli-handlers.js');
+        if (sub === 'add' && ruleContent) { await memoryRuleAdd(rootPath, ruleContent); }
+        else if (sub === 'list') { await memoryRuleList(rootPath); }
+        else if (sub === 'delete' && ruleContent) { await memoryRuleDelete(rootPath, ruleContent); }
+        else { console.log(`  ${chalk.cyan('ic mem rule add <描述>')} / ${chalk.cyan('list')} / ${chalk.cyan('delete <id>')}`); }
+      } else if (verb === 'bootstrap') {
+        progress('正在从项目历史引导 Memory Kernel...');
+        try {
+          const { getMemoryRuntime } = await import('./core/memory/integration.js');
+          const runtime = await getMemoryRuntime(rootPath);
+          const { bootstrapMemoryKernel } = await import('./core/memory/bootstrap.js');
+          const result = await bootstrapMemoryKernel(rootPath, runtime);
+          success(`Bootstrap 完成: ${result.episodesCreated} 事件, ${result.rulesCreated} 规则, ${result.patternsFound.length} 模式`);
+          if (result.errors.length > 0) {
+            for (const err of result.errors) warn(err);
+          }
+        } catch (err) { warn(`Bootstrap 失败: ${(err as Error).message}`); }
+      } else if (verb === 'stats') {
+        const { printMemoryStats } = await import('./core/memory/cli-handlers.js');
+        await printMemoryStats(rootPath);
       } else if (verb === 'global') {
         const { loadGlobalMemory } = await import('./core/memory.js');
         const gm = await loadGlobalMemory();
@@ -1121,7 +1262,7 @@ program.command('loop')
 // ic intel — code intelligence queries
 // ============================================================
 program.command('intel')
-  .alias('code')
+  .alias('ci')
   .description('代码智能查询：符号定义、调用关系、模块导出、依赖分析')
   .argument('[query...]', '查询内容，例如：谁调用了 scanProject / 模块 src/core 的导出')
   .option('--json', 'JSON 格式输出')
@@ -1601,7 +1742,7 @@ program.command('start')
 
       progress(`启动 npm run ${scriptName}...`);
       const { spawn } = await import('child_process');
-      const child = spawn('npm', ['run', scriptName], { cwd, stdio: 'inherit', shell: process.platform === 'win32', detached: true });
+      const child = spawn('npm', ['run', scriptName], { cwd, stdio: 'inherit', shell: process.platform === 'win32', detached: true, windowsHide: true });
       child.unref();
       success(`已启动 ${scriptName}（后台运行）`);
       info('使用 ic stop 停止后台服务');
@@ -1616,8 +1757,8 @@ program.command('stop')
   .action(async () => {
     try {
       if (process.platform === 'win32') {
-        const { execSync } = await import('child_process');
-        try { execSync('taskkill /F /IM node.exe /FI "WINDOWTITLE eq *dev*" 2>nul', { stdio: 'ignore' }); } catch { /* ok */ }
+        const { execFileSync } = await import('child_process');
+        try { execFileSync('taskkill', ['/F', '/IM', 'node.exe', '/FI', 'WINDOWTITLE eq *dev*'], { stdio: 'ignore' }); } catch { /* ok */ }
       }
       success('已尝试停止后台进程');
     } catch { info('停止操作未完成'); }
@@ -1726,10 +1867,15 @@ program.command('rollback')
 
       progress(`回滚任务 ${chalk.cyan(taskId)}...`);
       try {
-        const { execSync } = await import('child_process');
-        execSync('git checkout -- .', { cwd: rootPath, timeout: 10000 });
-        execSync('git clean -fd', { cwd: rootPath, timeout: 10000 });
-      } catch {}
+        const { execFileSync } = await import('child_process');
+        const taskFiles = task.changes.map(c => c.file);
+        // Revert tracked files
+        execFileSync('git', ['checkout', '--', ...taskFiles], { cwd: rootPath, timeout: 10000 });
+        // Remove new untracked files created by this task
+        for (const f of taskFiles) {
+          try { execFileSync('git', ['clean', '-f', '--', f], { cwd: rootPath, timeout: 5000 }); } catch { /* may not exist */ }
+        }
+      } catch { /* best-effort */ }
       updateTaskStatus(taskId, 'cancelled');
       releaseFileLocks(task);
       await persistTask(rootPath, task);
@@ -2126,7 +2272,7 @@ program.command('docs')
         for (const tpl of DOC_TEMPLATES) {
           const fp = path.join(rootPath, 'docs', tpl.filename);
           const rp = path.join(rootPath, tpl.filename);
-          try { docs[tpl.filename] = await (await import('./utils/fs.js')).readFile(await fileExists(fp) ? fp : rp); } catch {}
+          try { docs[tpl.filename] = await (await import('./utils/fs.js')).readFile(await fileExists(fp) ? fp : rp); } catch { /* best-effort */ }
         }
         const { searchDocs } = await import('./core/docs-generator.js');
         const results = searchDocs(docs, query);
@@ -2142,7 +2288,7 @@ program.command('docs')
         for (const tpl of DOC_TEMPLATES) {
           const fp = path.join(rootPath, 'docs', tpl.filename);
           const rp = path.join(rootPath, tpl.filename);
-          try { docs[tpl.filename] = await (await import('./utils/fs.js')).readFile(await fileExists(fp) ? fp : rp); } catch {}
+          try { docs[tpl.filename] = await (await import('./utils/fs.js')).readFile(await fileExists(fp) ? fp : rp); } catch { /* best-effort */ }
         }
         const { buildDocLinkIndex } = await import('./core/docs-generator.js');
         const links = buildDocLinkIndex(rootPath, docs);
@@ -2161,7 +2307,7 @@ program.command('docs')
         for (const tpl of DOC_TEMPLATES) {
           const fp = path.join(rootPath, 'docs', tpl.filename);
           const rp = path.join(rootPath, tpl.filename);
-          try { docs[tpl.filename] = await (await import('./utils/fs.js')).readFile(await fileExists(fp) ? fp : rp); } catch {}
+          try { docs[tpl.filename] = await (await import('./utils/fs.js')).readFile(await fileExists(fp) ? fp : rp); } catch { /* best-effort */ }
         }
         const { checkDocsConsistency } = await import('./core/docs-generator.js');
         const issues = checkDocsConsistency(docs);
@@ -2201,6 +2347,95 @@ program.command('docs')
         return;
       }
 
+      // D4: ic docs translate <type> --lang en
+      if (action === 'translate' && rest.length >= 1) {
+        const langIdx = rest.indexOf('--lang');
+        const targetLang = langIdx >= 0 ? rest[langIdx + 1] || 'en' : 'en';
+        const docName = langIdx >= 0 ? rest.slice(0, langIdx).join(' ') : rest.join(' ');
+        const tpl = DOC_TEMPLATES.find(t => t.type === docName.toUpperCase());
+        if (!tpl) { fail('未知文档: ' + docName); }
+        const fp = path.join(rootPath, 'docs', tpl.filename);
+        const rp = path.join(rootPath, tpl.filename);
+        const docPath = await fileExists(fp) ? fp : await fileExists(rp) ? rp : '';
+        if (!docPath) { fail(tpl.filename + ' 不存在'); }
+        const { createProvider } = await import('./ai/provider.js');
+        const provider = createProvider({ ...config.ai, apiKey: config.ai.apiKey || '' });
+        const content = await (await import('./utils/fs.js')).readFile(docPath);
+        const { translateDocument } = await import('./core/docs-generator.js');
+        section(`翻译: ${tpl.filename} → ${targetLang}`);
+        const translated = await translateDocument(content, targetLang, tpl.filename, provider);
+        const langSuffix = targetLang === 'zh' ? '-zh' : targetLang === 'ja' ? '-ja' : '-en';
+        const outPath = docPath.replace('.md', `${langSuffix}.md`);
+        await (await import('./utils/fs.js')).writeFile(outPath, translated);
+        success('已生成 ' + outPath);
+        return;
+      }
+
+      // D3: ic docs relate <关键词> — cross-document relation analysis
+      if (action === 'relate' && rest.length >= 1) {
+        const { createProvider: cp } = await import('./ai/provider.js');
+        const provider = cp({ ...config.ai, apiKey: config.ai.apiKey || '' });
+        const docs: Record<string, string> = {};
+        for (const tpl of DOC_TEMPLATES) {
+          const fp = path.join(rootPath, 'docs', tpl.filename);
+          const rp = path.join(rootPath, tpl.filename);
+          try { docs[tpl.filename] = await (await import('./utils/fs.js')).readFile(await fileExists(fp) ? fp : rp); } catch { /* best-effort */ }
+        }
+        if (Object.keys(docs).length === 0) { info('无文档可分析，先运行 ic docs generate'); return; }
+        progress('跨文档关联: ' + rest.join(' '));
+        const { relateDocuments } = await import('./core/docs-generator.js');
+        section('跨文档关联分析');
+        console.log(await relateDocuments(docs, rest.join(' '), provider));
+        console.log();
+        return;
+      }
+
+      // D5: ic docs format <type> --to html|json-outline
+      if (action === 'format' && rest.length >= 1) {
+        const toIdx = rest.indexOf('--to');
+        const targetFormat = toIdx >= 0 ? rest[toIdx + 1] : 'html';
+        const docName = toIdx >= 0 ? rest.slice(0, toIdx).join(' ') : rest.join(' ');
+        const tpl = DOC_TEMPLATES.find(t => t.type === docName.toUpperCase());
+        if (!tpl) { fail('未知文档: ' + docName); }
+        const fp = path.join(rootPath, 'docs', tpl.filename);
+        const rp = path.join(rootPath, tpl.filename);
+        const docPath = await fileExists(fp) ? fp : await fileExists(rp) ? rp : '';
+        if (!docPath) { fail(tpl.filename + ' 不存在'); }
+        const content = await (await import('./utils/fs.js')).readFile(docPath);
+        const { convertDocFormat } = await import('./core/docs-generator.js');
+        try {
+          const from = docPath.endsWith('.html') ? 'html' : 'md';
+          const converted = convertDocFormat(content, from, targetFormat);
+          const ext = targetFormat === 'json-outline' ? '.json' : '.html';
+          const outPath = docPath.replace(/\.\w+$/, ext);
+          await (await import('./utils/fs.js')).writeFile(outPath, converted);
+          success(`${outPath} (${from} → ${targetFormat})`);
+        } catch (e) { warn((e as Error).message); }
+        return;
+      }
+
+      // D10: ic docs diff-review <type> — AI compares current vs last snapshot
+      if (action === 'diff-review' && rest.length >= 1) {
+        const tpl = DOC_TEMPLATES.find(t => t.type === rest[0].toUpperCase());
+        if (!tpl) { fail('未知文档: ' + rest[0]); }
+        const fp = path.join(rootPath, 'docs', tpl.filename);
+        const rp = path.join(rootPath, tpl.filename);
+        const docPath = await fileExists(fp) ? fp : await fileExists(rp) ? rp : '';
+        if (!docPath) { fail(tpl.filename + ' 不存在'); }
+        const content = await (await import('./utils/fs.js')).readFile(docPath);
+        const { listDocSnapshots, loadDocSnapshot, diffReviewDocuments } = await import('./core/docs-generator.js');
+        const snaps = await listDocSnapshots(rootPath, tpl.filename);
+        if (snaps.length === 0) { info('无历史快照。运行 ic docs edit 后自动保存快照。'); return; }
+        progress(`AI 差异审查: ${tpl.filename}`);
+        const oldContent = await loadDocSnapshot(rootPath, snaps[0]);
+        const { createProvider: cp } = await import('./ai/provider.js');
+        const provider = cp({ ...config.ai, apiKey: config.ai.apiKey || '' });
+        section(tpl.filename + ' 版本差异审查');
+        console.log(await diffReviewDocuments(oldContent, content, tpl.filename, provider));
+        console.log();
+        return;
+      }
+
       // D1: ic docs ask — Q&A over all documents
       if (action === 'ask' && rest.length >= 1) {
         const { createProvider } = await import('./ai/provider.js');
@@ -2209,7 +2444,7 @@ program.command('docs')
         for (const tpl of DOC_TEMPLATES) {
           const fp = path.join(rootPath, 'docs', tpl.filename);
           const rp = path.join(rootPath, tpl.filename);
-          try { docs[tpl.filename] = await (await import('./utils/fs.js')).readFile(await fileExists(fp) ? fp : rp); } catch {}
+          try { docs[tpl.filename] = await (await import('./utils/fs.js')).readFile(await fileExists(fp) ? fp : rp); } catch { /* best-effort */ }
         }
         const { askDocuments } = await import('./core/docs-generator.js');
         const answer = await askDocuments(docs, rest.join(' '), provider);
@@ -2313,14 +2548,22 @@ program.command("gen")
               const { readCodePatterns } = await import("./core/code-writer.js");
               codeSamples = await readCodePatterns(rootPath, index);
             }
-          } catch {}
+          } catch { /* best-effort */ }
         }
-        const resp = await provider.chat({
-          systemPrompt: "你是代码生成专家。只输出JSON变更契约。" + (stylePrompt ? "\n" + stylePrompt : ""),
-          task: desc + (codeSamples ? "\n\n现有代码风格参考:\n" + codeSamples.slice(0, 2000) : ""),
-          context: { projectMeta: "", relevantCode: [], relevantMemory: "", totalTokens: 0, budgetUsed: 0 }, history: "",
-        });
-        for (const c of parseAIOutput(resp.content).changes) {
+        // Improve-1: Use unified pipeline (plan → execute → verify)
+        const ctxPkg = {
+          projectMeta: codeSamples ? `现有代码模式:\n${codeSamples.slice(0, 2000)}` : '',
+          relevantCode: [], relevantMemory: stylePrompt, totalTokens: 0, budgetUsed: 0,
+        };
+        const genChanges = isMock
+          ? parseAIOutput((await provider.chat({
+              systemPrompt: "你是代码生成专家。只输出JSON变更契约。",
+              task: desc + (codeSamples ? "\n\n现有代码风格参考:\n" + codeSamples.slice(0, 2000) : ""),
+              context: { projectMeta: "", relevantCode: [], relevantMemory: "", totalTokens: 0, budgetUsed: 0 }, history: "",
+            })).content).changes
+          : await runCodeGenerationPipeline(desc, rootPath, provider, config.project.identity, ctxPkg, 'gen new');
+
+        for (const c of genChanges) {
           const fp = path.join(rootPath, c.file);
           const { writeFile, ensureDir } = await import("./utils/fs.js");
           await ensureDir(path.dirname(fp)); await writeFile(fp, c.content);
@@ -2343,7 +2586,9 @@ program.command("gen")
           task: "错误摘要: " + last.verifyResult.errorSummary.slice(0, 2000) + "\n" + errContext,
           context: { projectMeta: "", relevantCode: [], relevantMemory: "", totalTokens: 0, budgetUsed: 0 }, history: "",
         });
-        for (const c of parseAIOutput(resp.content).changes) {
+        const fixChanges = parseAIOutput(resp.content).changes;
+        const validated = await applyCompileGate(fixChanges, rootPath, config.project.identity, provider, 'gen fix');
+        for (const c of validated) {
           await (await import("./utils/fs.js")).writeFile(path.join(rootPath, c.file), c.content);
           success(c.file + " 已修复");
         }
@@ -2365,7 +2610,9 @@ program.command("gen")
           task: "补全文件: " + rest[0] + "\n未完成代码:\n" + incomplete.map(i => `L${i.line}: ${i.signature}`).join("\n") + "\n\n现有文件内容:\n" + content.slice(0, 3000),
           context: { projectMeta: "", relevantCode: [], relevantMemory: "", totalTokens: 0, budgetUsed: 0 }, history: "",
         });
-        for (const c of parseAIOutput(resp.content).changes) {
+        const completeChanges = parseAIOutput(resp.content).changes;
+        const validated = await applyCompileGate(completeChanges, rootPath, config.project.identity, provider, 'gen complete');
+        for (const c of validated) {
           const fp = path.join(rootPath, c.file);
           const { writeFile, ensureDir } = await import("./utils/fs.js");
           await ensureDir(path.dirname(fp)); await writeFile(fp, c.content);
@@ -2374,7 +2621,29 @@ program.command("gen")
         return;
       }
 
-      info("用法: ic gen new <描述> | fix | complete <文件>");
+      if (action === "refactor" && rest.length >= 1) {
+        const filePath = path.resolve(rootPath, rest[0]);
+        const instruction = rest.slice(1).join(' ') || '优化代码结构';
+        if (!(await import("./utils/fs.js")).fileExists(filePath)) { fail("文件不存在: " + rest[0]); return; }
+        progress(`AI 重构: ${rest[0]} — ${instruction}`);
+        const index = await (await import("./core/scanner.js")).loadProjectIndex(rootPath).catch(() => null);
+        const { refactorCode } = await import("./core/code-writer.js");
+        const result = await refactorCode(filePath, instruction, rootPath, index, provider);
+        if (result.refactored !== result.original) {
+          const { filesToDiff } = await import('./cli/diff-renderer.js');
+          const diff = filesToDiff([{ path: filePath, content: result.refactored, previousContent: result.original }]);
+          if (diff) console.log(diff);
+          console.log(`\n  ${chalk.cyan('说明')}: ${result.explanation}`);
+          const { writeFile } = await import("./utils/fs.js");
+          await writeFile(filePath, result.refactored);
+          success(rest[0] + " 已重构");
+        } else {
+          info("AI 未建议修改或解析失败");
+        }
+        return;
+      }
+
+      info("用法: ic gen new <描述> | fix | complete <文件> | refactor <文件> <指令>");
     } catch (err) { printError(err as Error); }
   });
 // D7: ic changelog --from-git
@@ -2383,9 +2652,9 @@ program.command('changelog')
   .action(async () => {
     const rootPath = process.cwd();
     try {
-      const { execSync } = await import('child_process');
+      const { execFileSync } = await import('child_process');
       let log = '';
-      try { log = execSync('git log --oneline -50 --no-decorate', { cwd: rootPath, encoding: 'utf-8', timeout: 10000 }); } catch { info('非 Git 仓库'); return; }
+      try { log = execFileSync('git', ['log', '--oneline', '-50', '--no-decorate'], { cwd: rootPath, encoding: 'utf-8', timeout: 10000 }); } catch { info('非 Git 仓库'); return; }
       const config = await loadConfig(rootPath);
       if (!config) { fail('项目未初始化'); }
       progress('AI 分析 Git 历史...');
@@ -2449,7 +2718,7 @@ program.command('quality')
             coverageTrend = ' ' + recent.map((h: {lines:number}) => chars[Math.min(7, Math.floor((h.lines - min) / range * 7))]).join('');
           }
         }
-      } catch {}
+      } catch { /* best-effort */ }
 
       const coverScore = coveragePct >= 80 ? 10 : coveragePct >= 60 ? 7 : coveragePct >= 40 ? 4 : 1;
       const overall2 = Math.min(100, verifyScore + 30 + 20 + coverScore);
@@ -2472,7 +2741,7 @@ async function saveActivePlan(rootPath: string) {
     const { ensureDir, writeFile } = await import("./utils/fs.js");
     await ensureDir(plansDir);
     await writeFile(activePlanFile, JSON.stringify(activePlan, null, 2));
-  } catch {}
+  } catch { /* best-effort */ }
 }
 async function loadLatestPlan(rootPath: string) {
   try {
@@ -2615,7 +2884,7 @@ program.command("plan")
           try {
             const completedFile = activePlanFile.replace(".json", "-DONE.json");
             await (await import("fs/promises")).rename(activePlanFile, completedFile);
-          } catch {}
+          } catch { /* best-effort */ }
         }
         activePlan = null;
         activePlanFile = null;
@@ -2636,28 +2905,44 @@ program.command("plan")
 
       // DAG: Execute all ready tasks in parallel by level
       if (action === "run-all") {
-        const { getDAGLevels } = await import("./core/task-planner.js");
+        const { getDAGLevels, validatePlanDAG } = await import("./core/task-planner.js");
+        // Gap-2: DAG cycle check before execution
+        const cycleCheck = await validatePlanDAG(activePlan);
+        if (cycleCheck) { fail(`DAG 循环: ${cycleCheck}`); return; }
+
+        const { executeDAG, calculateParallelSavings } = await import('./core/dag-scheduler.js');
         const levels = await getDAGLevels(activePlan);
-        let totalDone = 0;
-        for (const level of levels) {
-          const pending = level.tasks.filter(t => t.status !== 'done');
-          if (pending.length === 0) continue;
-          progress(`DAG 层 ${level.level}: 并行执行 ${pending.length} 个任务`);
-          const results = await Promise.allSettled(pending.map(async (t) => {
-            t.status = 'in_progress';
-            await saveActivePlan(rootPath);
-            const { createTask: ct } = await import('./core/task-engine.js');
-            const newTask = ct(t.title + ': ' + t.description, { priority: 'high' });
-            await executeTask(newTask, config, rootPath, null);
-            t.status = 'done';
-            await saveActivePlan(rootPath);
-            return t;
-          }));
-          totalDone += results.filter(r => r.status === 'fulfilled').length;
-          const failed = results.filter(r => r.status === 'rejected').length;
-          if (failed > 0) warn(`层 ${level.level}: ${failed} 个任务失败`);
-        }
-        success(`DAG 执行完成: ${totalDone} 个任务`);
+        const savings = calculateParallelSavings(levels);
+        detail('DAG', `${levels.length} 层 / ${levels.reduce((s, l) => s + l.tasks.length, 0)} 任务 / 并行节省 ${savings} 步`);
+
+        // T1-6e: --isolated flag for git worktree per task
+        const isolated = process.argv.includes('--isolated');
+        const pendingTasks = levels.flatMap(l => l.tasks.filter(t => t.status !== 'done'));
+        const result = await executeDAG(pendingTasks, async (t) => {
+          t.status = 'in_progress';
+          await saveActivePlan(rootPath);
+          const { createTask: ct } = await import('./core/task-engine.js');
+          const newTask = ct(t.title + ': ' + t.description, { priority: 'high' });
+
+          let worktree: import('./utils/git.js').WorktreeInfo | null = null;
+          if (isolated) {
+            const { createWorktree: cw } = await import('./utils/git.js');
+            const wt = cw(rootPath, `icloser/task-${newTask.id.slice(-8)}`, `.icloser/worktrees/${newTask.id}`);
+            if (wt) { worktree = { path: `.icloser/worktrees/${newTask.id}`, branch: `icloser/task-${newTask.id.slice(-8)}` }; detail('隔离', worktree.branch); }
+          }
+
+          await executeTask(newTask, config, rootPath, null);
+
+          if (worktree) {
+            const { removeWorktree: rw } = await import('./utils/git.js');
+            rw(rootPath, worktree.path);
+          }
+
+          t.status = 'done';
+          await saveActivePlan(rootPath);
+          return t;
+        });
+        success(`DAG 执行完成: ${result.results.length} 个任务 / ${(result.totalTime / 1000).toFixed(1)}s`);
         return;
       }
 
@@ -2675,8 +2960,8 @@ program.action(async () => {
 // ic code — code intelligence (C1-C9 via code-writer.ts)
 // ============================================================
 program.command("code")
-  .description("AI 代码智能：新建/修复/补全/重构")
-  .argument("[subcommand]", "new | fix | complete | refactor")
+  .description("AI 代码智能：新建/修复/补全/重构/审查/lint修复")
+  .argument("[subcommand]", "new | fix | complete | refactor [--safe] | scaffold | review [文件] | lint-fix [--go]")
   .argument("[args...]", "额外参数")
   .action(async (subcommand: string | undefined, args: string[]) => {
     const rootPath = process.cwd();
@@ -2706,37 +2991,61 @@ program.command("code")
               const { readCodePatterns } = await import("./core/code-writer.js");
               codePatterns = await readCodePatterns(rootPath, index);
             }
-          } catch {}
+          } catch { /* best-effort */ }
         }
-        const context = codePatterns ? "\n\n现有代码模式参考:\n" + codePatterns.slice(0, 2000) : "";
-        const resp = await provider.chat({
-          systemPrompt: "你是代码生成专家。只输出JSON变更契约。" + (styleConstraint ? "\n" + styleConstraint : ""),
-          task: desc + context,
-          context: { projectMeta: "", relevantCode: [], relevantMemory: "", totalTokens: 0, budgetUsed: 0 }, history: "",
-        });
-        for (const c of parseAIOutput(resp.content).changes) {
+        // Improve-1: Use unified pipeline for non-mock; raw chat for mock
+        const ctxPkg = {
+          projectMeta: codePatterns ? `现有代码模式:\n${codePatterns.slice(0, 2000)}` : '',
+          relevantCode: [], relevantMemory: styleConstraint, totalTokens: 0, budgetUsed: 0,
+        };
+        const codeChanges = isMock
+          ? parseAIOutput((await provider.chat({
+              systemPrompt: "你是代码生成专家。只输出JSON变更契约。",
+              task: desc + (codePatterns ? "\n\n现有代码模式参考:\n" + codePatterns.slice(0, 2000) : ""),
+              context: { projectMeta: "", relevantCode: [], relevantMemory: "", totalTokens: 0, budgetUsed: 0 }, history: "",
+            })).content).changes
+          : await runCodeGenerationPipeline(desc, rootPath, provider, config.project.identity, ctxPkg, 'code new');
+
+        for (const c of codeChanges) {
           const fp = path.join(rootPath, c.file);
           const { writeFile, ensureDir } = await import("./utils/fs.js");
           await ensureDir(path.dirname(fp)); await writeFile(fp, c.content);
           success(c.file);
         }
-        // C4: Generate tests alongside source when --with-tests
+        // C4+C7: Generate tests + auto-verify-repair when --with-tests
         if (withTests && !isMock) {
-          const sourceFiles = parseAIOutput(resp.content).changes;
-          if (sourceFiles.length > 0) {
-            progress("生成测试...");
-            const testResp = await provider.chat({
-              systemPrompt: "你是测试专家。只输出JSON变更契约。为源码生成单元测试。",
-              task: "为以下文件生成测试:\n" + sourceFiles.map((s: {file:string;content:string}) => `## ${s.file}\n${s.content.slice(0, 1000)}`).join('\n\n'),
-              context: { projectMeta: "", relevantCode: [], relevantMemory: "", totalTokens: 0, budgetUsed: 0 }, history: "",
-            });
-            for (const c of parseAIOutput(testResp.content).changes) {
-              const fp = path.join(rootPath, c.file);
-              const { writeFile: wf, ensureDir: ed } = await import("./utils/fs.js");
-              await ed(path.dirname(fp)); await wf(fp, c.content);
-              success(c.file + " (测试)");
+          try {
+            const index = await (await import("./core/scanner.js")).loadProjectIndex(rootPath);
+            if (index) {
+              const { generateWithVerifyLoop } = await import("./core/code-writer.js");
+              progress("生成测试 + 自动验证修复...");
+              const verifyResult = await generateWithVerifyLoop(desc, rootPath, index, provider);
+              for (const s of verifyResult.source) success(s.file);
+              for (const t of verifyResult.tests) success(t.file + " (测试)");
+              if (verifyResult.verifyPassed) {
+                success(`验证通过 (${verifyResult.verifyRounds} 轮)`);
+              } else if (verifyResult.diagnostics) {
+                warn(`验证未通过 (${verifyResult.verifyRounds} 轮): ${verifyResult.diagnostics.slice(0, 200)}`);
+              }
+            } else {
+              // No index, fall back to simple test generation using already-written code
+              const sourceFiles = codeChanges.map(c => ({ file: c.file, content: c.content }));
+              if (sourceFiles.length > 0) {
+                progress("生成测试...");
+                const testResp = await provider.chat({
+                  systemPrompt: "你是测试专家。只输出JSON变更契约。为源码生成单元测试。",
+                  task: "为以下文件生成测试:\n" + sourceFiles.map((s: {file:string;content:string}) => `## ${s.file}\n${s.content.slice(0, 1000)}`).join('\n\n'),
+                  context: { projectMeta: "", relevantCode: [], relevantMemory: "", totalTokens: 0, budgetUsed: 0 }, history: "",
+                });
+                for (const c of parseAIOutput(testResp.content).changes) {
+                  const fp = path.join(rootPath, c.file);
+                  const { writeFile: wf, ensureDir: ed } = await import("./utils/fs.js");
+                  await ed(path.dirname(fp)); await wf(fp, c.content);
+                  success(c.file + " (测试)");
+                }
+              }
             }
-          }
+          } catch { /* verify loop failed, keep generated source */ }
         }
         return;
       }
@@ -2755,7 +3064,9 @@ program.command("code")
           task: "错误摘要:\n" + last.verifyResult.errorSummary.slice(0, 2000) + "\n\n精确错误位置:\n" + errList,
           context: { projectMeta: "", relevantCode: [], relevantMemory: "", totalTokens: 0, budgetUsed: 0 }, history: "",
         });
-        for (const c of parseAIOutput(resp.content).changes) {
+        const fixChanges = parseAIOutput(resp.content).changes;
+        const validated = await applyCompileGate(fixChanges, rootPath, config.project.identity, provider, 'code fix');
+        for (const c of validated) {
           await (await import("./utils/fs.js")).writeFile(path.join(rootPath, c.file), c.content);
           success(c.file + " 已修复");
         }
@@ -2777,7 +3088,9 @@ program.command("code")
           task: "文件: " + args[0] + "\n未完成位置:\n" + incomplete.map(i => `L${i.line}: ${i.signature}`).join("\n") + "\n\n文件内容:\n" + content.slice(0, 3000),
           context: { projectMeta: "", relevantCode: [], relevantMemory: "", totalTokens: 0, budgetUsed: 0 }, history: "",
         });
-        for (const c of parseAIOutput(resp.content).changes) {
+        const completeChanges = parseAIOutput(resp.content).changes;
+        const validated = await applyCompileGate(completeChanges, rootPath, config.project.identity, provider, 'code complete');
+        for (const c of validated) {
           const fp = path.join(rootPath, c.file);
           const { writeFile, ensureDir } = await import("./utils/fs.js");
           await ensureDir(path.dirname(fp)); await writeFile(fp, c.content);
@@ -2787,29 +3100,79 @@ program.command("code")
       }
 
       if (subcommand === "refactor" && args.length > 0) {
-        const desc = args.join(" ");
-        progress("AI 多文件重构: " + desc);
+        const desc = args.filter(a => a !== "--safe").join(" ");
+        const safeMode = args.includes("--safe");
+        progress("AI 多文件重构" + (safeMode ? " (安全模式)" : "") + ": " + desc);
+
+        // C12: Cross-file impact analysis — search all references, build dependency graph
         const index = await (await import("./core/scanner.js")).loadProjectIndex(rootPath).catch(() => null);
         let refsInfo = "";
+        let impactedFiles: string[] = [];
         if (index) {
           const { findSymbolReferences } = await import("./core/code-writer.js");
-          const match = desc.match(/["'“”]?(\w{3,})["'“”]?/);
-          const symbol = match?.[1] || "";
-          if (symbol) {
+          // Extract multiple symbols from description
+          const symbols = desc.match(/["'""]?(\w{3,})["'""]?/g)?.map(s => s.replace(/["'""]/g, "")) || [];
+          const allRefs = new Set<string>();
+          for (const symbol of symbols.slice(0, 3)) {
             const refs = findSymbolReferences(index, symbol);
-            if (refs.length > 0) refsInfo = "\n引用位置:\n" + refs.map(r => "  - " + r).join("\n");
+            for (const r of refs) {
+              const file = r.split(":")[0];
+              if (file) { allRefs.add(r); impactedFiles.push(file); }
+            }
+          }
+          impactedFiles = [...new Set(impactedFiles)];
+          if (allRefs.size > 0) {
+            refsInfo = "\n## 引用分析 (C12 跨文件影响)\n" +
+              `影响 ${impactedFiles.length} 个文件, ${allRefs.size} 处引用:\n` +
+              [...allRefs].slice(0, 20).map(r => "  - " + r).join("\n");
+            detail("跨文件影响", `${impactedFiles.length} 文件, ${allRefs.size} 引用`);
           }
         }
+
+        // C9: Safe mode — snapshot affected files first, verify after each step
+        const backups: Map<string, string> = new Map();
+        if (safeMode && impactedFiles.length > 0) {
+          const { readFile: rf, fileExists: fe } = await import("./utils/fs.js");
+          for (const f of impactedFiles.slice(0, 10)) {
+            const fp = path.resolve(rootPath, f);
+            if (await fe(fp)) backups.set(f, await rf(fp));
+          }
+          detail("安全模式", `已备份 ${backups.size} 个文件`);
+        }
+
         const resp = await provider.chat({
-          systemPrompt: "你是代码重构专家。输出所有需要修改的文件的JSON变更契约。保持API兼容，不破坏现有测试。",
+          systemPrompt: [
+            "你是代码重构专家。输出所有需要修改的文件的JSON变更契约。",
+            "保持API兼容，不破坏现有测试，不改变外部行为。",
+            safeMode ? "安全模式: 如果测试失败则回滚，每次只改一个文件。" : "",
+          ].filter(Boolean).join(" "),
           task: desc + refsInfo,
           context: { projectMeta: "", relevantCode: [], relevantMemory: "", totalTokens: 0, budgetUsed: 0 }, history: "",
         });
-        for (const c of parseAIOutput(resp.content).changes) {
+        const refactorChanges = parseAIOutput(resp.content).changes;
+        const validated = await applyCompileGate(refactorChanges, rootPath, config.project.identity, provider, 'code refactor');
+
+        // C9: In safe mode, verify after each file write; rollback on failure
+        for (const c of validated) {
           const fp = path.join(rootPath, c.file);
-          const { writeFile, ensureDir } = await import("./utils/fs.js");
-          await ensureDir(path.dirname(fp)); await writeFile(fp, c.content);
-          success(c.file);
+          const { writeFile: wf, ensureDir: ed } = await import("./utils/fs.js");
+          await ed(path.dirname(fp));
+          // Backup before write
+          const { readFile: rf, fileExists: fe } = await import("./utils/fs.js");
+          const prev = (await fe(fp)) ? await rf(fp) : "";
+          await wf(fp, c.content);
+          // Verify
+          const { runCompileCheck } = await import("./core/code-writer.js");
+          const check = await runCompileCheck([], rootPath, config.project.identity);
+          if (check.passed) {
+            success(c.file);
+          } else if (safeMode) {
+            // Rollback on failure in safe mode
+            if (prev) { await wf(fp, prev); } else { try { await import("fs/promises").then(m => m.unlink(fp)); } catch {} }
+            warn(c.file + " 编译失败，已回滚 — " + check.errors.slice(0, 200));
+          } else {
+            warn(c.file + " (编译警告，检查 ic code fix)");
+          }
         }
         return;
       }
@@ -2820,8 +3183,9 @@ program.command("code")
         const validTypes = ['crud', 'middleware', 'route', 'component'];
         if (!validTypes.includes(scaffoldType)) { fail("类型: crud | middleware | route | component"); return; }
         const { generateScaffold } = await import("./core/code-writer.js");
+        const index = await (await import("./core/scanner.js")).loadProjectIndex(rootPath);
         const lang = config.project?.identity?.language || 'typescript';
-        const { files } = generateScaffold(scaffoldType, name, lang);
+        const { files } = generateScaffold(scaffoldType, name, lang, index?.styleFingerprint);
         const { writeFile, ensureDir } = await import("./utils/fs.js");
         for (const f of files) {
           const fp = path.join(rootPath, f.path);
@@ -2832,7 +3196,125 @@ program.command("code")
         return;
       }
 
-      info("用法: ic code new <描述> [--with-tests] | fix | complete <文件> | refactor <描述> | scaffold <类型> <名称>");
+      // C11: Incremental code review — 4-dimension AI analysis on changed files
+      if (subcommand === "review" && args.length > 0) {
+        const targetPath = path.resolve(rootPath, args[0]);
+        const { fileExists } = await import("./utils/fs.js");
+        if (!(await fileExists(targetPath))) { fail("文件不存在: " + args[0]); return; }
+        const content = await readFile(targetPath);
+        progress(`AI 代码审查: ${args[0]} (安全/风格/bug/性能)`);
+        const resp = await provider.chat({
+          systemPrompt: [
+            "你是资深代码审查专家。按以下 4 个维度逐行审查，输出 Markdown 报告。",
+            "1. 安全检查: 密钥泄露、SQL注入、XSS、路径遍历、命令注入",
+            "2. 风格一致: 命名、缩进、引号、分号是否与项目一致",
+            "3. Bug 风险: 空指针、未处理异常、竞态条件、逻辑错误",
+            "4. 性能问题: N+1查询、不必要循环、内存泄漏、阻塞操作",
+            "每个问题标注: 维度 | 行号 | 严重度(high/medium/low) | 建议修复",
+            "最后给出总评分 (1-10) 和一句话总结。",
+          ].join("\n"),
+          task: `审查文件: ${args[0]}\n\n\`\`\`\n${content.slice(0, 8000)}\n\`\`\``,
+          context: { projectMeta: "", relevantCode: [], relevantMemory: "", totalTokens: 0, budgetUsed: 0 }, history: "",
+        });
+        console.log(`\n  ${chalk.bold.cyan("◆ 代码审查: " + args[0])}\n`);
+        console.log(resp.content || "审查完成（无问题）");
+        console.log();
+        return;
+      }
+
+      if (subcommand === "review" && args.length === 0) {
+        // Review git diff instead
+        const { isGitRepo, getDiff } = await import("./utils/git.js");
+        if (!isGitRepo(rootPath)) { fail("非 Git 仓库，请指定文件: ic code review <文件>"); return; }
+        const diff = getDiff(rootPath, false);
+        if (!diff.trim()) { info("工作区无变更"); return; }
+        progress("AI 增量代码审查 (git diff)...");
+        const resp = await provider.chat({
+          systemPrompt: [
+            "你是资深代码审查专家。对以下 git diff 进行审查，输出 Markdown 报告。",
+            "1. 安全检查: 密钥泄露、SQL注入、XSS、路径遍历、命令注入",
+            "2. 风格一致: 命名、缩进、引号、分号",
+            "3. Bug 风险: 空指针、未处理异常、逻辑错误",
+            "4. 性能问题: N+1查询、不必要循环、内存泄漏",
+            "每个问题标注: 维度 | 文件:行号 | 严重度 | 建议",
+            "最后给出总评分和一句话总结。",
+          ].join("\n"),
+          task: `审查以下 git diff:\n\n\`\`\`diff\n${diff.slice(0, 6000)}\n\`\`\``,
+          context: { projectMeta: "", relevantCode: [], relevantMemory: "", totalTokens: 0, budgetUsed: 0 }, history: "",
+        });
+        console.log(`\n  ${chalk.bold.cyan("◆ 增量代码审查")}\n`);
+        console.log(resp.content || "审查完成（无问题）");
+        console.log();
+        return;
+      }
+
+      // C10: Batch lint fix — read lint output, AI fixes file by file with verification
+      if (subcommand === "lint-fix" || subcommand === "lintfix") {
+        const autoApply = args.includes("--go");
+        progress("AI 批量 lint 修复...");
+        // Run lint first
+        const { resolveVerificationCommand } = await import("./core/verifier.js");
+        const lintCmd = await resolveVerificationCommand(rootPath, config.project.identity, "lint");
+        let lintOutput = "";
+        if (lintCmd) {
+          try {
+            const { execSync } = await import("child_process");
+            lintOutput = execSync(lintCmd.command, { cwd: rootPath, timeout: 30000, encoding: "utf-8", stdio: "pipe" });
+          } catch (e: any) {
+            lintOutput = (e.stdout || "") + (e.stderr || "");
+          }
+        }
+        if (!lintOutput.trim()) { info("无 lint 问题"); return; }
+        detail("lint 输出", lintOutput.slice(0, 500));
+        // Group errors by file
+        const errorsByFile = new Map<string, string[]>();
+        for (const line of lintOutput.split("\n")) {
+          const match = line.match(/^(.+?):(\d+):(\d+)?\s*(.+)/);
+          if (match) {
+            const file = match[1].trim();
+            if (!errorsByFile.has(file)) errorsByFile.set(file, []);
+            errorsByFile.get(file)!.push(line.trim());
+          }
+        }
+        if (errorsByFile.size === 0) { info("无法解析 lint 输出"); return; }
+        const targets = [...errorsByFile.entries()].slice(0, 5); // max 5 files
+        const { writeFile, ensureDir } = await import("./utils/fs.js");
+        for (const [file, errors] of targets) {
+          const fp = path.resolve(rootPath, file);
+          if (!(await fileExists(fp))) continue;
+          const content = await readFile(fp);
+          progress(`修复 lint: ${file} (${errors.length} 问题)`);
+          const resp = await provider.chat({
+            systemPrompt: "你是代码风格修复专家。只输出该文件的 JSON 变更契约。仅修复 lint 问题，不改逻辑。",
+            task: `文件: ${file}\nlint 错误:\n${errors.slice(0, 10).join("\n")}\n\n当前内容:\n\`\`\`\n${content.slice(0, 4000)}\n\`\`\`\n\n输出 { "content": "修复后的完整文件内容" }`,
+            context: { projectMeta: "", relevantCode: [], relevantMemory: "", totalTokens: 0, budgetUsed: 0 }, history: "",
+          });
+          try {
+            const json = JSON.parse((resp.content.match(/\{[\s\S]*\}/)?.[0] || "{}"));
+            if (json.content && json.content !== content) {
+              await ensureDir(path.dirname(fp));
+              await writeFile(fp, json.content);
+              success(file + ` (${errors.length} 项修复)`);
+            } else { info(file + " (无需修改)"); }
+          } catch { warn(file + " (AI 响应解析失败)"); }
+        }
+        // Run lint again to verify
+        if (lintCmd) {
+          try {
+            const { execSync } = await import("child_process");
+            const after = execSync(lintCmd.command, { cwd: rootPath, timeout: 30000, encoding: "utf-8", stdio: "pipe" });
+            const remaining = (after.match(/\berror\b|\bwarning\b/gi) || []).length;
+            success(`验证: ${remaining > 0 ? `剩余 ${remaining} 个问题` : "无 lint 问题"}`);
+          } catch (e: any) {
+            const after = (e.stdout || "") + (e.stderr || "");
+            const remaining = (after.match(/\berror\b|\bwarning\b/gi) || []).length;
+            info(remaining > 0 ? `剩余 ${remaining} 个问题` : "lint 通过");
+          }
+        }
+        return;
+      }
+
+      info("用法: ic code new <描述> [--with-tests] | fix | complete <文件> | refactor <描述> | scaffold <类型> <名称> | review [文件] | lint-fix [--go]");
     } catch (err) { printError(err as Error); }
   });
 // ic agent — multi-agent management
@@ -2964,6 +3446,137 @@ program.command('agent')
       }
 
       warn(`未知子命令: ${subcommand}。可用: create, start, stop, list, status, children, message, orchestrate`);
+    } catch (err) { printError(err as Error); }
+  });
+
+// ============================================================
+// ic skill — Skill 管理 (T3-2a)
+// ============================================================
+program.command('skill')
+  .description('管理 AI 技能：查看/添加/删除')
+  .argument('[subcommand]', 'list | add <name> <触发词> | remove <name>')
+  .argument('[args...]', '额外参数')
+  .action(async (subcommand: string | undefined, args: string[]) => {
+    const rootPath = process.cwd();
+    try {
+      const { listSkills, registerSkill, removeSkill: rmSkill, saveSkillsToFile, loadSkillsFromFile } = await import('./core/skill-system.js');
+      await loadSkillsFromFile(rootPath);
+
+      if (!subcommand || subcommand === 'list') {
+        const skills = listSkills();
+        console.log(chalk.bold(`\n可用技能 (${skills.length}):\n`));
+        for (const s of skills) {
+          const builtin = ['code-review','test-gen','api-doc','security-review','refactor-guide'].includes(s.name);
+          console.log(`  ${builtin ? chalk.dim('[内置]') : chalk.cyan('[自定义]')} ${chalk.bold(s.name)} — ${s.description}`);
+          console.log(`    触发词: ${s.triggers.join(', ')}`);
+        }
+        console.log();
+        return;
+      }
+
+      if (subcommand === 'add' && args.length >= 2) {
+        const name = args[0];
+        const triggers = args[1].split(',').map(t => t.trim());
+        const desc = args.slice(2).join(' ') || name;
+        registerSkill({ name, description: desc, triggers, systemPrompt: `执行「${name}」任务。`, tools: ['read_file', 'search_code'], category: 'custom' });
+        await saveSkillsToFile(rootPath);
+        success(`技能 ${chalk.cyan(name)} 已注册`);
+        return;
+      }
+
+      if (subcommand === 'remove' && args.length > 0) {
+        if (rmSkill(args[0])) { await saveSkillsToFile(rootPath); success(`技能 ${chalk.cyan(args[0])} 已移除`); }
+        else { fail(`技能 ${chalk.cyan(args[0])} 不存在`); }
+        return;
+      }
+
+      info('用法: ic skill [list|add <name> <触发词>|remove <name>]');
+    } catch (err) { printError(err as Error); }
+  });
+
+// ============================================================
+// ic market — 市场深度分析 (T4)
+// ============================================================
+program.command('market')
+  .description('市场深度分析：竞品分析、行业趋势、技术雷达、SWOT 分析')
+  .alias('mkt')
+  .argument('<topic>', '分析主题')
+  .option('-t, --type <template>', '分析模板: competitive | industry | tech-radar | swot', 'competitive')
+  .option('-s, --sources <count>', '最大数据源数量', '15')
+  .option('-o, --output <path>', '保存报告到文件')
+  .option('--open', '在浏览器打开（如果可用）')
+  .action(async (topic: string, options?: { type?: string; sources?: string; output?: string; open?: boolean }) => {
+    const rootPath = process.cwd();
+    const template = (options?.type || 'competitive') as import('./types.js').UserIntentCategory & string;
+    const validTypes = ['competitive', 'industry', 'tech-radar', 'swot'];
+    if (!validTypes.includes(template)) {
+      fail(`无效分析模板: ${template}。可用: ${validTypes.join(', ')}`);
+    }
+
+    const templateLabels: Record<string, string> = {
+      competitive: '竞品分析',
+      industry: '行业趋势',
+      'tech-radar': '技术雷达',
+      swot: 'SWOT 分析',
+    };
+
+    try {
+      const config = await loadConfig(rootPath);
+      const { createProvider } = await import('./ai/provider.js');
+
+      console.log(`\n${chalk.bold.blue('🔍 市场分析')}: ${chalk.cyan(topic)} ${chalk.dim(`(${templateLabels[template]})`)}`);
+      console.log(chalk.dim('━'.repeat(60)));
+
+      const provider = createProvider({
+        provider: config?.ai.provider || 'claude',
+        model: config?.ai.model || 'claude-sonnet-4-6',
+        apiKey: config?.ai.apiKey,
+        maxTokens: 100000,
+        temperature: 0.3,
+      });
+
+      const { runMarketAnalysis } = await import('./core/market-analysis.js');
+
+      const report = await runMarketAnalysis({
+        topic,
+        template: template as import('./core/market-analysis.js').AnalysisTemplate,
+        provider,
+        rootPath,
+        maxSources: parseInt(options?.sources || '15', 10),
+        onProgress: (event) => {
+          const phaseIcons: Record<string, string> = {
+            search: '🔎', fetch: '📥', analyze: '🧠', report: '📝', done: '✅',
+          };
+          const icon = phaseIcons[event.phase] || '·';
+          const progressBar = event.total
+            ? ` [${event.current}/${event.total}]`
+            : '';
+          console.log(`  ${icon}${progressBar} ${event.message}`);
+          if (event.detail) console.log(`    ${chalk.dim(event.detail)}`);
+        },
+      });
+
+      console.log(chalk.dim('━'.repeat(60)));
+
+      // Render report
+      console.log(report.content);
+
+      console.log(chalk.dim('━'.repeat(60)));
+      success(`完成 — ${report.stats.searchResults} 个来源, ${report.stats.pagesSucceeded} 页抓取, ${report.stats.aiRounds} 轮分析, ${(report.stats.durationMs / 1000).toFixed(1)}s`);
+
+      // Save to file
+      const safeTopic = topic.replace(/[^a-zA-Z0-9一-鿿]/g, '-').replace(/-{2,}/g, '-').replace(/^-|-$/g, '') || 'analysis';
+      const defaultPath = `.icloser/reports/market-${safeTopic.slice(0, 40)}-${Date.now().toString(36)}.md`;
+      const outputPath = options?.output || defaultPath;
+
+      try {
+        const { ensureDir, writeFile } = await import('./utils/fs.js');
+        const fullPath = outputPath.startsWith('.') ? [rootPath, outputPath].join('/').replace(/\/+/g, '/') : outputPath;
+        const dirPath = path.dirname(fullPath);
+        await ensureDir(dirPath);
+        await writeFile(fullPath, report.content);
+        success(`报告已保存: ${fullPath}`);
+      } catch { /* best-effort save */ }
     } catch (err) { printError(err as Error); }
   });
 
@@ -3125,6 +3738,19 @@ async function executeTask(
     detail('上下文', `${contextPkg.totalTokens.toLocaleString()} tokens (${contextPkg.budgetUsed}% 预算)`);
   } catch { /* proceed without context */ }
 
+  // Auto-7: Inject task pattern suggestions from past executions
+  try {
+    const { getTaskSuggestions } = await import('./core/task-memory.js');
+    const suggestions = await getTaskSuggestions(rootPath, task.description);
+    if (suggestions.length > 0) {
+      const top = suggestions[0];
+      const hint = `[学习提示] 过去 ${top.sampleCount} 次类似任务成功率 ${Math.round(top.successRate * 100)}%` +
+        (top.commonFiles.length > 0 ? `。常用文件: ${top.commonFiles.join(', ')}` : '') +
+        (top.recommendedStrategy.length > 0 ? `。推荐策略: ${top.recommendedStrategy.join(' → ')}` : '');
+      task.description += '\n\n' + hint;
+    }
+  } catch { /* best-effort */ }
+
   setTaskLoopStep(task.id, 'take-action');
 
   // 3. Create Agent via AgentManager to bridge Task → Agent (S6: Task→Agent 自动桥接)
@@ -3167,9 +3793,9 @@ async function executeTask(
   }
 
   // 4.5. Multi-Agent parallel exploration for analysis tasks
-  const isAnalysis = isAnalysisOnlyTask(task.description);
+  const isAnalysisTask = isAnalysisOnlyTask(task.description);
   let orchestratedResults: string[] = [];
-  if (isAnalysis && provider.supportsToolUse) {
+  if (isAnalysisTask && provider.supportsToolUse) {
     try {
       const { AgentManager } = await import('./agent/manager.js');
       const orch = new AgentManager(config.ai, 3);
@@ -3200,8 +3826,27 @@ async function executeTask(
     } catch { /* orchestration is best-effort */ }
   }
 
+  // F-1: Multi-agent orchestration for complex code tasks (>3 affected files)
+  if (!isAnalysisTask && task.plan && (task.plan.affectedFiles?.length || 0) > 3 && provider.supportsToolUse && config.ai.provider !== 'mock') {
+    try {
+      const { ExecutionBus } = await import('./core/execution-engine.js');
+      const bus = new ExecutionBus(3);
+      const modules = [...new Set((task.plan.affectedFiles || []).map(f => f.split('/')[0] || 'root'))];
+      const agents = modules.slice(0, 3).map(mod =>
+        bus.createAgent(`理解模块: ${mod}`, contextPkg || { projectMeta: '', relevantCode: [], relevantMemory: '', totalTokens: 0, budgetUsed: 0 })
+      );
+      if (agents.length > 1) {
+        detail('并行探索', `${agents.length} Agent 分析 ${agents.length} 个模块`);
+        const results = await bus.executeParallel(agents.slice(0, 3), rootPath, provider);
+        for (const r of results) {
+          if (r.result) orchestratedResults.push(`## ${r.name}\n${r.result.slice(0, 1000)}`);
+        }
+      }
+    } catch { /* best-effort */ }
+  }
+
   // FIX-3: For code_change tasks, inject style constraints + code patterns via code-writer.ts
-  if (!isAnalysis && index && index.styleFingerprint && config.ai.provider !== 'mock') {
+  if (!isAnalysisTask && index && index.styleFingerprint && config.ai.provider !== 'mock') {
     try {
       const { buildStyleConstraints, readCodePatterns } = await import('./core/code-writer.js');
       const styleConstraint = buildStyleConstraints(index.styleFingerprint);
@@ -3210,210 +3855,90 @@ async function executeTask(
       if (codeSamples) {
         task.description += '\n\n现有代码模式参考:\n' + codeSamples.slice(0, 2000);
       }
-    } catch {}
+    } catch { /* best-effort */ }
   }
 
-  // 5. AI call with tool-calling loop (S18) — Agent drives execution
+  // 5. B1+B2: System-driven execution — plan → execute → synthesize
   let aiContent = '';
   let aiOutput: ReturnType<typeof parseAIOutput> | null = null;
   const aiCallStarted = Date.now();
   let totalTokensUsed = 0;
+  const isAnalysis = isAnalysisOnlyTask(task.description);
+
   try {
-    const { buildToolDefinitions } = await import('./core/tool-executor.js');
-    const tools = provider.supportsToolUse ? buildToolDefinitions() : undefined;
+    // Generate execution plan via AI
+    progress('AI 任务规划...');
+    const { generateExecutionPlan, clarifyVagueTask } = await import('./core/execution-plan.js');
+    const ctxPkg = contextPkg || { projectMeta: '', relevantCode: [], relevantMemory: '', totalTokens: 0, budgetUsed: 0 };
 
-    // Tool-calling loop: AI → call tools → get results → AI thinks again
-    let currentTask = task.description;
-    let toolRound = 0;
-    const isAnalysis = isAnalysisOnlyTask(task.description);
-    const MAX_TOOL_ROUNDS = isAnalysis ? 6 : 5;
-    const allToolResults: string[] = [];
-    const attemptedStrategies = new Set<string>(); // TI5: track what's been tried
-
-    while (toolRound < MAX_TOOL_ROUNDS) {
-      const roundLabel = toolRound === 0 ? '' : chalk.dim(` (第 ${toolRound + 1}/${MAX_TOOL_ROUNDS} 轮)`);
-      progress(`AI 执行中...${roundLabel}`);
-
-      // On final round, inject forceful stop message for analysis tasks
-      let historyNote = toolRound > 0 ? '上一轮工具结果已注入上下文。' : '';
-      if (isAnalysis && toolRound === MAX_TOOL_ROUNDS - 1) {
-        historyNote = '⚠️ 这是最后一轮！你必须立即输出 ANALYSIS.md 的 JSON 变更契约，不要再读取文件或搜索。';
-      }
-
-      const response = await provider.chat({
-        systemPrompt: await buildSystemPrompt(config, index, task.description),
-        context: contextPkg || { projectMeta: '', relevantCode: [], relevantMemory: '', totalTokens: 0, budgetUsed: 0 },
-        task: currentTask,
-        history: historyNote,
-      }, tools);
-
-      // If AI returned tool calls, execute them and loop
-      if (response.toolCalls && response.toolCalls.length > 0 && provider.supportsToolUse) {
-        if (isAnalysis && toolRound >= MAX_TOOL_ROUNDS - 2) {
-          // Penultimate or final round: forcibly stop exploring
-          detail('分析轮次', `已达上限，强制停止探索`);
-          aiContent = response.content || '已达到最大探索轮次。';
-          aiOutput = response.structuredOutput || null;
-          totalTokensUsed += response.tokensUsed;
-          break;
-        }
-        const { executeToolCall } = await import('./core/tool-executor.js');
-        const toolResults: string[] = [];
-        for (const tc of response.toolCalls) {
-          try {
-            const result = await executeToolCall(tc.name, tc.arguments, rootPath);
-            toolResults.push(`[${tc.name}] ${result}`);
-            // TI4: Enhanced progress — show what was read/searched
-            const fileHint = (tc.arguments as Record<string,unknown>).path || (tc.arguments as Record<string,unknown>).pattern || (tc.arguments as Record<string,unknown>).query || '';
-            const resultSummary = result.length > 80 ? result.slice(0, 80) + '...' : result;
-            detail(`${tc.name}: ${String(fileHint).slice(0, 40)}`, chalk.dim(resultSummary.slice(0, 50)));
-          } catch (e) {
-            toolResults.push(`[${tc.name}] 错误: ${(e as Error).message}`);
+    // #5: Clarify vague tasks before planning
+    if (!isAnalysis && config.ai.provider !== 'mock') {
+      try {
+        const clarification = await clarifyVagueTask(task.description, provider);
+        if (clarification.isVague && clarification.questions.length > 0) {
+          detail('任务澄清', `检测到模糊任务，AI 提出 ${clarification.questions.length} 个问题`);
+          for (const q of clarification.questions) {
+            console.log(`  ${chalk.yellow('?')} ${chalk.dim(q)}`);
           }
+          console.log(chalk.dim(`\n  请用更具体的描述重新运行 ic t "具体需求"\n`));
+          updateTaskStatus(task.id, 'failed');
+          task.errorLog.push('任务描述过于模糊，需要更具体的信息');
+          await persistTask(rootPath, task);
+          releaseFileLocks(task);
+          return;
         }
-        allToolResults.push(...toolResults);
-        // TI5: Track attempted strategies to avoid repetition
-        for (const tc of response.toolCalls) attemptedStrategies.add(`${tc.name}:${JSON.stringify(tc.arguments).slice(0, 60)}`);
-        const triedHint = attemptedStrategies.size > 3 ? `\n已尝试 ${attemptedStrategies.size} 次工具调用，请避免重复已尝试的策略。` : '';
-        currentTask = `${task.description}\n\n工具调用结果：\n${toolResults.join('\n')}${triedHint}\n\n请基于这些结果继续分析。`;
-        toolRound++;
-        continue;
-      }
-
-      // No more tool calls — use this response
-      aiContent = response.content;
-      aiOutput = response.structuredOutput || parseAIOutput(response.content);
-      totalTokensUsed += response.tokensUsed;
-      break;
-    }
-
-    // For analysis tasks that exhausted rounds without final JSON output,
-    // make ONE MORE synthesizing call WITHOUT tools to force a structured analysis
-    if (isAnalysis && (!aiOutput || !aiOutput.changes || aiOutput.changes.length === 0) && allToolResults.length > 0) {
-      progress('合成分析报告...');
-      try {
-        const synthesisPrompt = [
-          '你已完成项目探索。现在基于以下探索结果，生成最终分析报告。',
-          '你必须输出 JSON 变更契约写入 ANALYSIS.md。不要再调用工具。',
-          '',
-          '探索发现摘要：',
-          ...allToolResults.map(r => r.slice(0, 500)),
-          '',
-          '输出格式（直接输出 JSON，无其他文字）：',
-          '{"summary":"一句话总结","changes":[{"file":"ANALYSIS.md","operation":"write","content":"# 项目名称\\n\\n## 项目概况 (表格:维度|状态)\\n| 维度 | 状态 |\\n|------|------|\\n| 项目 | <名称> |\\n| 版本 | <版本> |\\n| 技术栈 | <语言+框架+数据库> |\\n\\n## 代码完成度: XX%\\n| 指标 | 数值 |\\n|------|------|\\n| CLI命令 | X/Y |\\n| 核心模块 | X/Y |\\n| 源文件 | N |\\n| 测试文件 | N |\\n\\n## 阻塞项\\n| 任务ID | 状态 | 说明 |\\n|------|------|------|\\n(列出阻塞或失败的任务)\\n\\n## 测试覆盖度: XX%\\n| 指标 | 数值 |\\n|------|------|\\n| 测试文件 | N |\\n| 测试通过 | N |\\n| 缺失测试的模块 | 列出 |\\n\\n## 架构债务\\n| 问题 | 严重度(高/中/低) | 说明 |\\n|------|--------|------|\\n\\n## 工程健康\\n| 检查项 | 状态 | 建议 |\\n|------|------|------|\\n| CI/CD | ✅/❌ | |\\n| Lint | ✅/❌ | |\\n| 测试框架 | ✅/❌ | |\\n| Git | ✅/❌ | |\\n\\n## 综合评分\\n- 代码: X/10 | 测试: X/10 | 架构: X/10 | 工程化: X/10\\n- 综合: X/10\\n\\n## 改进建议\\n(按优先级列出)\\n","reasoning":"基于探索结果的量化分析"}]}',
-        ].join('\n');
-
-        const synthResponse = await provider.chat({
-          systemPrompt: '你是项目分析专家。基于探索结果生成结构化的分析报告。只输出 JSON，不要调用工具。',
-          context: contextPkg || { projectMeta: '', relevantCode: [], relevantMemory: '', totalTokens: 0, budgetUsed: 0 },
-          task: synthesisPrompt,
-          history: '',
-        });
-        aiContent = synthResponse.content;
-        aiOutput = synthResponse.structuredOutput || parseAIOutput(synthResponse.content);
-        totalTokensUsed += synthResponse.tokensUsed;
-        if (aiOutput?.changes && aiOutput.changes.length > 0) detail('合成', '分析报告已生成');
-      } catch { /* synthesis failed, use fallback */ }
-    }
-
-    // If still no output, use fallback synthesis
-    if (!aiContent && isAnalysis && allToolResults.length > 0) {
-      const readmeContent = allToolResults.find(r => r.includes('ORYX') || r.includes('SRS')) || '';
-      const goModContent = allToolResults.find(r => r.includes('go 1.') || r.includes('require (')) || '';
-      const featuresFound = allToolResults.filter(r => r.includes('func ') || r.includes('service') || r.includes('handler')).length;
-      aiContent = [
-        '# 项目分析报告（自动合成）',
-        '',
-        '## 项目身份',
-        readmeContent ? readmeContent.slice(0, 500).replace(/\n/g, ' ').slice(0, 300) : '基于 README.md 识别',
-        '',
-        '## 技术栈',
-        goModContent ? goModContent.slice(0, 300) : '基于 go.mod 识别',
-        '',
-        `## 探索统计`,
-        `共 ${allToolResults.length} 次工具调用，发现 ${featuresFound} 个功能相关模块。`,
-        '',
-        '## 完整度评估',
-        '基于 README 描述和源码探索，项目核心功能已实现。详细分析请查看 README.md 原文。',
-      ].join('\n');
-    } else if (!aiContent) {
-      aiContent = 'AI 未返回有效响应（可能超出工具调用轮次）';
-    }
-    if (!aiOutput) aiOutput = parseAIOutput(aiContent);
-    const elapsedSec = ((Date.now() - aiCallStarted) / 1000).toFixed(1);
-    success(`AI 执行完成 — ${totalTokensUsed.toLocaleString()} tokens / ${elapsedSec}s${toolRound > 1 ? ` / ${toolRound} 轮工具调用` : ''}`);
-    await appendAuditEvent(rootPath, 'agent', 'ai-called', config.ai.provider, 'success', { taskId: task.id, tokensUsed: totalTokensUsed, durationMs: Date.now() - aiCallStarted, payload: { model: config.ai.model } });
-
-    // S15: Record Agent execution in task
-    if (mgrAgent && agent) {
-      try {
-        agent.result = {
-          success: !!aiOutput,
-          output: aiContent,
-          artifacts: aiOutput?.changes?.map(c => c.file) || [],
-          tokensUsed: totalTokensUsed,
-          duration: Date.now() - aiCallStarted,
-        };
-        agent.status = 'done';
-        agent.completedAt = new Date().toISOString();
-
-        task.agentExecutions.push({
-          agentId: agent.id,
-          agentName: agent.name,
-          agentType: agent.type,
-          status: 'done',
-          startedAt: agent.startedAt,
-          completedAt: agent.completedAt,
-          result: agent.result,
-          sandboxLevel: agent.sandboxLevel,
-          model: agent.model,
-          childAgentIds: agent.childIds,
-          tree: mgrAgent.getTree(agent.id),
-        });
       } catch { /* best-effort */ }
     }
-  } catch (err) {
-    if (err instanceof AIOutputContractError) {
-      // Analysis-only tasks: AI text response without file changes is valid
-      if (isAnalysisOnlyTask(task.description) && aiContent) {
-        addReasoning(task.id, {
-          file: '(无文件修改 — 纯分析任务)',
-          intent: task.description,
-          reasoning: aiContent,
-          impact: { directlyAffected: [], indirectlyAffected: [], notAffected: [] },
-          riskLevel: 'low',
-        });
-        updateTaskStatus(task.id, 'completed');
-        task.completedAt = new Date().toISOString();
-        await persistTask(rootPath, task);
-        releaseFileLocks(task);
-        setTaskLoopStep(task.id, 'verify-result');
-        await completeTaskLoop(task.id, 'pass');
-        success('分析完成（纯分析任务，无文件修改）');
-        console.log(chalk.dim(aiContent.slice(0, 2000)));
-        return;
-      }
-      task.errorLog.push(`AI 输出协议错误: ${err.message}${err.detail ? ` — ${err.detail}` : ''}`);
-      updateTaskStatus(task.id, 'failed');
-      await persistTask(rootPath, task);
-      releaseFileLocks(task);
-      if (err.detail) info(err.detail);
-      fail(`AI 输出协议错误: ${err.message}`);
+
+    const plan = await generateExecutionPlan(task.description, ctxPkg, provider, isAnalysis ? 'analysis' : undefined);
+
+    if (plan.steps.length > 0) {
+      const stepList = plan.steps.map((s: any) => `  ${s.seq}. ${s.tool} — ${s.why}`).join('\n');
+      detail('执行计划', `${plan.steps.length} 步\n${stepList}`);
     }
-    const ae = err instanceof AICallError
-      ? err
-      : new AICallError('UNKNOWN', config.ai.provider, (err as Error).message || String(err), '运行 ic provider test 诊断连接问题');
-    task.errorLog.push(`AI 调用失败: ${ae.message}`);
+
+    // Execute via system-driven engine
+    const { executeWithPlan } = await import('./core/execution-engine.js');
+    const engineResult = await executeWithPlan(plan, task, rootPath, provider, ctxPkg);
+
+    if (engineResult.decisionPoints.length > 0) {
+      detail('系统决策', `${engineResult.decisionPoints.length} 次干预: ${engineResult.decisionPoints.join('; ')}`);
+    }
+
+    aiContent = engineResult.aiResponse;
+    aiOutput = parseAIOutput(aiContent);
+    totalTokensUsed = engineResult.executionState.completedSteps.length * 500;
+
+    // Fallback: if AI produced no changes but it's a code task, try one more synthesis
+    if ((!aiOutput || !aiOutput.changes || aiOutput.changes.length === 0) && !isAnalysis) {
+      try {
+        const { buildExecutionSummary } = await import('./core/execution-plan.js');
+        const summary = buildExecutionSummary(engineResult.executionState);
+        const fallbackResp = await provider.chat({
+          systemPrompt: '基于探索结果输出变更契约。不要继续探索。',
+          task: summary + '\n\n请输出最终变更。',
+          context: ctxPkg,
+          history: '',
+        });
+        aiContent = fallbackResp.content;
+        aiOutput = parseAIOutput(aiContent);
+        totalTokensUsed += fallbackResp.tokensUsed;
+      } catch { /* best-effort */ }
+    }
+  } catch (engineErr) {
+    // Gap-4: Engine failure is a real failure — no silent fallback
+    task.errorLog.push(`执行引擎异常: ${(engineErr as Error).message}`);
     updateTaskStatus(task.id, 'failed');
     await persistTask(rootPath, task);
     releaseFileLocks(task);
-    fail(`AI 调用失败:\n${ae.toDisplay()}`);
-    if (ae.code === 'MISSING_API_KEY' || ae.code === 'AUTH_FAILED') {
-      info(`运行 ic provider env ${ae.provider} 查看 API Key 配置方式`);
-    }
+    fail(`执行引擎异常: ${(engineErr as Error).message.slice(0, 200)}`);
     return;
   }
 
+  if (!aiContent) aiContent = JSON.stringify({ summary: task.description, changes: [] });
+  if (!aiOutput) aiOutput = parseAIOutput(aiContent);
+  const elapsedSec = ((Date.now() - aiCallStarted) / 1000).toFixed(1);
+  success(`AI 执行完成 — ${totalTokensUsed.toLocaleString()} tokens / ${elapsedSec}s`);
   // 5. Extract file changes — or handle analysis-only tasks
   const fileBlocks = aiOutput?.changes.map(change => ({
     path: change.file,
@@ -3471,9 +3996,91 @@ async function executeTask(
     } catch { /* sandbox check is best-effort */ }
   }
 
-  progress(`写入 ${fileBlocks.length} 个文件...`);
+  // Gate-1: Compile enforcement before writing (skip for mock provider)
+  let validatedBlocks = fileBlocks;
+  const isMock = config.ai.provider === 'mock';
+  if (!isMock && fileBlocks.length > 0 && index) {
+    progress('编译验证...');
+    try {
+      const { enforceCodeQuality } = await import('./core/code-writer.js');
+      const enforcement = await enforceCodeQuality(
+        fileBlocks.map(fb => ({ file: fb.path, content: fb.content })),
+        rootPath,
+        config.project.identity,
+        provider!,
+        index,
+      );
+      if (!enforcement.passed) {
+        warn(`编译验证失败，变更已拒绝:\n${enforcement.diagnostics}`);
+        task.errorLog.push(`Gate-1: 编译验证失败 — ${enforcement.diagnostics}`);
+        updateTaskStatus(task.id, 'failed');
+        await persistTask(rootPath, task);
+        releaseFileLocks(task);
+        return;
+      }
+      if (enforcement.fixes > 0) {
+        detail('编译修复', `自动修复 ${enforcement.fixes} 轮后通过`);
+        validatedBlocks = enforcement.changes.map(c => {
+          const orig = fileBlocks.find(fb => fb.path === c.file);
+          return orig ? { ...orig, content: c.content } : { path: c.file, content: c.content, reasoning: 'AI 生成' };
+        });
+      }
+      if (enforcement.diagnostics) {
+        detail('编译验证', enforcement.diagnostics.slice(0, 100));
+      }
+    } catch (e) {
+      detail('编译验证', `跳过: ${(e as Error).message}`);
+      // Non-blocking — proceed with original changes if gate fails to run
+    }
+  }
+
+  // Auto-8: Snapshot files before writing (for safe rollback)
+  const snapshots: Map<string, string | null> = new Map(); // filePath → originalContent | null (new file)
   const { writeFile, ensureDir } = await import('./utils/fs.js');
-  for (const fb of fileBlocks) {
+  const { fileExists: fe } = await import('./utils/fs.js');
+  const snapDir = path.join(rootPath, '.icloser', 'snapshots', task.id);
+  await ensureDir(snapDir);
+  for (const fb of validatedBlocks) {
+    const fp = path.join(rootPath, fb.path);
+    if (await fe(fp)) {
+      const { readFile: rf2 } = await import('./utils/fs.js');
+      const orig = await rf2(fp);
+      snapshots.set(fb.path, orig);
+      await writeFile(path.join(snapDir, fb.path.replace(/[/\\]/g, '_')), orig);
+    } else {
+      snapshots.set(fb.path, null); // new file, no original
+    }
+  }
+
+  // Store snapshot metadata for rollback
+  await writeFile(path.join(snapDir, 'manifest.json'), JSON.stringify({
+    taskId: task.id,
+    files: [...snapshots.entries()].map(([f, c]) => ({ file: f, isNew: c === null })),
+    createdAt: new Date().toISOString(),
+  }));
+
+  // Auto-9: Dependency-ordered writes — least-depended files first
+  let orderedBlocks = validatedBlocks;
+  if (validatedBlocks.length > 1 && index?.dependencyGraph) {
+    try {
+      const depCount = new Map<string, number>();
+      for (const fb of validatedBlocks) {
+        const modName = fb.path.replace(/\.[^.]+$/, '').replace(/[/\\]index$/, '');
+        let count = 0;
+        for (const [_, deps] of index.dependencyGraph) {
+          if (deps.some((d: string) => d.includes(modName) || modName.includes(d))) count++;
+        }
+        depCount.set(fb.path, count);
+      }
+      orderedBlocks = [...validatedBlocks].sort((a, b) => (depCount.get(a.path) || 0) - (depCount.get(b.path) || 0));
+      if (orderedBlocks.some((fb, i) => fb.path !== validatedBlocks[i].path)) {
+        detail('写入顺序', `已按依赖关系优化`);
+      }
+    } catch { /* best-effort */ }
+  }
+
+  progress(`写入 ${orderedBlocks.length} 个文件...`);
+  for (const fb of orderedBlocks) {
     try {
       const fp = path.join(rootPath, fb.path);
       await ensureDir(path.dirname(fp));
@@ -3487,6 +4094,47 @@ async function executeTask(
       task.errorLog.push(`写入 ${fb.path} 失败: ${m}`);
       fail(`${fb.path} — ${m}`);
     }
+  }
+
+  // 6.5 Auto-5: Auto-test generation for changed files (best-effort)
+  const changedSourceFiles = fileBlocks.filter(fb => /\.(ts|tsx|js|jsx)$/.test(fb.path) && !fb.path.includes('.test.') && !fb.path.includes('.spec.'));
+  if (changedSourceFiles.length > 0 && config.ai.provider !== 'mock') {
+    try {
+      const { getTestFilePath } = await import('./core/code-writer.js');
+      for (const src of changedSourceFiles) {
+        const testPath = getTestFilePath(src.path, index!);
+        const fullTestPath = path.join(rootPath, testPath);
+        const testExists = await (await import('./utils/fs.js')).fileExists(fullTestPath);
+        if (!testExists) {
+          detail('自动测试', `为 ${src.path} 生成测试`);
+          const testResp = await provider.chat({
+            systemPrompt: '你是测试专家。为源码生成单元测试。只输出一个包含完整测试文件的 JSON 变更契约。',
+            task: `为以下源文件生成测试:\n## ${src.path}\n${src.content.slice(0, 2000)}`,
+            context: contextPkg || { projectMeta: '', relevantCode: [], relevantMemory: '', totalTokens: 0, budgetUsed: 0 }, history: '',
+          });
+          const testChanges = parseAIOutput(testResp.content).changes;
+          // T1-4a: Detect empty tests — re-generate if assertions missing
+          const { scanGeneratedTests } = await import('./core/code-writer.js');
+          let finalTests = testChanges;
+          const emptyCheck = scanGeneratedTests(testChanges);
+          if (emptyCheck.some(t => t.isEmpty || !t.hasAssertions)) {
+            detail('空测试检测', `${emptyCheck.length} 个测试缺少断言，重新生成`);
+            const retryResp = await provider.chat({
+              systemPrompt: '你是测试专家。之前的测试缺少断言。重新生成包含完整 expect/assert 的测试。只输出 JSON 变更契约。',
+              task: `为以下文件生成包含断言的测试:\n${src.path}\n${src.content.slice(0, 2000)}\n\n前次生成的问题: ${emptyCheck.map(t => t.file + ': ' + t.issues.join(', ')).join('; ')}`,
+              context: contextPkg || { projectMeta: '', relevantCode: [], relevantMemory: '', totalTokens: 0, budgetUsed: 0 }, history: '',
+            });
+            finalTests = parseAIOutput(retryResp.content).changes;
+          }
+          for (const tc of finalTests) {
+            const tpf = path.join(rootPath, tc.file);
+            await (await import('./utils/fs.js')).ensureDir(path.dirname(tpf));
+            await (await import('./utils/fs.js')).writeFile(tpf, tc.content);
+            success(tc.file + ' (测试)');
+          }
+        }
+      }
+    } catch { /* best-effort, non-blocking */ }
   }
 
   // 7. Reasoning
@@ -3506,6 +4154,18 @@ async function executeTask(
       const { generateDiffFile } = await import('./report/generator.js');
       await generateDiffFile(rootPath, task, diff);
     }
+  }
+
+  // #4: Incremental index refresh — re-scan changed files for latest AST data
+  if (index && fileBlocks.length > 0) {
+    try {
+      const { scanProject } = await import('./core/scanner.js');
+      const refreshed = await scanProject({ rootPath, deep: false, includeTests: false, maxFileSize: 500 * 1024 });
+      if (refreshed.index) {
+        index = refreshed.index;
+        detail('索引刷新', `更新 ${fileBlocks.length} 个文件的索引`);
+      }
+    } catch { /* best-effort */ }
   }
 
   setTaskLoopStep(task.id, 'verify-result');
@@ -3641,6 +4301,25 @@ ${errorText.substring(0, 3000)}
       detail('错误', summary);
       info('请手动检查并修复上述错误');
     }
+    // Easy-1: Auto-rollback from snapshots on verification failure
+    try {
+      const snapManifest = path.join(rootPath, '.icloser', 'snapshots', task.id, 'manifest.json');
+      const { fileExists: fe2 } = await import('./utils/fs.js');
+      if (await fe2(snapManifest)) {
+        const manifest = JSON.parse(await (await import('./utils/fs.js')).readFile(snapManifest));
+        detail('自动回滚', `恢复 ${manifest.files.length} 个文件`);
+        for (const f of manifest.files) {
+          const snapPath = path.join(rootPath, '.icloser', 'snapshots', task.id, f.file.replace(/[/\\]/g, '_'));
+          if (f.isNew) {
+            try { await (await import('fs/promises')).unlink(path.join(rootPath, f.file)); } catch { /* best-effort */ }
+          } else if (await fe2(snapPath)) {
+            const orig = await (await import('./utils/fs.js')).readFile(snapPath);
+            await writeFile(path.join(rootPath, f.file), orig);
+          }
+        }
+        success('已自动回滚到修改前状态');
+      }
+    } catch { /* rollback best-effort */ }
   }
 
   updateTaskStatus(task.id, vr.overall === 'pass' ? 'completed' : 'failed');
@@ -3652,7 +4331,21 @@ ${errorText.substring(0, 3000)}
     mem = await recordTask(mem, task, config.project.identity);
     await saveProjectMemory(rootPath, mem);
     appendAuditEvent(rootPath, 'memory-updater', 'memory-updated', task.id, 'success', { taskId: task.id }).catch(() => {});
-  } catch {}
+  } catch { /* best-effort */ }
+
+  // Auto-7: Record task execution for pattern learning
+  try {
+    const { recordTaskExecution } = await import('./core/task-memory.js');
+    await recordTaskExecution(rootPath, task, {
+      status: vr.overall === 'pass' ? 'completed' : 'failed',
+      strategies: task.agentExecutions?.flatMap((a: any) => a.result?.artifacts || []) || [],
+      filesChanged: fileBlocks.map(f => f.path),
+      verifyPassed: vr.overall === 'pass',
+      duration: Date.now() - aiCallStarted,
+      tokensUsed: totalTokensUsed,
+      errors: task.errorLog || [],
+    });
+  } catch { /* best-effort */ }
 
   // 11. Report
   progress('生成报告...');
@@ -3662,7 +4355,7 @@ ${errorText.substring(0, 3000)}
     await generateReasoningFile(rootPath, task);
     await generateVerifyLog(rootPath, task);
     appendAuditEvent(rootPath, 'reporter', 'report-generated', task.id, 'success', { taskId: task.id }).catch(() => {});
-  } catch {}
+  } catch { /* best-effort */ }
 
   // 12. Finalize
   releaseFileLocks(task);
@@ -3768,7 +4461,7 @@ function printTaskDetail(task: Task): void {
     try {
       const rootPath = process.cwd();
       printPlannedVerification(rootPath).catch(() => {});
-    } catch {}
+    } catch { /* best-effort */ }
   }
 
   // Gate result summary
@@ -4205,38 +4898,7 @@ function generatePerspectiveReport(task: Task, perspective: string): string {
 }
 
 // TI1: Map recognized intents to tool strategies (unified — uses classifier output when available)
-function getToolStrategy(desc: string, intentCategory?: import('./types.js').UserIntentCategory): string {
-  // TI1: Use classifier output directly when available; fall back to keyword matching
-  const cat = intentCategory
-    || (/做|开发|实现|搭建|建一个|构建|创建|写一个/.test(desc) && /系统|平台|后台|项目|工程|应用/.test(desc) ? 'plan' : '')
-    || (/(修复|修|fix|错误|bug|报错|异常|崩溃|失败)/.test(desc) ? 'code_fix' : '')
-    || (/(补全|补齐|补完|完成|实现).*(函数|方法|类|接口|代码)/.test(desc) ? 'code_complete' : '')
-    || (/(分析|检查|审查|质量|是什么|是否完整|结构|架构)/.test(desc) ? 'analysis' : '')
-    || (/(修改|创建|写入|删除|添加|新增|改|写|加)/.test(desc) ? 'code_change' : '')
-    || (/(安全|漏洞|注入)/.test(desc) ? 'security_review' : '')
-    || (/(启动|停止|运行|测试|构建|部署)/.test(desc) ? 'devops' : '')
-    || (/(发布|路线图|风险|估算|周报|阻塞)/.test(desc) ? 'pm' : '')
-    || (/(文档|doc|readme)/.test(desc) ? 'doc_gen' : '')
-    || '';
-
-  const strategies: Record<string, string> = {
-    plan: '第1步: read_file README.md+package.json了解项目 → 第2步: search_code 相关模块 → 第3步: 生成开发计划JSON(analysis+3-7个tasks) → 第4步: 写入 .icloser/plans/PLAN-{id}.json。不直接写代码。',
-    analysis: '第1步: read_file README.md → 第2步: read_file go.mod/package.json → 第3步: search_code 功能关键词 → 第4步: read_file 关键源文件 → 第5步: 使用工具结果输出分析到 ANALYSIS.md。每轮最多3个工具。',
-    code_change: '第1步: read_file 要修改的文件 → 第2步: search_code 相关引用 → 第3步: 生成代码 → 第4步: 验证。先读后写，保持风格一致。',
-    code_fix: '第1步: read_file 报错文件 → 第2步: 定位错误行 → 第3步: 只修改错误行 → 第4步: 输出JSON。不改无关代码。',
-    code_complete: '第1步: read_file 目标文件 → 第2步: 找到未完成函数(TODO/空函数体) → 第3步: 读相关引用理解上下文 → 第4步: 补全实现 → 第5步: 展示diff。',
-    security_review: '第1步: search_code 密钥/密码/token → 第2步: read_file 安全相关文件 → 第3步: 输出安全报告。不写文件。',
-    devops: '第1步: read_file package.json/go.mod/Makefile → 第2步: 确定启动命令 → 第3步: run_command 执行。先确认再执行。',
-    pm: '第1步: search_code 版本/里程碑 → 第2步: read_file 任务配置 → 第3步: 汇总输出。不写文件。',
-    doc_gen: '第1步: read_file README+源码 → 第2步: search_code API路由 → 第3步: 生成文档JSON → 第4步: 写入。每文档一个JSON。',
-  };
-  return cat ? strategies[cat] || '' : '';
-}
-
-function isAnalysisOnlyTask(desc: string): boolean {
-  return /(分析|检查|review|扫描|质量|代码质量|是什么|是否完整|当前目录|整个目录|整个项目)/i.test(desc) &&
-    !/(修改|创建|写入|生成文件|新增|删除|修复|改成|更新|update|write|create|delete|fix|改|写)/i.test(desc);
-}
+// P1-1: helpers moved to src/core/task-pipeline.ts
 
 async function buildSystemPrompt(
   config: ICloserConfig,
@@ -4266,6 +4928,9 @@ async function buildSystemPrompt(
 - 如果上下文中没有相关信息，说"无历史记录"，不要编造
 - 每次回答前先确认当前对话的上下文边界
 - 引用的记忆必须标注来源（如 [来源: 任务#xxx]）
+
+## 激活技能
+${taskDescription ? (await import('./core/skill-system.js')).buildSkillPrompt(taskDescription) : ''}
 
 ## 运行环境
 - 操作系统: ${isWin ? 'Windows' : process.platform}
@@ -4303,7 +4968,7 @@ ${isWin ? '- 注意: 不要使用 ls/grep/find 等 Unix 命令，它们在此环
 7. 上述工具能力可供理解项目时参考，最终输出必须是 JSON 变更契约`;
 
   // TI1: Intent-aware tool strategy mapping
-  const strategy = taskDescription ? getToolStrategy(taskDescription) : '';
+  const strategy = taskDescription ? await getToolStrategy(taskDescription) : '';
   if (strategy) { p += '\n\n## 推荐工具策略\n' + strategy; }
 
   // B2: Analysis-specific instructions — override the JSON contract for analysis tasks

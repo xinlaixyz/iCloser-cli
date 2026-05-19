@@ -35,8 +35,9 @@ export async function generateTaskReport(
     sections.push('## Agent 执行');
     sections.push('');
 
-    const totalTokens = task.agentExecutions.reduce((s, a) => s + a.result.tokensUsed, 0);
-    const totalDuration = task.agentExecutions.reduce((s, a) => s + a.result.duration, 0);
+    // P0-3: guard against null result in agent executions
+    const totalTokens = task.agentExecutions.reduce((s, a) => s + (a.result?.tokensUsed ?? 0), 0);
+    const totalDuration = task.agentExecutions.reduce((s, a) => s + (a.result?.duration ?? 0), 0);
     const successCount = task.agentExecutions.filter(a => a.status === 'done').length;
 
     sections.push(`| 指标 | 值 |`);
@@ -58,21 +59,22 @@ export async function generateTaskReport(
       sections.push(`| 状态 | ${icon} ${exec.status} |`);
       sections.push(`| 模型 | ${exec.model} |`);
       sections.push(`| 沙箱 | ${exec.sandboxLevel} |`);
-      sections.push(`| Token 用量 | ${exec.result.tokensUsed.toLocaleString()} |`);
-      sections.push(`| 耗时 | ${(exec.result.duration / 1000).toFixed(1)}s |`);
-      if (exec.result.artifacts.length > 0) {
-        sections.push(`| 产出 | ${exec.result.artifacts.join(', ')} |`);
+      const rt = exec.result;
+      sections.push(`| Token 用量 | ${(rt?.tokensUsed ?? 0).toLocaleString()} |`);
+      sections.push(`| 耗时 | ${((rt?.duration ?? 0) / 1000).toFixed(1)}s |`);
+      if (rt?.artifacts && rt.artifacts.length > 0) {
+        sections.push(`| 产出 | ${rt.artifacts.join(', ')} |`);
       }
-      if (exec.result.error) {
-        sections.push(`| 错误 | ${exec.result.error} |`);
+      if (rt?.error) {
+        sections.push(`| 错误 | ${rt.error} |`);
       }
       sections.push('');
 
-      if (exec.result.output && exec.result.output.length < 500) {
-        sections.push(`**输出：** ${exec.result.output}`);
+      if (rt?.output && rt.output.length < 500) {
+        sections.push(`**输出：** ${rt.output}`);
         sections.push('');
-      } else if (exec.result.output) {
-        sections.push(`**输出（截断）：** ${exec.result.output.slice(0, 500)}...`);
+      } else if (rt?.output) {
+        sections.push(`**输出（截断）：** ${rt.output.slice(0, 500)}...`);
         sections.push('');
       }
 
@@ -111,7 +113,7 @@ export async function generateTaskReport(
   if (task.changes.length === 0 && task.reasoning.length > 0 && task.reasoning[0].file === '(无文件修改 — 纯分析任务)') {
     sections.push('## 分析结论');
     sections.push('');
-    sections.push(task.reasoning[0].reasoning.slice(0, 5000));
+    sections.push((task.reasoning[0].reasoning || '').slice(0, 5000));
     sections.push('');
   }
 
@@ -246,7 +248,7 @@ export async function generateTaskReport(
       sections.push('运行 `ic audit` 查看完整审计日志。');
       sections.push('');
     }
-  } catch {}
+  } catch { /* best-effort */ }
 
   sections.push('## 回滚方法');
   sections.push('');
@@ -554,7 +556,10 @@ function truncateLogSection(content: string, maxChars = 8000): string {
   return `${trimmed.slice(0, maxChars)}\n... truncated ${trimmed.length - maxChars} chars`;
 }
 
-function formatAgentTree(tree: Record<string, unknown>, prefix: string): string {
+function formatAgentTree(tree: Record<string, unknown>, prefix: string, depth = 0): string {
+  // P2-18: guard against infinite recursion from circular references
+  if (depth > 10) return `${prefix}... (超过最大深度)`;
+
   const lines: string[] = [];
   const typed = tree as { id?: string; name?: string; type?: string; status?: string; result?: Record<string, unknown> | null; children?: Record<string, unknown>[] };
   const statusIcon = typed.status === 'done' ? '✓' : typed.status === 'failed' ? '✗' : typed.status === 'running' ? '▶' : '·';
@@ -565,7 +570,7 @@ function formatAgentTree(tree: Record<string, unknown>, prefix: string): string 
     for (let i = 0; i < typed.children.length; i++) {
       const isLast = i === typed.children.length - 1;
       const childPrefix = prefix + (isLast ? '  └─ ' : '  ├─ ');
-      const childLines = formatAgentTree(typed.children[i] as Record<string, unknown>, childPrefix);
+      const childLines = formatAgentTree(typed.children[i] as Record<string, unknown>, childPrefix, depth + 1);
       lines.push(childLines);
     }
   }
