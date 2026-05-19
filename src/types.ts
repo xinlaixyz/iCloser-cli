@@ -221,7 +221,8 @@ export interface StyleFingerprint {
 // ============================================================
 export type TaskStatus =
   | 'queued' | 'scheduled' | 'running' | 'verifying'
-  | 'completed' | 'failed' | 'cancelled' | 'blocked' | 'paused';
+  | 'completed' | 'failed' | 'cancelled' | 'blocked' | 'paused'
+  | 'rolled-back';
 
 export type TaskPriority = 'high' | 'normal' | 'low';
 
@@ -843,6 +844,7 @@ export interface ICloserConfig {
     maxRetries: number;
     maxParallelTasks: number;
     verifyStages: VerifyStage[];
+    autoRollbackOnFailure: boolean;
   };
   security: {
     sensitiveFiles: string[];
@@ -876,7 +878,8 @@ export type AuditAction =
   | 'verify-passed'
   | 'verify-failed'
   | 'report-generated'
-  | 'memory-updated';
+  | 'memory-updated'
+  | 'rollback-executed';
 
 export type AuditResult = 'success' | 'failure' | 'partial';
 

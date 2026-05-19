@@ -117,6 +117,9 @@ ic t "增加手机登录" "增加邮箱验证" "修复头像上传"
 | `ic d <id>` | `ic diff` | 查看代码 diff |
 | `ic cancel <id>` | — | 取消排队中的任务 |
 | `ic rollback <id>` | — | 回滚任务到执行前状态 |
+| `ic rollback --auto` | — | 回滚最近一次 autopilot 快照 |
+| `ic rollback --auto --dry-run` | — | 预览回滚而不实际执行 |
+| `ic rollback --list` | — | 列出所有 autopilot 回滚快照 |
 
 ### 门禁与报告
 

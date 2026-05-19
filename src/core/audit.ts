@@ -184,6 +184,7 @@ export function auditActionLabel(action: AuditAction): string {
     'verify-failed': '验证失败',
     'report-generated': '生成报告',
     'memory-updated': '记忆更新',
+    'rollback-executed': '回滚执行',
   };
   return labels[action] || action;
 }

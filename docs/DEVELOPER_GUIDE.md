@@ -81,7 +81,7 @@ src/
 │   ├── autotest.ts       # 自动测试生成
 │   ├── autopilot-repair.ts
 │   ├── autopilot-verify.ts
-│   ├── autopilot-rollback.ts
+│   ├── autopilot-rollback.ts # 自动回滚（快照/试运行/列表/沙箱）
 │   ├── autopilot-router.ts
 │   ├── execution-chain.ts# 10阶自动执行链
 │   ├── docs-generator.ts  # 文档生成+ask/summarize/review

@@ -8,6 +8,10 @@ import {
   renderAutopilotRepairPlan,
   renderAutopilotRepairReceipts,
 } from '../src/core/autopilot-repair.js';
+import {
+  createAutopilotRollbackPlan,
+  rollbackAutopilotChanges,
+} from '../src/core/autopilot-rollback.js';
 import type { AutopilotVerifyReceipt } from '../src/core/autopilot-verify.js';
 
 describe('autopilot repair planner', () => {
@@ -135,6 +139,40 @@ describe('autopilot repair planner', () => {
       // Repair attempts but can't fix — graceful skip, no throw
       expect(receipts.length).toBe(1);
       expect(receipts[0].ok).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('autoRollback flow: snapshot before repair, rollback after max attempts exhausted', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'icloser-autopilot-autorollback-'));
+    try {
+      await mkdir(join(root, 'docs'), { recursive: true });
+      await writeFile(join(root, 'docs', 'API.md'), 'original api docs\n', 'utf-8');
+
+      // Snapshot before autopilot writes (simulates runAutopilotRepairLoop start)
+      const rollbackPlan = await createAutopilotRollbackPlan(root, ['docs/API.md'], '验证失败，autoRollback');
+
+      // Autopilot overwrites file (simulates autopilot write)
+      await writeFile(join(root, 'docs', 'API.md'), 'autopilot-generated content\n', 'utf-8');
+
+      // Repair attempts fail 2 times (simulated), then autoRollback triggers
+      const MAX_ATTEMPTS = 2;
+      let attempts = 0;
+      let rolled = false;
+      while (attempts < MAX_ATTEMPTS) {
+        attempts++;
+        const receipt: AutopilotVerifyReceipt = { status: 'fail', kind: 'docs', duration: 1, summary: 'heading missing' };
+        const plan = buildAutopilotRepairPlan(receipt, ['docs/API.md']);
+        await applyAutopilotRepairPlan(root, plan);
+      }
+      // Simulate autoRollback=true after max attempts
+      const receipts = await rollbackAutopilotChanges(rollbackPlan);
+      rolled = receipts.some(r => r.action === 'restored' && r.ok);
+
+      expect(rolled).toBe(true);
+      const content = await readFile(join(root, 'docs', 'API.md'), 'utf-8');
+      expect(content).toBe('original api docs\n');
     } finally {
       await rm(root, { recursive: true, force: true });
     }

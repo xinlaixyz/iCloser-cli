@@ -81,6 +81,9 @@ npm run smoke:web-search # 网络搜索测试
 | `tests/tool-registry.test.ts` | 工具注册表 |
 | `tests/verifier.test.ts` | 验证器 |
 | `tests/dev1-acceptance.test.ts` | 验收测试 |
+| `tests/acceptance/rollback.test.ts` | 回滚验收（快照→持久化→回滚→验证） |
+| `tests/acceptance/codegen.test.ts` | 代码生成验收（mock AI） |
+| `tests/acceptance/pipeline.test.ts` | 管线验收（init→scan→plan→doctor） |
 
 ### Smoke 测试（18 个脚本）
 

@@ -1,3 +1,9 @@
+// Execution Chain — configuration-driven pipeline definition.
+// Design: this module defines the 12-stage chain topology, stage metadata,
+// and default policies. Runtime execution is handled by execution-engine.ts
+// which reads these definitions and orchestrates the actual flow.
+// This separation allows chain topology changes without touching runtime code.
+
 export type ExecutionChainStageId =
   | 'understand'
   | 'inspect'
@@ -132,13 +138,15 @@ const STAGES: ExecutionChainStage[] = [
     id: 'rollback',
     name: '安全回滚',
     actor: 'system',
-    goal: '当验证持续失败、触发安全规则或用户取消时，能恢复到变更前状态。',
-    input: ['写入前快照', '任务 diff', '失败原因'],
-    output: ['回滚结果', '保留诊断报告'],
+    goal: '当验证持续失败、触发安全规则或用户取消时，能恢复到变更前状态。支持 --auto 自动回滚。',
+    input: ['写入前快照', '任务 diff', '失败原因', '文件 receipts'],
+    output: ['回滚结果', '保留诊断报告', 'Memory 回滚事件', 'Audit 记录'],
     autoRun: false,
     requiresUserChoice: true,
     risk: 'high',
-    failurePolicy: '高风险回滚必须确认；只回滚本任务写入的文件。',
+    failurePolicy: '高风险回滚必须确认；只回滚本任务写入的文件。\n'
+      + '设置 execution.autoRollbackOnFailure: true 可在验证失败时自动回滚，免用户交互。\n'
+      + '回滚事件广播到 memory/audit/task-engine。',
   },
   {
     id: 'report',

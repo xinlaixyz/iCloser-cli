@@ -224,8 +224,14 @@ program.command('autopilot')
   .option('--go', '写入模式（docs 模式下生成并写入缺失文档）')
   .option('--yes', '与 --go 搭配使用：覆盖已有文档或测试')
   .option('--module <name>', 'tests 模式下指定要补测的模块')
-  .action(async (mode: string, options?: { json?: boolean; go?: boolean; yes?: boolean; module?: string }) => {
+  .option('--auto', '验证失败时自动回滚写入的文件')
+  .action(async (mode: string, options?: { json?: boolean; go?: boolean; yes?: boolean; module?: string; auto?: boolean }) => {
     const rootPath = process.cwd();
+    // Resolve --auto from config if not explicitly passed
+    if (options && options.auto === undefined) {
+      const cfg = await loadConfig(rootPath);
+      options.auto = cfg?.execution?.autoRollbackOnFailure ?? false;
+    }
     try {
       const normalizedMode = mode.toLowerCase();
 
@@ -257,6 +263,7 @@ program.command('autopilot')
               rootPath, kind: 'docs',
               written: written.map(d => ({ file: d.file, fullPath: d.fullPath })),
               jsonMode: true,
+              autoRollback: options?.auto ?? false,
             });
             if (repairResult.finalStatus === 'pass') {
               verification = await verifyAutopilotDocs(rootPath, written.map(d => d.file));
@@ -343,6 +350,7 @@ program.command('autopilot')
             rootPath, kind: 'docs',
             written: written.map(d => ({ file: d.file, fullPath: d.fullPath })),
             jsonMode: false,
+            autoRollback: options?.auto ?? false,
           });
         }
 
@@ -375,6 +383,7 @@ program.command('autopilot')
                 written: written.map(w => ({ file: w.file, fullPath: w.fullPath })),
                 testCommand: writePlan.testCommand,
                 jsonMode: true,
+                autoRollback: options?.auto ?? false,
               });
               if (repairResult.finalStatus === 'pass') {
                 verification = await verifyAutopilotTests(rootPath, writePlan.testCommand);
@@ -434,6 +443,7 @@ program.command('autopilot')
               written: written.map(w => ({ file: w.file, fullPath: w.fullPath })),
               testCommand: writePlan.testCommand,
               jsonMode: false,
+              autoRollback: options?.auto ?? false,
             });
           }
 
@@ -1854,33 +1864,85 @@ program.command('cancel')
 // ic rollback
 // ============================================================
 program.command('rollback')
-  .description('回滚任务')
-  .argument('<task-id>', '任务 ID')
-  .action(async (taskId: string) => {
+  .description('回滚任务或最近一次 autopilot 快照')
+  .argument('[task-id]', '任务 ID（--auto 模式下可省略）')
+  .option('--auto', '回滚最近一次 autopilot 快照（无需任务 ID）')
+  .option('--dry-run', '预览回滚操作而不实际执行')
+  .option('--list', '列出所有 autopilot 回滚快照')
+  .action(async (taskId: string | undefined, options?: { auto?: boolean; dryRun?: boolean; list?: boolean }) => {
     const rootPath = process.cwd();
-    try {
-      if (!isGitRepo(rootPath)) { fail('需要 Git 仓库'); }
-      const { loadTask, updateTaskStatus, releaseFileLocks, persistTask } =
-        await import('./core/task-engine.js');
-      const task = await loadTask(rootPath, taskId);
-      if (!task) { warn(`任务 ${chalk.cyan(taskId)} 不存在`); return; }
 
-      progress(`回滚任务 ${chalk.cyan(taskId)}...`);
-      try {
-        const { execFileSync } = await import('child_process');
-        const taskFiles = task.changes.map(c => c.file);
-        // Revert tracked files
-        execFileSync('git', ['checkout', '--', ...taskFiles], { cwd: rootPath, timeout: 10000 });
-        // Remove new untracked files created by this task
-        for (const f of taskFiles) {
-          try { execFileSync('git', ['clean', '-f', '--', f], { cwd: rootPath, timeout: 5000 }); } catch { /* may not exist */ }
-        }
-      } catch { /* best-effort */ }
-      updateTaskStatus(taskId, 'cancelled');
-      releaseFileLocks(task);
-      await persistTask(rootPath, task);
+    // --list: show all saved snapshots
+    if (options?.list) {
+      const { listAutopilotRollbackSnapshots, renderAutopilotRollbackSummary } =
+        await import('./core/autopilot-rollback.js');
+      const snapshots = await listAutopilotRollbackSnapshots(rootPath);
+      console.log(renderAutopilotRollbackSummary(snapshots));
+      return;
+    }
+
+    // --auto (or config default): autopilot rollback
+    const config = await loadConfig(rootPath);
+    const useAuto = options?.auto ?? config?.execution?.autoRollbackOnFailure ?? false;
+
+    if (useAuto) {
+      const {
+        loadLatestAutopilotRollbackPlan,
+        dryRunAutopilotRollback,
+        rollbackAutopilotChanges,
+        renderAutopilotRollbackReceipts,
+        renderAutopilotRollbackDryRun,
+        renderAutopilotRollbackPlan,
+      } = await import('./core/autopilot-rollback.js');
+      const plan = await loadLatestAutopilotRollbackPlan(rootPath);
+      if (!plan) { warn('没有找到 autopilot 快照，请先运行 ic auto docs/tests --go'); return; }
+
+      if (options?.dryRun) {
+        const entries = await dryRunAutopilotRollback(plan);
+        console.log(renderAutopilotRollbackDryRun(entries));
+        return;
+      }
+
+      progress('正在执行 autopilot 快照回滚...');
+      const receipts = await rollbackAutopilotChanges(plan);
+      console.log(renderAutopilotRollbackReceipts(receipts));
+
+      // Broadcast rollback event to memory/task/audit
+      broadcastRollback(rootPath, taskId, plan.reason, receipts).catch(() => { /* fire-and-forget */ });
+
       success('回滚完成');
-    } catch (err) { printError(err as Error); }
+      return;
+    }
+
+    // Without --auto: git-based task rollback
+    if (!taskId) { fail('请提供任务 ID，或使用 --auto 回滚 autopilot 快照'); return; }
+    if (!isGitRepo(rootPath)) { fail('需要 Git 仓库'); }
+    const { loadTask, updateTaskStatus, releaseFileLocks, persistTask } =
+      await import('./core/task-engine.js');
+    const task = await loadTask(rootPath, taskId);
+    if (!task) { warn(`任务 ${chalk.cyan(taskId)} 不存在`); return; }
+
+    if (options?.dryRun) {
+      info('任务回滚预览（不会实际修改）：');
+      for (const c of task.changes) {
+        console.log(`  ${c.file} — ${c.intent}`);
+      }
+      return;
+    }
+
+    progress(`回滚任务 ${chalk.cyan(taskId)}...`);
+    try {
+      const { execFileSync } = await import('child_process');
+      const taskFiles = task.changes.map(c => c.file);
+      execFileSync('git', ['checkout', '--', ...taskFiles], { cwd: rootPath, timeout: 10000 });
+      for (const f of taskFiles) {
+        try { execFileSync('git', ['clean', '-f', '--', f], { cwd: rootPath, timeout: 5000 }); } catch { /* may not exist */ }
+      }
+    } catch { /* best-effort */ }
+    updateTaskStatus(taskId, 'cancelled');
+    releaseFileLocks(task);
+    await persistTask(rootPath, task);
+    success('回滚完成');
   });
 
 // ============================================================
@@ -3635,22 +3697,53 @@ interface AutopilotWrittenFile {
   fullPath: string;
 }
 
+async function broadcastRollback(
+  rootPath: string,
+  taskId: string | undefined,
+  reason: string,
+  receipts: Array<{ file: string; action: string; ok: boolean }>,
+): Promise<void> {
+  const restored = receipts.filter(r => r.action === 'restored' && r.ok).length;
+  const deleted = receipts.filter(r => r.action === 'deleted' && r.ok).length;
+
+  // Memory kernel (fire-and-forget)
+  import('./core/memory/integration.js')
+    .then(m => m.onRollbackCompleted(rootPath, taskId, { reason, filesRestored: restored, filesDeleted: deleted, totalFiles: receipts.length, receipts }))
+    .catch(() => {});
+
+  // Audit log (fire-and-forget)
+  import('./core/audit.js')
+    .then(a => a.appendAuditEvent(rootPath, 'system', 'rollback-executed', `reason: ${reason}`, 'success', {
+      payload: { taskId, filesRestored: restored, filesDeleted: deleted, totalFiles: receipts.length },
+    }))
+    .catch(() => {});
+
+  // Task engine: update task status if taskId is known
+  if (taskId) {
+    import('./core/task-engine.js')
+      .then(te => { te.updateTaskStatus(taskId, 'rolled-back', rootPath); })
+      .catch(() => {});
+  }
+}
+
 async function runAutopilotRepairLoop(options: {
   rootPath: string;
   kind: 'docs' | 'tests';
   written: AutopilotWrittenFile[];
   testCommand?: string;
   jsonMode: boolean;
+  autoRollback?: boolean;
 }): Promise<{ finalStatus: 'pass' | 'fail' | 'rolled-back'; attempts: number }> {
   const { rootPath, kind, written, testCommand, jsonMode } = options;
   const files = written.map(w => w.file);
   let attemptCount = 0;
 
   const { buildAutopilotRepairPlan } = await import('./core/autopilot-repair.js');
-  const { createAutopilotRollbackPlan, rollbackAutopilotChanges, renderAutopilotRollbackPlan } = await import('./core/autopilot-rollback.js');
+  const { createAutopilotRollbackPlan, persistAutopilotRollbackPlan, rollbackAutopilotChanges, renderAutopilotRollbackPlan } = await import('./core/autopilot-rollback.js');
 
-  // Build rollback snapshot before any repair
+  // Build rollback snapshot before any repair and persist for ic rollback --auto
   const rollbackPlan = await createAutopilotRollbackPlan(rootPath, files, `autopilot ${kind} 验证失败，进入自动修复`);
+  await persistAutopilotRollbackPlan(rollbackPlan).catch(() => { /* best-effort */ });
 
   while (attemptCount < MAX_AUTOPILOT_REPAIR_ATTEMPTS) {
     attemptCount++;
@@ -3705,7 +3798,19 @@ async function runAutopilotRepairLoop(options: {
     }
   }
 
-  // Max attempts reached — offer rollback
+  // Max attempts reached — auto-execute or offer rollback
+  if (options.autoRollback) {
+    const receipts = await rollbackAutopilotChanges(rollbackPlan);
+    if (!jsonMode) {
+      const { renderAutopilotRollbackReceipts } = await import('./core/autopilot-rollback.js');
+      console.log();
+      warn(`已尝试 ${MAX_AUTOPILOT_REPAIR_ATTEMPTS} 次自动修复，已自动执行回滚。`);
+      console.log(renderAutopilotRollbackReceipts(receipts));
+    }
+    broadcastRollback(rootPath, undefined, rollbackPlan.reason, receipts).catch(() => {});
+    return { finalStatus: 'rolled-back', attempts: attemptCount };
+  }
+
   if (!jsonMode) {
     console.log();
     warn(`已尝试 ${MAX_AUTOPILOT_REPAIR_ATTEMPTS} 次自动修复，建议回滚本次写入。`);

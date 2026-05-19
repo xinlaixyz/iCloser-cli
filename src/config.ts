@@ -39,6 +39,7 @@ export function defaultConfig(rootPath: string, identity: ProjectIdentity): IClo
       defaultMode: 'preview',
       maxRetries: 3,
       maxParallelTasks: 3,
+      autoRollbackOnFailure: false,
       verifyStages: isFrontend
         ? ['lint', 'unit-test', 'e2e', 'coverage']
         : isBackend
@@ -73,18 +74,26 @@ export async function loadConfig(rootPath: string): Promise<ICloserConfig | null
   const projectConfigPath = path.join(rootPath, '.icloser', CONFIG_FILENAME);
 
   if (await fileExists(projectConfigPath)) {
-    const config = await readJson(projectConfigPath) as unknown as ICloserConfig;
-    // Merge with global config for AI settings
-    if (await fileExists(GLOBAL_CONFIG_PATH)) {
-      const globalConfig = await readJson(GLOBAL_CONFIG_PATH);
-      if (globalConfig.ai && !config.ai.apiKey) {
-        const globalAI = globalConfig.ai as Partial<ICloserConfig['ai']>;
-        config.ai = globalAI.apiKey && config.ai.provider !== 'mock'
-          ? { ...config.ai, ...globalAI }
-          : { ...globalAI, ...config.ai };
+    try {
+      const raw = await readJson(projectConfigPath) as Record<string, unknown>;
+      const projectRoot = (raw.project && typeof raw.project === 'object' ? (raw.project as any).rootPath : null) || rootPath;
+      const identity = (raw.project && typeof raw.project === 'object' ? (raw.project as any).identity : null) || {};
+      const defaults = defaultConfig(projectRoot, identity);
+      const config = { ...defaults, ...raw } as ICloserConfig;
+      // Merge with global config for AI settings
+      if (await fileExists(GLOBAL_CONFIG_PATH)) {
+        try {
+          const globalConfig = await readJson(GLOBAL_CONFIG_PATH);
+          if (globalConfig.ai && !config.ai.apiKey) {
+            const globalAI = globalConfig.ai as Partial<ICloserConfig['ai']>;
+            config.ai = globalAI.apiKey && config.ai.provider !== 'mock'
+              ? { ...config.ai, ...globalAI }
+              : { ...globalAI, ...config.ai };
+          }
+        } catch { /* global config corrupt — skip */ }
       }
-    }
-    return config;
+      return config;
+    } catch { return null; } // corrupted project config
   }
 
   return null;

@@ -147,7 +147,7 @@ export function updateTaskStatus(taskId: string, status: TaskStatus, rootPath?: 
   const task = taskStore.get(taskId);
   if (task) {
     task.status = status;
-    if (status === 'completed' || status === 'failed') {
+    if (status === 'completed' || status === 'failed' || status === 'rolled-back') {
       task.completedAt = new Date().toISOString();
     }
     if (status === 'running' && !task.startedAt) {

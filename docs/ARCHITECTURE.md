@@ -90,7 +90,7 @@ AgentCode/
 │   │   ├── autopilot-verify.ts  自动验证
 │   │   ├── autopilot-repair.ts  自动修复
 │   │   ├── autopilot-router.ts  自动路由
-│   │   ├── autopilot-rollback.ts 自动回滚
+│   │   ├── autopilot-rollback.ts 自动回滚（快照/试运行/列表）
 │   │   ├── execution-chain.ts   执行链
 │   │   ├── tool-registry.ts     工具注册表
 │   │   ├── tool-executor.ts     工具执行
@@ -302,6 +302,30 @@ ic code review
 
 ic code lint-fix
   └── resolveVerificationCommand(lint) → execSync → 按文件分组 → AI修复 → 验证
+
+## 回滚管线 (Rollback)
+
+```
+ic rollback
+    ├── --auto                    自动回滚最近 autopilot 快照
+    │     ├── loadLatestAutopilotRollbackPlan()  ← 读取 .icloser/snapshots/
+    │     └── rollbackAutopilotChanges()          ← 恢复/删除文件
+    ├── --auto --dry-run          预览模式（不实际修改文件）
+    │     └── dryRunAutopilotRollback()  →  would-restore / would-delete / no-op
+    ├── --list                    列出所有 autopilot 快照
+    │     └── listAutopilotRollbackSnapshots()  →  按时间倒序
+    └── [task-id]                 基于 Git 的任务回滚（需 Git 仓库）
+
+ic auto docs/tests --go --auto
+  └── 写入前: createAutopilotRollbackPlan() → persistAutopilotRollbackPlan()
+         └── 验证失败 → runAutopilotRepairLoop()
+               ├── buildAutopilotRepairPlan()  ← 尝试自动修复 (最多2轮)
+               ├── applyAutopilotRepairPlan()   ← 应用修复
+               └── 仍失败 + autoRollback=true:
+                     └── rollbackAutopilotChanges()  ← 自动恢复文件
+
+配置项 execution.autoRollbackOnFailure: true 可使 --auto 成为默认行为
+```
 
 ic docs ask
   └── loadAllDocs → askDocuments → AI RAG回答

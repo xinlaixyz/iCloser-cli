@@ -26,7 +26,10 @@
 | `ic y <id>` | `accept` | — | 确认并执行任务 |
 | `ic n <id>` | `reject` | — | 拒绝并取消任务 |
 | `ic cancel <id>` | — | — | 取消排队中的任务 |
-| `ic rollback <id>` | — | — | 回滚任务变更 |
+| `ic rollback [id]` | — | `[--auto] [--dry-run] [--list]` | 回滚任务或 autopilot 快照 |
+| `ic rollback --auto` | — | `[--dry-run]` | 回滚最近一次 autopilot 快照 |
+| `ic rollback --list` | — | — | 列出所有 autopilot 回滚快照 |
+| `ic rollback --auto --dry-run` | — | — | 预览回滚而不实际执行 |
 | `ic d [id]` | `diff` | — | 查看代码 diff |
 | `ic gate <id>` | `g` | `[--skip-gate] [--json]` | 执行六道门禁检查 |
 | `ic l [id]` | `log` | — | 查看任务历史 |
@@ -50,7 +53,9 @@
 
 | 命令 | 别名 | 参数 | 描述 |
 |------|------|------|------|
-| `ic auto [mode]` | `autopilot` | `[--json] [--go] [--yes]` | 自动分析/文档/测试生成 |
+| `ic auto [mode]` | `autopilot` | `[--json] [--go] [--yes] [--auto] [--module]` | 自动分析/文档/测试生成 |
+| `ic auto docs --go --auto` | — | `[--yes]` | 写入文档，验证失败时自动回滚 |
+| `ic auto tests --go --auto` | — | `[--module]` | 写入测试，验证失败时自动回滚 |
 | `ic intel <query>` | `code` | `[--json] [--callers]` | 代码智能查询 |
 | `ic search <pattern>` | — | `[--json] [--web]` | 代码/网络搜索 |
 
@@ -64,12 +69,28 @@
 | `ic provider test` | — | — | 测试 Provider 连接 |
 | `ic provider doctor` | — | `[--json]` | Provider 健康诊断 |
 
-### 记忆系统
+### 记忆系统 (Memory Kernel v1.0)
 
 | 命令 | 别名 | 参数 | 描述 |
 |------|------|------|------|
-| `ic mem` | `memory` | `[args...]` | 查看/管理项目记忆 |
-| `ic rule [constraint]` | — | `[--list] [--delete]` | 管理架构约束 |
+| `ic mem` | `memory` | — | 查看记忆摘要 |
+| `ic mem status` | — | — | Memory Kernel 运行时状态 |
+| `ic mem recall <查询>` | — | — | 手动检索相关记忆 (Top 5) |
+| `ic mem bootstrap` | — | — | 从 git/代码配置重新引导 |
+| `ic mem consolidate` | — | — | 手动触发记忆固化 |
+| `ic mem forget` | — | — | 清理低分/过期记忆 |
+| `ic mem inspect working` | — | — | 查看当前工作记忆 |
+| `ic mem inspect semantic` | — | — | 查看语义规则树 |
+| `ic mem inspect episodic` | — | — | 查看情景记忆 (近30天) |
+| `ic mem rule add <规则>` | — | — | 手动添加语义规则 |
+| `ic mem rule list` | — | — | 列出所有规则 |
+| `ic mem rule delete <id>` | — | — | 删除规则 |
+| `ic mem stats` | — | — | 记忆统计 |
+| `ic mem events` | — | — | 查看用户输入事件 |
+| `ic mem review` | — | — | 待确认记忆审查 |
+| `ic mem approve/reject <id>` | — | — | 批准/拒绝记忆候选 |
+
+> 调试: `ICLOSER_MEMORY_DEBUG=info ic mem status` 查看详细日志
 
 ### 其他
 
@@ -81,6 +102,38 @@
 | `ic` (无参数) | — | — | 进入 REPL 交互模式 |
 
 ## 核心模块导出 API
+
+### Memory Kernel (`src/core/memory/`)
+
+```typescript
+// 单例获取
+import { getMemoryRuntime } from './core/memory/integration.js';
+const runtime = await getMemoryRuntime(rootPath);
+
+// 生命周期钩子
+await runtime.onTaskStart(taskId, description);
+await runtime.onTaskComplete(taskId, { filesChanged, verifyPassed, summary });
+await runtime.onTaskError(taskId, error);
+
+// Recall
+const results = await runtime.recall.recall('修改钱包 UI');
+// → RecallResult[] { type, source, content, score, raw }
+
+// 上下文注入
+import { getMemoryContextForLLM } from './core/memory/integration.js';
+const memoryCtx = await getMemoryContextForLLM(rootPath, taskDescription);
+
+// Bootstrap
+import { bootstrapMemoryKernel } from './core/memory/bootstrap.js';
+await bootstrapMemoryKernel(rootPath, runtime);
+
+// 存储
+import { ensureMemoryStore } from './core/memory/store.js';
+const store = await ensureMemoryStore(rootPath);
+
+// 调试
+// ICLOSER_MEMORY_DEBUG=info node dist/index.js
+```
 
 ### 扫描器 (`src/core/scanner.ts`)
 
@@ -179,6 +232,19 @@ validateAIOutputContract(value: unknown): AIOutputContract
 2. `ic provider key <provider> <apiKey>` 运行时配置
 3. 环境变量注入（如 `ANTHROPIC_API_KEY`、`DEEPSEEK_API_KEY`）
 4. API Key 保存到 `~/.icloser/config.json` 全局配置
+
+## 配置参考
+
+项目配置文件 `.icloser/icloser.json` 支持以下关键选项：
+
+| 配置键 | 类型 | 默认值 | 说明 |
+|--------|------|--------|------|
+| `execution.autoRollbackOnFailure` | `boolean` | `false` | 设为 `true` 后，`ic auto docs --go` / `ic auto tests --go` 验证失败时自动回滚，无需每次传 `--auto` |
+| `execution.defaultMode` | `string` | `"preview"` | 默认执行模式：`"preview"` 或 `"execute"` |
+| `execution.maxRetries` | `number` | `3` | 最大重试次数 |
+| `execution.maxParallelTasks` | `number` | `3` | 最大并行任务数 |
+
+> 修改配置：`ic config execution.autoRollbackOnFailure true`
 
 ## 错误码
 
