@@ -1,4 +1,5 @@
 // Agent Manager — agent creation, lifecycle, communication, real AI execution
+import { randomUUID } from 'node:crypto';
 import type {
   AgentInstance, AgentType, AgentStatus,
   AgentMessage, ContextPackage, AIConfig, AIPrompt,
@@ -431,7 +432,7 @@ export class AgentManager {
 // Helpers
 // ============================================================
 function generateAgentId(): string {
-  return `agent-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 7)}`;
+  return `agent-${Date.now().toString(36)}-${randomUUID().substring(0, 8)}`;
 }
 
 function createOrchTask(orchId: string, name: string, affectedFiles: string[]): Task {

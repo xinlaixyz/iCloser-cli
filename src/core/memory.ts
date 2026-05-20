@@ -1,4 +1,5 @@
 // Dual-layer Memory System — project + global cross-project memory
+import { randomUUID } from 'node:crypto';
 import * as path from 'path';
 import { appendFile, readFile } from 'fs/promises';
 import { readJson, writeJson, fileExists, ensureDir } from '../utils/fs.js';
@@ -102,7 +103,7 @@ export async function recordUserInputEvent(
   options: RecordUserInputOptions = {}
 ): Promise<UserInputMemoryEvent> {
   const now = new Date().toISOString();
-  const id = `uie-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+  const id = `uie-${Date.now().toString(36)}-${randomUUID().substring(0, 8)}`;
   const sanitized = sanitizeUserInput(input, options.kind);
   const kind = options.kind || inferUserInputKind(input);
   const metadata = createMemoryMetadata({
@@ -218,7 +219,7 @@ export function createMemoryCandidateFromInputEvent(event: UserInputMemoryEvent)
   const suggestedAction = inferReviewAction(riskLevel, suggestedScope, kind);
   const reviewStatus = inferReviewStatus(suggestedAction);
   const now = new Date().toISOString();
-  const id = `mc-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+  const id = `mc-${Date.now().toString(36)}-${randomUUID().substring(0, 8)}`;
   const summary = compressMemoryCandidate(content, kind);
 
   return {
@@ -285,7 +286,7 @@ export function compressMemoryCandidate(content: string, kind: MemoryCandidateKi
 function createSensitiveCandidate(event: UserInputMemoryEvent): MemoryCandidate | null {
   if (!event.redacted) return null;
   const now = new Date().toISOString();
-  const id = `mc-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+  const id = `mc-${Date.now().toString(36)}-${randomUUID().substring(0, 8)}`;
   return {
     id,
     kind: 'sensitive',

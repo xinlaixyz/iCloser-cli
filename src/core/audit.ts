@@ -1,5 +1,6 @@
 // Audit Engine — Agent action audit log
 // Records key actions during task execution for traceability and report integration.
+import { randomUUID } from 'node:crypto';
 import * as path from 'path';
 import { appendFile } from 'fs/promises';
 import { ensureDir, readFile, fileExists } from '../utils/fs.js';
@@ -25,7 +26,7 @@ export async function appendAuditEvent(
   options: AppendAuditOptions = {}
 ): Promise<AuditEvent> {
   const now = new Date().toISOString();
-  const id = `audit-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+  const id = `audit-${Date.now().toString(36)}-${randomUUID().substring(0, 8)}`;
 
   const rawPayload = options.payload || {};
   const sanitized = sanitizeAuditPayload(rawPayload);
