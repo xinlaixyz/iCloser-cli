@@ -313,6 +313,54 @@ export function generateScaffold(
         break;
     }
   }
+
+  if (language === 'go') {
+    const pkg = camelName;
+    switch (type) {
+      case 'crud':
+        files.push({ path: `${camelName}/model.go`, content: `package ${pkg}\n\ntype ${PascalName} struct {\n\tID        string \`json:"id"\`\n\tCreatedAt string \`json:"createdAt"\`\n\tUpdatedAt string \`json:"updatedAt"\`\n}\n` });
+        files.push({ path: `${camelName}/handler.go`, content: `package ${pkg}\n\nimport (\n\t"encoding/json"\n\t"net/http"\n)\n\nfunc Get${PascalName}s(w http.ResponseWriter, r *http.Request) {\n\t// TODO: implement\n\tjson.NewEncoder(w).Encode([]${PascalName}{})\n}\n\nfunc Create${PascalName}(w http.ResponseWriter, r *http.Request) {\n\t// TODO: implement\n\tw.WriteHeader(http.StatusCreated)\n}\n` });
+        files.push({ path: `${camelName}/router.go`, content: `package ${pkg}\n\nimport "net/http"\n\nfunc RegisterRoutes(mux *http.ServeMux) {\n\tmux.HandleFunc("/${camelName}", func(w http.ResponseWriter, r *http.Request) {\n\t\tswitch r.Method {\n\t\tcase http.MethodGet:\n\t\t\tGet${PascalName}s(w, r)\n\t\tcase http.MethodPost:\n\t\t\tCreate${PascalName}(w, r)\n\t\t}\n\t})\n}\n` });
+        break;
+      case 'middleware':
+        files.push({ path: `${camelName}_middleware.go`, content: `package main\n\nimport "net/http"\n\nfunc ${PascalName}Middleware(next http.Handler) http.Handler {\n\treturn http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {\n\t\t// TODO: implement middleware logic\n\t\tnext.ServeHTTP(w, r)\n\t})\n}\n` });
+        break;
+      case 'route':
+        files.push({ path: `${camelName}_handler.go`, content: `package main\n\nimport (\n\t"encoding/json"\n\t"net/http"\n)\n\nfunc ${PascalName}Handler(w http.ResponseWriter, r *http.Request) {\n\tjson.NewEncoder(w).Encode(map[string]string{"message": "${name}"})\n}\n` });
+        break;
+    }
+  }
+
+  if (language === 'python') {
+    switch (type) {
+      case 'crud':
+        files.push({ path: `${camelName}/model.py`, content: `from dataclasses import dataclass\nfrom datetime import datetime\n\n@dataclass\nclass ${PascalName}:\n    id: str\n    created_at: datetime\n    updated_at: datetime\n` });
+        files.push({ path: `${camelName}/handler.py`, content: `from fastapi import APIRouter\nfrom .model import ${PascalName}\n\nrouter = APIRouter()\n\n@router.get("/")\nasync def get_${camelName}s():\n    # TODO: implement\n    return []\n\n@router.post("/")\nasync def create_${camelName}(data: dict):\n    # TODO: implement\n    return {"status": "created"}\n` });
+        break;
+      case 'middleware':
+        files.push({ path: `${camelName}_middleware.py`, content: `from starlette.middleware.base import BaseHTTPMiddleware\n\nclass ${PascalName}Middleware(BaseHTTPMiddleware):\n    async def dispatch(self, request, call_next):\n        # TODO: implement middleware logic\n        response = await call_next(request)\n        return response\n` });
+        break;
+      case 'route':
+        files.push({ path: `${camelName}_router.py`, content: `from fastapi import APIRouter\n\nrouter = APIRouter()\n\n@router.get("/")\nasync def ${camelName}_root():\n    return {"message": "${name}"}\n` });
+        break;
+    }
+  }
+
+  if (language === 'java') {
+    switch (type) {
+      case 'crud':
+        files.push({ path: `src/main/java/${camelName}/${PascalName}.java`, content: `package ${camelName};\n\npublic class ${PascalName} {\n    private String id;\n    private java.time.Instant createdAt;\n    private java.time.Instant updatedAt;\n\n    // TODO: add getters/setters\n}\n` });
+        files.push({ path: `src/main/java/${camelName}/${PascalName}Controller.java`, content: `package ${camelName};\n\nimport org.springframework.web.bind.annotation.*;\nimport java.util.List;\n\n@RestController\n@RequestMapping("/${camelName}")\npublic class ${PascalName}Controller {\n\n    @GetMapping\n    public List<${PascalName}> getAll() {\n        // TODO: implement\n        return List.of();\n    }\n\n    @PostMapping\n    public ${PascalName} create(@RequestBody ${PascalName} data) {\n        // TODO: implement\n        return data;\n    }\n}\n` });
+        break;
+      case 'middleware':
+        files.push({ path: `src/main/java/${camelName}/${PascalName}Filter.java`, content: `package ${camelName};\n\nimport jakarta.servlet.*;\nimport java.io.IOException;\n\npublic class ${PascalName}Filter implements Filter {\n    @Override\n    public void doFilter(ServletRequest req, ServletResponse res, FilterChain chain)\n            throws IOException, ServletException {\n        // TODO: implement middleware logic\n        chain.doFilter(req, res);\n    }\n}\n` });
+        break;
+      case 'route':
+        files.push({ path: `src/main/java/${camelName}/${PascalName}Controller.java`, content: `package ${camelName};\n\nimport org.springframework.web.bind.annotation.*;\nimport java.util.Map;\n\n@RestController\npublic class ${PascalName}Controller {\n    @GetMapping("/${camelName}")\n    public Map<String, String> index() {\n        return Map.of("message", "${name}");\n    }\n}\n` });
+        break;
+    }
+  }
+
   return { files };
 }
 

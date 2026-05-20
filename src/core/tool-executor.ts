@@ -145,6 +145,35 @@ export async function validateToolCallForIntent(
 
 function isWindows(): boolean { return process.platform === 'win32'; }
 
+// Complete dangerous-command detection (deny-list for run_command tool)
+function isDangerousCmd(cmd: string): boolean {
+  const patterns = [
+    // Unix destructive
+    /\brm\s+.*-(?:[rR]\S*[fF]|[fF]\S*[rR])\b/,  // rm with both -r and -f
+    /\brmdir\s+\/s\b/i,                               // Unix recursive rmdir
+    /\bsudo\b/i,                                      // privilege escalation
+    /\bchmod\s+777\b/i,                               // overbroad permissions
+    /\bmkfs\b/i,                                      // make filesystem
+    /\bdd\s+if=/i,                                    // raw disk write
+    /\bmv\s+\/[^\s]*\s+\/(dev|etc|sys|proc|bin|boot|lib)\b/i,  // move to system dirs
+    />\s*\/dev\//i,                                   // redirect to device
+    /\b:\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:/,    // fork bomb
+    // Windows destructive
+    /\brd\s+\/s\b/i,                                  // Windows recursive rmdir
+    /\bformat\s+[a-z]:/i,                             // format drive
+    /\bdiskpart\b/i,                                  // disk partition tool
+    /\bdel\s+\/[fF]\b/,                               // Windows force delete
+    /\bdel\s+\/[sS]\b/,                               // Windows recursive delete
+    /\breg\s+delete\b/i,                              // registry deletion
+    /\breg\s+add\b/i,                                 // registry modification
+    /\bsc\s+(stop|delete|config)\b/i,                 // service manipulation
+    /\bbcdedit\b/i,                                   // boot configuration
+    /\bwmic\s+(process|path)\s+(call\s+create|delete)\b/i,  // WMI process creation
+    /\btaskkill\s+\/F\b/i,                            // force kill processes
+  ];
+  return patterns.some(p => p.test(cmd));
+}
+
 async function autoAdaptCommand(command: string, rootPath: string): Promise<{ adapted: string; wasAdapted: boolean }> {
   if (!isWindows()) return { adapted: command, wasAdapted: false };
 
@@ -426,27 +455,25 @@ async function _executeTool(name: string, args: Record<string, unknown>, rootPat
       const command = (args.command as string) || '';
       if (!command) return '错误：缺少 command 参数';
 
-      // Safety check — deny-list for dangerous operations
-      const isDangerous = (cmd: string): boolean => {
-        const patterns = [
-          /\brm\s+.*-(?:[rR]\S*[fF]|[fF]\S*[rR])\b/,  // rm with both -r and -f (any order, e.g. rm -rf, rm -fr, rm -r -f)
-          /\brmdir\s+\/s\b/i, /\brd\s+\/s\b/i,           // Windows recursive delete
-          /\bsudo\b/i, /\bchmod\s+777\b/i,                // privilege escalation / overbroad permissions
-          /\bmkfs\b/i, /\bdd\s+if=/i,                     // format / raw disk write
-          /\bformat\s+[a-z]:/i, /\bdiskpart\b/i,          // Windows format / disk partition
-          /\bdel\s+\/[fF]\b/, /\bdel\s+\/[sS]\b/,         // Windows force/recursive delete (not /q=quiet)
-          />\s*\/dev\//i,                                 // redirect to device
-        ];
-        return patterns.some(p => p.test(cmd));
-      };
+      // Dry-run mode: preview the command without executing
+      if (args.dryRun) {
+        const { adapted, wasAdapted } = await autoAdaptCommand(command, rootPath);
+        const safety = isDangerousCmd(command) ? '⚠️ 危险命令（将被拦截）' : '✅ 安全策略通过';
+        return [
+          `[DRY-RUN] ${wasAdapted ? `适配后: ${adapted}` : command}`,
+          `目录: ${rootPath || process.cwd()}`,
+          safety,
+        ].join('\n');
+      }
 
-      if (isDangerous(command)) return '错误：命令被安全策略拦截（危险操作）';
+      // Safety check — deny-list for dangerous operations
+      if (isDangerousCmd(command)) return '错误：命令被安全策略拦截（危险操作）';
 
       // P1-4: Platform-aware auto-adaptation (auto-translate + execute)
       const { adapted, wasAdapted } = await autoAdaptCommand(command, rootPath);
 
       // Re-check adapted command — adaptation may have introduced danger
-      if (wasAdapted && isDangerous(adapted)) return '错误：命令适配后被安全策略拦截（危险操作）';
+      if (wasAdapted && isDangerousCmd(adapted)) return '错误：命令适配后被安全策略拦截（危险操作）';
 
       try {
         const { execSync } = await import('child_process');

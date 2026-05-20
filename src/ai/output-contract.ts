@@ -35,14 +35,34 @@ export function formatAIOutputContract(output: AIOutputContract): string {
 }
 
 export function parseAIOutput(content: string): AIOutputContract {
+  // Strategy 1: JSON contract (fenced → raw → candidate extraction)
   const jsonOutput = parseJsonContract(content);
   if (jsonOutput) return validateAIOutputContract(jsonOutput);
 
+  // Strategy 2: Legacy write blocks (```write:file\ncontent\n```)
   const legacyChanges = parseLegacyWriteBlocks(content);
   if (legacyChanges.length > 0) {
     return validateAIOutputContract({
       summary: 'legacy write blocks',
       changes: legacyChanges,
+    });
+  }
+
+  // Strategy 3: Markdown fenced code blocks with file hints
+  const mdBlockChanges = parseMarkdownFileBlocks(content);
+  if (mdBlockChanges.length > 0) {
+    return validateAIOutputContract({
+      summary: 'markdown file blocks',
+      changes: mdBlockChanges,
+    });
+  }
+
+  // Strategy 4: Any JSON object containing a "file" and "content" field anywhere
+  const looseChanges = parseLooseFileContentPairs(content);
+  if (looseChanges.length > 0) {
+    return validateAIOutputContract({
+      summary: 'loose file-content pairs',
+      changes: looseChanges,
     });
   }
 
@@ -155,6 +175,48 @@ function findJsonObjectCandidates(content: string): string[] {
   }
 
   return candidates;
+}
+
+// Strategy 3: Markdown fenced code blocks with file path in the fence header
+// e.g. ```typescript:src/app.ts  or  ```ts src/app.ts
+function parseMarkdownFileBlocks(content: string): AIFileChange[] {
+  const blocks: AIFileChange[] = [];
+  const fenceRegex = /```(?:[\w.]+\s*[:]\s*(\S+\.\w+)|\s*(\S+\.\w+))\s*\n([\s\S]*?)```/g;
+  let m: RegExpExecArray | null;
+  while ((m = fenceRegex.exec(content)) !== null) {
+    const filePath = (m[1] || m[2] || '').trim();
+    const fileContent = m[3];
+    if (filePath && fileContent && /\.\w{1,6}$/.test(filePath)) {
+      blocks.push({
+        file: normalizeFilePath(filePath),
+        operation: 'write',
+        content: fileContent.trim(),
+        reasoning: 'extracted from markdown code block',
+      });
+    }
+  }
+  return blocks;
+}
+
+// Strategy 4: Loose JSON objects anywhere in the text containing file+content fields
+function parseLooseFileContentPairs(content: string): AIFileChange[] {
+  const blocks: AIFileChange[] = [];
+  // Match objects like {"file":"...", "content":"..."} or {file:"...", content:"..."}
+  const objRegex = /\{[^}]*"file"\s*:\s*"([^"]+)"[^}]*"content"\s*:\s*"((?:[^"\\]|\\.)*)"[^}]*\}/g;
+  let m: RegExpExecArray | null;
+  while ((m = objRegex.exec(content)) !== null) {
+    const filePath = m[1];
+    const fileContent = m[2].replace(/\\n/g, '\n').replace(/\\t/g, '\t').replace(/\\"/g, '"');
+    if (filePath && fileContent && /\.\w{1,6}$/.test(filePath)) {
+      blocks.push({
+        file: normalizeFilePath(filePath),
+        operation: 'write',
+        content: fileContent,
+        reasoning: 'extracted from loose file-content object',
+      });
+    }
+  }
+  return blocks;
 }
 
 function parseLegacyWriteBlocks(content: string): AIFileChange[] {
