@@ -1,4 +1,5 @@
 // Task Engine — creation, scheduling, execution, parallel management
+import { randomUUID } from 'node:crypto';
 import * as path from 'path';
 import { ensureDir, writeJson, readJson, fileExists, listDir } from '../utils/fs.js';
 import { advanceTaskLoop, createTaskLoopState, type TaskLoopIntervention, type TaskLoopStepId, type TaskLoopVerification } from './task-loop.js';
@@ -472,7 +473,9 @@ function estimateImpact(
 // Helpers
 // ============================================================
 function generateTaskId(): string {
-  return `task-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 7)}`;
+  const ts = Date.now().toString(36);
+  const rand = randomUUID().substring(0, 8);
+  return `task-${ts}-${rand}`;
 }
 
 export async function persistTask(rootPath: string, task: Task): Promise<void> {

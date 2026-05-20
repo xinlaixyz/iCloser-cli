@@ -80,15 +80,15 @@ export async function loadConfig(rootPath: string): Promise<ICloserConfig | null
       const identity = (raw.project && typeof raw.project === 'object' ? (raw.project as any).identity : null) || {};
       const defaults = defaultConfig(projectRoot, identity);
       const config = { ...defaults, ...raw } as ICloserConfig;
-      // Merge with global config for AI settings
+      // Merge with global config for AI settings: only inherit apiKey, never override project choices
       if (await fileExists(GLOBAL_CONFIG_PATH)) {
         try {
           const globalConfig = await readJson(GLOBAL_CONFIG_PATH);
           if (globalConfig.ai && !config.ai.apiKey) {
             const globalAI = globalConfig.ai as Partial<ICloserConfig['ai']>;
-            config.ai = globalAI.apiKey && config.ai.provider !== 'mock'
-              ? { ...config.ai, ...globalAI }
-              : { ...globalAI, ...config.ai };
+            if (globalAI.apiKey) {
+              config.ai.apiKey = globalAI.apiKey;
+            }
           }
         } catch { /* global config corrupt — skip */ }
       }

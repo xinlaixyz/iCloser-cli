@@ -29,8 +29,9 @@ async function pMap<T, R>(
       try {
         results[idx] = await fn(items[idx], idx);
       } catch (e) {
-        // Preserve thrown errors for callers that check
         results[idx] = undefined as unknown as R;
+        const itemLabel = typeof items[idx] === 'string' ? items[idx] as string : `item[${idx}]`;
+        process.stderr.write(`  pMap worker fail: ${itemLabel} — ${(e as Error).message.slice(0, 120)}\n`);
       }
     }
   }

@@ -72,7 +72,7 @@ export function validateAIOutputContract(value: unknown): AIOutputContract {
     }
 
     const file = typeof raw.file === 'string' ? normalizeFilePath(raw.file) : '';
-    const operation = raw.operation === 'write' ? raw.operation : null;
+    const operation = normalizeOperation(raw.operation);
     const content = typeof raw.content === 'string' ? raw.content : '';
     const reasoning = typeof raw.reasoning === 'string' ? raw.reasoning : '';
 
@@ -178,6 +178,13 @@ function tryParseJson(raw: string): unknown | null {
   } catch {
     return null;
   }
+}
+
+function normalizeOperation(raw: unknown): AIFileOperation | null {
+  if (typeof raw !== 'string') return null;
+  const op = raw.trim().toLowerCase();
+  if (op === 'write' || op === 'create') return 'write';
+  return null;
 }
 
 function normalizeFilePath(file: string): string {

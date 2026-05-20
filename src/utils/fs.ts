@@ -9,9 +9,16 @@ export async function ensureDir(dir: string): Promise<void> {
   await fse.ensureDir(dir);
 }
 
-export async function readFile(filePath: string, options?: { encoding?: 'auto' | 'utf-8'; normalizeNewlines?: boolean }): Promise<string> {
+export async function readFile(filePath: string, options?: { encoding?: 'auto' | 'utf-8'; normalizeNewlines?: boolean; rootPath?: string }): Promise<string> {
   const enc = options?.encoding || 'utf-8';
   const normalize = options?.normalizeNewlines !== false; // default true
+  if (options?.rootPath) {
+    const resolved = path.resolve(filePath);
+    const rel = path.relative(path.resolve(options.rootPath), resolved);
+    if (rel.startsWith('..') || path.isAbsolute(rel)) {
+      throw new Error(`路径遍历拒绝: ${filePath}`);
+    }
+  }
   let content: string;
   if (enc === 'auto') {
     content = await readFileSafe(filePath);
@@ -44,7 +51,14 @@ export async function writeFile(filePath: string, content: string, rootPath?: st
   await nodeWriteFile(resolved, finalContent, 'utf-8');
 }
 
-export async function readJson(filePath: string): Promise<Record<string, unknown>> {
+export async function readJson(filePath: string, rootPath?: string): Promise<Record<string, unknown>> {
+  if (rootPath) {
+    const resolved = path.resolve(filePath);
+    const rel = path.relative(path.resolve(rootPath), resolved);
+    if (rel.startsWith('..') || path.isAbsolute(rel)) {
+      throw new Error(`路径遍历拒绝: ${filePath}`);
+    }
+  }
   const content = await nodeReadFile(filePath, 'utf-8');
   return JSON.parse(content);
 }

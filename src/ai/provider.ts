@@ -753,7 +753,8 @@ class DeepSeekProvider implements AIProviderAdapter {
 
       const messages: { role: 'system' | 'user' | 'assistant'; content: string }[] = [
         { role: 'system', content: prompt.systemPrompt },
-        { role: 'user', content: prompt.task + '\n\n上下文：\n' + prompt.context.projectMeta +
+        { role: 'user', content: prompt.task + '\n\n上下文：\n' +
+          prompt.context.relevantCode.map(c => `// ${c.file}\n${c.content}`).join('\n\n') +
           (prompt.context.relevantMemory ? '\n\n## 项目记忆\n' + prompt.context.relevantMemory : '') +
           (prompt.context.externalKnowledge ? '\n\n## 网络搜索结果\n' + prompt.context.externalKnowledge : '') +
           (prompt.context.astHints ? '\n\n## 代码调用关系\n' + prompt.context.astHints : '') },
