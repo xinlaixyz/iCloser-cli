@@ -1,5 +1,5 @@
 import * as path from 'path';
-import { ensureDir, fileExists, getFileSize, writeFile } from '../utils/fs.js';
+import { ensureDir, fileExists, getFileSize, writeFile, readFile } from '../utils/fs.js';
 import type { AutopilotTestPlan, AutopilotTestTarget } from './autopilot.js';
 
 export interface TestDraft {
@@ -52,11 +52,12 @@ export async function buildTestWritePlan(
 
   for (const pair of pairs) {
     const fullPath = path.join(rootPath, pair.testFile);
+    const content = await generateTestContent(rootPath, pair.sourceFile, pair.testFile, plan.detectedFramework);
     tests.push({
       file: pair.testFile,
       sourceFile: pair.sourceFile,
       module: target.module,
-      content: generateTestContent(pair.sourceFile, pair.testFile, plan.detectedFramework),
+      content,
       exists: await fileExists(fullPath),
     });
   }
@@ -131,12 +132,39 @@ function pickTarget(plan: AutopilotTestPlan, moduleName?: string): AutopilotTest
   return candidates[0] || null;
 }
 
-function generateTestContent(sourceFile: string, testFile: string, framework: string): string {
+async function generateTestContent(rootPath: string, sourceFile: string, testFile: string, framework: string): Promise<string> {
   const ext = path.posix.extname(sourceFile.toLowerCase());
   if (ext === '.go') return generateGoTest(sourceFile);
   if (ext === '.py') return generatePythonTest(sourceFile);
   if (ext === '.java') return generateJavaTest(sourceFile);
-  return generateJavaScriptTest(sourceFile, testFile, framework);
+
+  // C1-fix: extract real exports from source so tests target actual functions
+  let exports: { name: string; kind: string }[] = [];
+  try {
+    const fullPath = path.join(rootPath, sourceFile);
+    const content = await readFile(fullPath);
+    exports = extractExportsRegex(content);
+  } catch { /* best-effort, fallback to generic module test */ }
+
+  return generateJavaScriptTest(sourceFile, testFile, framework, exports);
+}
+
+function extractExportsRegex(content: string): { name: string; kind: string }[] {
+  const exports: { name: string; kind: string }[] = [];
+  const patterns: [RegExp, string][] = [
+    [/export\s+(?:async\s+)?function\s+(\w+)/g, 'function'],
+    [/export\s+(?:const|let|var)\s+(\w+)\s*[:=]/g, 'const'],
+    [/export\s+class\s+(\w+)/g, 'class'],
+    [/export\s+(?:type|interface)\s+(\w+)/g, 'type'],
+  ];
+  for (const [regex, kind] of patterns) {
+    for (const m of content.matchAll(regex)) {
+      if (!exports.some(e => e.name === m[1])) {
+        exports.push({ name: m[1], kind });
+      }
+    }
+  }
+  return exports;
 }
 
 function generateJavaScriptTest(sourceFile: string, testFile: string, framework: string, exports?: { name: string; kind: string }[]): string {

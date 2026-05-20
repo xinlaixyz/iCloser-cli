@@ -369,18 +369,22 @@ async function _executeTool(name: string, args: Record<string, unknown>, rootPat
       if (filePath.includes('..')) return '错误：不允许访问上级目录';
       const fullPath = resolvePath(filePath, rootPath);
 
-      // PDF/HTML document reading
-      try {
-        const { readDocumentFile } = await import('./doc-reader.js');
-        const doc = await readDocumentFile(fullPath);
-        if (doc) {
-          const meta = [];
-          if (doc.metadata.title) meta.push(`标题: ${doc.metadata.title}`);
-          if (doc.metadata.pageCount) meta.push(`页数: ${doc.metadata.pageCount}`);
-          const header = meta.length > 0 ? `[${doc.metadata.type.toUpperCase()} ${meta.join(', ')}]\n\n` : `[${doc.metadata.type.toUpperCase()}]\n\n`;
-          return header + doc.text;
-        }
-      } catch { /* not a document or parse failed, fall through */ }
+      // Document file reading (pdf, html, pptx, docx, xlsx — skip for source code)
+      const DOC_EXTENSIONS = new Set(['pdf', 'html', 'htm', 'pptx', 'ppt', 'docx', 'xlsx']);
+      const fileExt = fullPath.split('.').pop()?.toLowerCase() || '';
+      if (DOC_EXTENSIONS.has(fileExt)) {
+        try {
+          const { readDocumentFile } = await import('./doc-reader.js');
+          const doc = await readDocumentFile(fullPath);
+          if (doc) {
+            const meta = [];
+            if (doc.metadata.title) meta.push(`标题: ${doc.metadata.title}`);
+            if (doc.metadata.pageCount) meta.push(`页数: ${doc.metadata.pageCount}`);
+            const header = meta.length > 0 ? `[${doc.metadata.type.toUpperCase()} ${meta.join(', ')}]\n\n` : `[${doc.metadata.type.toUpperCase()}]\n\n`;
+            return header + doc.text;
+          }
+        } catch { /* parse failed, fall through to raw read */ }
+      }
 
       try {
         const content = await readFile(fullPath);

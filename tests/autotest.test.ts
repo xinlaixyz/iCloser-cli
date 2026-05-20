@@ -31,7 +31,8 @@ describe('safe test writer', () => {
       expect(writePlan.target?.module).toBe('src/pages');
       expect(writePlan.tests).toHaveLength(1);
       expect(writePlan.tests[0].file).toBe('src/pages/Home.test.tsx');
-      expect(writePlan.tests[0].content).toContain('exports a usable module API');
+      // C1-fix: exports are now extracted from source — generates per-function tests
+      expect(writePlan.tests[0].content).toContain('Home');
       expect(writePlan.totalNew).toBe(1);
     } finally {
       await rm(root, { recursive: true, force: true });

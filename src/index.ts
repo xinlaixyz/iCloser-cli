@@ -917,7 +917,7 @@ program.command('r')
 program.command('mem')
   .alias('memory')
   .description('查看和管理项目记忆')
-  .argument('[args...]', 'status / recall <q> / bootstrap / consolidate / forget / inspect <type> / rule add/list / 搜索关键词')
+  .argument('[args...]', 'status / recall <q> / import/export/manifests / bootstrap / consolidate / forget / inspect <type> / rule add/list / 搜索关键词')
   .action(async (args: string[] = []) => {
     const rootPath = process.cwd();
     try {
@@ -929,6 +929,9 @@ program.command('mem')
         console.log(`  ${chalk.cyan('ic mem events')}              查看用户输入事件`);
         console.log(`  ${chalk.cyan('ic mem candidates')}          查看记忆候选`);
         console.log(`  ${chalk.cyan('ic mem review')}              待确认记忆审查`);
+        console.log(`  ${chalk.cyan('ic mem import [file...]')}     导入 AGENTS.md / CLAUDE.md 等 Agent 记忆文件`);
+        console.log(`  ${chalk.cyan('ic mem export [file]')}        导出项目规则到 AGENTS.md`);
+        console.log(`  ${chalk.cyan('ic mem manifests')}            查看可识别的 Agent 记忆文件`);
         console.log(`  ${chalk.cyan('ic mem approve <序号|id>')}    批准记忆候选`);
         console.log(`  ${chalk.cyan('ic mem reject <序号|id>')}     拒绝记忆候选`);
         console.log(`  ${chalk.cyan('ic mem global')}              查看全局记忆`);
@@ -941,6 +944,15 @@ program.command('mem')
         await printMemoryCandidates(rootPath);
       } else if (verb === 'review') {
         await printMemoryReview(rootPath);
+      } else if (verb === 'import') {
+        const { memoryManifestImport } = await import('./core/memory/cli-handlers.js');
+        await memoryManifestImport(rootPath, rest);
+      } else if (verb === 'export') {
+        const { memoryManifestExport } = await import('./core/memory/cli-handlers.js');
+        await memoryManifestExport(rootPath, rest[0] || 'AGENTS.md');
+      } else if (verb === 'manifests') {
+        const { printMemoryManifestFiles } = await import('./core/memory/cli-handlers.js');
+        await printMemoryManifestFiles(rootPath);
       } else if (verb === 'approve' || verb === 'accept') {
         await updateMemoryCandidateReview(rootPath, rest.join(' ').trim(), 'approved');
       } else if (verb === 'reject' || verb === 'archive') {
@@ -1753,8 +1765,16 @@ program.command('start')
       progress(`启动 npm run ${scriptName}...`);
       const { spawn } = await import('child_process');
       const child = spawn('npm', ['run', scriptName], { cwd, stdio: 'inherit', shell: process.platform === 'win32', detached: true, windowsHide: true });
+      // Persist PID so `ic stop` can kill the exact process
+      if (child.pid) {
+        const { writeFile: fsPid, mkdir: fsMkdir } = await import('fs/promises');
+        try {
+          await fsMkdir(path.join(cwd, '.icloser'), { recursive: true });
+          await fsPid(path.join(cwd, '.icloser', 'dev-server.pid'), String(child.pid), 'utf-8');
+        } catch { /* best-effort — not fatal */ }
+      }
       child.unref();
-      success(`已启动 ${scriptName}（后台运行）`);
+      success(`已启动 ${scriptName}（后台运行，PID ${child.pid ?? '未知'}）`);
       info('使用 ic stop 停止后台服务');
     } catch (err) { printError(err as Error); }
   });
@@ -1766,11 +1786,37 @@ program.command('stop')
   .description('停止后台开发服务')
   .action(async () => {
     try {
-      if (process.platform === 'win32') {
-        const { execFileSync } = await import('child_process');
-        try { execFileSync('taskkill', ['/F', '/IM', 'node.exe', '/FI', 'WINDOWTITLE eq *dev*'], { stdio: 'ignore' }); } catch { /* ok */ }
+      const cwd = process.cwd();
+      const { readFile: fsRead, unlink } = await import('fs/promises');
+      const pidFile = path.join(cwd, '.icloser', 'dev-server.pid');
+
+      // Read the PID written by `ic start`
+      let pid: number | null = null;
+      try {
+        const raw = await fsRead(pidFile, 'utf-8');
+        const parsed = parseInt(raw.trim(), 10);
+        if (Number.isFinite(parsed) && parsed > 0) pid = parsed;
+      } catch { /* pid file absent — server was never started or already cleaned up */ }
+
+      if (!pid) {
+        info('未找到后台服务记录（.icloser/dev-server.pid 不存在），无法精确停止');
+        return;
       }
-      success('已尝试停止后台进程');
+
+      try {
+        if (process.platform === 'win32') {
+          const { execFileSync } = await import('child_process');
+          execFileSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore' });
+        } else {
+          process.kill(pid, 'SIGTERM');
+        }
+        try { await unlink(pidFile); } catch { /* ok */ }
+        success(`已停止后台服务（PID ${pid}）`);
+      } catch {
+        // Process already exited — clean up stale pid file
+        try { await unlink(pidFile); } catch { /* ok */ }
+        info(`后台服务已停止或不存在（PID ${pid}）`);
+      }
     } catch { info('停止操作未完成'); }
   });
 
@@ -2592,40 +2638,12 @@ program.command("gen")
       const { createProvider } = await import("./ai/provider.js");
       const provider = createProvider({ ...config.ai, apiKey: config.ai.apiKey || "" });
       const isMock = config.ai.provider === "mock";
+      const { runGenNew, runGenFix, runGenComplete } = await import('./core/task-pipeline.js');
 
       if (action === "new" && rest.length > 0) {
-        const desc = rest.join(" ");
-        progress("AI 代码生成: " + desc);
-        // C1+C3: Read existing code patterns and style constraints
-        let stylePrompt = "";
-        let codeSamples = "";
-        if (!isMock) {
-          try {
-            const index = await (await import("./core/scanner.js")).loadProjectIndex(rootPath);
-            if (index?.styleFingerprint) {
-              const { buildStyleConstraints } = await import("./core/code-writer.js");
-              stylePrompt = buildStyleConstraints(index.styleFingerprint);
-            }
-            if (index) {
-              const { readCodePatterns } = await import("./core/code-writer.js");
-              codeSamples = await readCodePatterns(rootPath, index);
-            }
-          } catch { /* best-effort */ }
-        }
-        // Improve-1: Use unified pipeline (plan → execute → verify)
-        const ctxPkg = {
-          projectMeta: codeSamples ? `现有代码模式:\n${codeSamples.slice(0, 2000)}` : '',
-          relevantCode: [], relevantMemory: stylePrompt, totalTokens: 0, budgetUsed: 0,
-        };
-        const genChanges = isMock
-          ? parseAIOutput((await provider.chat({
-              systemPrompt: "你是代码生成专家。只输出JSON变更契约。",
-              task: desc + (codeSamples ? "\n\n现有代码风格参考:\n" + codeSamples.slice(0, 2000) : ""),
-              context: { projectMeta: "", relevantCode: [], relevantMemory: "", totalTokens: 0, budgetUsed: 0 }, history: "",
-            })).content).changes
-          : await runCodeGenerationPipeline(desc, rootPath, provider, config.project.identity, ctxPkg, 'gen new');
-
-        for (const c of genChanges) {
+        progress("AI 代码生成: " + rest.join(" "));
+        const changes = await runGenNew(rootPath, rest.join(" "), config, provider, isMock);
+        for (const c of changes) {
           const fp = path.join(rootPath, c.file);
           const { writeFile, ensureDir } = await import("./utils/fs.js");
           await ensureDir(path.dirname(fp)); await writeFile(fp, c.content);
@@ -2635,22 +2653,9 @@ program.command("gen")
       }
 
       if (action === "fix") {
-        const tasks = await (await import("./core/task-engine.js")).listTasks(rootPath);
-        const last = tasks.find(t => t.status === "failed");
-        if (!last?.verifyResult?.errorSummary) { info("无失败验证记录"); return; }
         progress("AI 修复错误...");
-        // C6: Parse error output for targeted fixes
-        const { parseErrorOutput } = await import("./core/code-writer.js");
-        const errors = parseErrorOutput(last.verifyResult.errorSummary);
-        const errContext = errors.length > 0 ? "错误位置:\n" + errors.map(e => `  ${e.file}:${e.line} - ${e.message}`).join("\n") : "";
-        const resp = await provider.chat({
-          systemPrompt: "你是代码修复专家。只输出JSON变更契约。仅修复指定的错误，不改无关代码。",
-          task: "错误摘要: " + last.verifyResult.errorSummary.slice(0, 2000) + "\n" + errContext,
-          context: { projectMeta: "", relevantCode: [], relevantMemory: "", totalTokens: 0, budgetUsed: 0 }, history: "",
-        });
-        const fixChanges = parseAIOutput(resp.content).changes;
-        const validated = await applyCompileGate(fixChanges, rootPath, config.project.identity, provider, 'gen fix');
-        for (const c of validated) {
+        const changes = await runGenFix(rootPath, config, provider);
+        for (const c of changes) {
           await (await import("./utils/fs.js")).writeFile(path.join(rootPath, c.file), c.content);
           success(c.file + " 已修复");
         }
@@ -2659,22 +2664,9 @@ program.command("gen")
 
       if (action === "complete" && rest.length > 0) {
         const filePath = path.resolve(rootPath, rest[0]);
-        if (!(await import("./utils/fs.js")).fileExists(filePath)) { fail("文件不存在: " + rest[0]); return; }
-        const content = await readFile(filePath);
         progress("AI 智能补全: " + rest[0]);
-        // C2: Find incomplete code
-        const { findIncompleteCode } = await import("./core/code-writer.js");
-        const incomplete = findIncompleteCode(content);
-        if (incomplete.length === 0) { info("未发现未完成代码"); return; }
-        detail("未完成", incomplete.map(i => `  L${i.line}: ${i.indicator} — ${i.signature}`).join("\n"));
-        const resp = await provider.chat({
-          systemPrompt: "你是代码补全专家。只输出JSON变更契约。补全所有TODO/空函数体，匹配现有代码风格。",
-          task: "补全文件: " + rest[0] + "\n未完成代码:\n" + incomplete.map(i => `L${i.line}: ${i.signature}`).join("\n") + "\n\n现有文件内容:\n" + content.slice(0, 3000),
-          context: { projectMeta: "", relevantCode: [], relevantMemory: "", totalTokens: 0, budgetUsed: 0 }, history: "",
-        });
-        const completeChanges = parseAIOutput(resp.content).changes;
-        const validated = await applyCompileGate(completeChanges, rootPath, config.project.identity, provider, 'gen complete');
-        for (const c of validated) {
+        const changes = await runGenComplete(rootPath, filePath, config, provider);
+        for (const c of changes) {
           const fp = path.join(rootPath, c.file);
           const { writeFile, ensureDir } = await import("./utils/fs.js");
           await ensureDir(path.dirname(fp)); await writeFile(fp, c.content);

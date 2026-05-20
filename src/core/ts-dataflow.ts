@@ -2,7 +2,7 @@
 // Pushes data flow beyond AST name-matching by using the TS type checker
 import * as ts from 'typescript';
 import * as path from 'path';
-import { existsSync } from 'fs';
+import { existsSync, statSync } from 'fs';
 
 export interface TSDataFlowDef {
   name: string;
@@ -32,6 +32,32 @@ export interface TSCrossFileFlow {
   sinks: { file: string; line: number; functionName: string; paramName: string; chain: string[] }[];
 }
 
+// LRU cache for TS Program results — avoids full rebuild on repeated calls
+const CACHE_TTL_MS = 30_000;
+interface CacheEntry { result: ReturnType<typeof buildAnalysisResult>; ts: number; tsconfigMtime: number; }
+const analysisCache = new Map<string, CacheEntry>();
+
+function getCachedOrNew(rootPath: string, tsconfigPath: string, srcFiles: string[], options: any): ReturnType<typeof buildAnalysisResult> {
+  try {
+    const tsconfigStat = existsSync(tsconfigPath) ? statSync(tsconfigPath) : null;
+    const tsconfigMtime = tsconfigStat?.mtimeMs || 0;
+    const key = `${rootPath}::${tsconfigMtime}`;
+    const cached = analysisCache.get(key);
+    if (cached && (Date.now() - cached.ts) < CACHE_TTL_MS) return cached.result;
+  } catch { /* proceed without cache */ }
+
+  const result = buildAnalysisResult(srcFiles, options);
+  try {
+    const tsconfigMtime = existsSync(tsconfigPath) ? statSync(tsconfigPath)?.mtimeMs || 0 : 0;
+    analysisCache.set(`${rootPath}::${tsconfigMtime}`, { result, ts: Date.now(), tsconfigMtime });
+    if (analysisCache.size > 8) {
+      const oldest = [...analysisCache.entries()].sort((a, b) => a[1].ts - b[1].ts)[0];
+      if (oldest) analysisCache.delete(oldest[0]);
+    }
+  } catch { /* cache set failure non-blocking */ }
+  return result;
+}
+
 // Main entry: analyze project data flow using TS compiler
 export function analyzeTSProject(rootPath: string): {
   edges: TSDataFlowEdge[];
@@ -52,6 +78,14 @@ export function analyzeTSProject(rootPath: string): {
 
   if (srcFiles.length === 0) return { edges: [], crossFile: [], stats: { files: 0, definitions: 0, uses: 0, crossFileFlows: 0 } };
 
+  return getCachedOrNew(rootPath, tsconfigPath, srcFiles, options);
+}
+
+function buildAnalysisResult(srcFiles: string[], options: any): {
+  edges: TSDataFlowEdge[];
+  crossFile: TSCrossFileFlow[];
+  stats: { files: number; definitions: number; uses: number; crossFileFlows: number };
+} {
   const program = ts.createProgram(srcFiles.slice(0, 500), options);
   const checker = program.getTypeChecker();
 
@@ -251,9 +285,11 @@ function buildCrossFileFlow(
     const sinks: TSCrossFileFlow['sinks'] = [];
 
     for (const use of callArgUses) {
-      // Look for the callee in definitions
-      const calleeName = use.context.match(/(\w+)\s*\(/)?.[1];
-      if (!calleeName) continue;
+      // Extract callee name from call context (supports obj.method, ns.fn, plain fn)
+      const calleeMatch = use.context.match(/([\w.]+)\s*\(/);
+      if (!calleeMatch) continue;
+      // Use last segment for name matching (e.g. "user.service.update" → "update")
+      const calleeName = calleeMatch[1].split('.').pop()!;
 
       // Find callee definition across files
       for (const [key, def] of defMap) {

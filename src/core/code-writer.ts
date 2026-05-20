@@ -1,5 +1,6 @@
 // Code Writer — AI-powered code generation, completion, and refactoring
 import type { ProjectIndex, StyleFingerprint } from '../types.js';
+import type { AIProviderAdapter } from '../ai/provider.js';
 
 // ============================================================
 // C1: Context-aware code generation
@@ -115,7 +116,7 @@ export function findSymbolReferences(index: ProjectIndex, symbol: string): strin
 // C4: Generate test file alongside source code
 export async function generateWithTests(
   desc: string, rootPath: string, index: ProjectIndex,
-  provider: any,
+  provider: AIProviderAdapter,
 ): Promise<{ source: { file: string; content: string }[]; tests: { file: string; content: string }[] }> {
   const styleConstraint = index.styleFingerprint ? buildStyleConstraints(index.styleFingerprint) : '';
   const codePatterns = await readCodePatterns(rootPath, index);
@@ -152,7 +153,7 @@ export async function generateWithTests(
 // C7: Generate with auto verify-repair loop (max 3 rounds)
 export async function generateWithVerifyLoop(
   desc: string, rootPath: string, index: ProjectIndex,
-  provider: any,
+  provider: AIProviderAdapter,
 ): Promise<{
   source: { file: string; content: string }[];
   tests: { file: string; content: string }[];
@@ -170,15 +171,28 @@ export async function generateWithVerifyLoop(
   const path = await import('path');
 
   // Write generated files to disk for verification
-  for (const s of result.source) {
-    const fullPath = [rootPath, s.file].join('/').replace(/\/+/g, '/');
-    await ensureDir(path.dirname(fullPath));
-    await writeFile(fullPath, s.content);
-  }
-  for (const t of result.tests) {
-    const fullPath = [rootPath, t.file].join('/').replace(/\/+/g, '/');
-    await ensureDir(path.dirname(fullPath));
-    await writeFile(fullPath, t.content);
+  try {
+    const resolveGeneratedPath = (file: string): string => {
+      const fullPath = path.resolve(rootPath, file);
+      const rel = path.relative(rootPath, fullPath);
+      if (rel.startsWith('..') || path.isAbsolute(rel)) {
+        throw new Error(`生成文件路径越界: ${file}`);
+      }
+      return fullPath;
+    };
+
+    for (const s of result.source) {
+      const fullPath = resolveGeneratedPath(s.file);
+      await ensureDir(path.dirname(fullPath));
+      await writeFile(fullPath, s.content);
+    }
+    for (const t of result.tests) {
+      const fullPath = resolveGeneratedPath(t.file);
+      await ensureDir(path.dirname(fullPath));
+      await writeFile(fullPath, t.content);
+    }
+  } catch (e) {
+    return { ...result, verifyRounds: 0, verifyPassed: false, diagnostics: `写入生成文件失败: ${(e as Error).message}` };
   }
 
   // Verify loop
@@ -237,7 +251,11 @@ export async function generateWithVerifyLoop(
               const testIdx = result.tests?.findIndex(t => t.file === fix.file) ?? -1;
               if (testIdx >= 0 && result.tests) result.tests[testIdx].content = fix.content;
             }
-            const fullPath = [rootPath, fix.file].join('/').replace(/\/+/g, '/');
+            const fullPath = path.resolve(rootPath, fix.file);
+            const rel = path.relative(rootPath, fullPath);
+            if (rel.startsWith('..') || path.isAbsolute(rel)) {
+              throw new Error(`生成文件路径越界: ${fix.file}`);
+            }
             await writeFile(fullPath, fix.content);
           }
         } catch { break; } // can't parse fix response, stop trying
@@ -298,9 +316,112 @@ export function generateScaffold(
   return { files };
 }
 
-// ═══════════════════════════════════════════════════════════════
-// Gate-1: Post-generation enforcement — compile+lint before write
-// ═══════════════════════════════════════════════════════════════
+// C8-enhanced: Scaffold + AI auto-complete TODO stubs
+export async function generateScaffoldWithAI(
+  type: 'crud' | 'middleware' | 'route' | 'component',
+  name: string,
+  language: string,
+  rootPath: string,
+  index: ProjectIndex | null,
+  provider: AIProviderAdapter,
+  style?: StyleFingerprint,
+): Promise<{ files: { path: string; content: string }[] }> {
+  // Step 1: Generate scaffold skeleton
+  const { files } = generateScaffold(type, name, language, style);
+
+  // Step 2: Find files with TODO stubs and AI-complete them
+  const todos = files.filter(f => /\/\/\s*TODO:?\s*implement/i.test(f.content));
+  if (todos.length === 0 || !provider) return { files };
+
+  try {
+    // Read existing code patterns for context
+    const codePatterns = index ? await readCodePatterns(rootPath, index) : '';
+    const styleConstraint = style ? buildStyleConstraints(style) : '';
+
+    for (const todo of todos) {
+      const resp = await provider.chat({
+        systemPrompt: [
+          '你是代码补全专家。补全以下骨架代码中的 TODO 实现。',
+          '规则:',
+          '  1. 补全所有 TODO，保持与现有项目代码风格一致',
+          '  2. 只输出该文件的 JSON 变更契约: { "content": "补全后的完整文件内容" }',
+          '  3. 不要修改已有的接口/类型定义',
+          styleConstraint,
+        ].filter(Boolean).join('\n'),
+        task: [
+          `文件: ${todo.path}`,
+          `骨架代码:\n\`\`\`\n${todo.content}\n\`\`\``,
+          codePatterns ? `\n现有代码模式参考:\n${codePatterns.slice(0, 2000)}` : '',
+        ].join('\n'),
+        context: { projectMeta: '', relevantCode: [], relevantMemory: '', totalTokens: 0, budgetUsed: 0 },
+        history: '',
+      });
+
+      try {
+        const json = JSON.parse((resp.content.match(/\{[\s\S]*\}/)?.[0] || '{}'));
+        if (json.content && json.content !== todo.content) {
+          todo.content = json.content; // Replace TODO stub with AI-completed code
+        }
+      } catch { /* keep TODO stub if AI output unparseable */ }
+    }
+  } catch { /* keep TODO stubs if AI unavailable */ }
+
+  return { files };
+}
+
+// C12: Cross-file refactoring — AI reads multiple files, refactors coherently
+export async function refactorCrossFile(
+  filePaths: string[],
+  instruction: string,
+  rootPath: string,
+  index: ProjectIndex | null,
+  provider: AIProviderAdapter,
+): Promise<{ files: { path: string; original: string; refactored: string }[]; explanation: string }> {
+  const { readFile } = await import('../utils/fs.js');
+  const styleConstraint = index?.styleFingerprint ? buildStyleConstraints(index.styleFingerprint) : '';
+
+  // Read all files
+  const fileContents: Record<string, string> = {};
+  for (const fp of filePaths) {
+    try { fileContents[fp] = await readFile(fp); } catch { /* skip unreadable */ }
+  }
+
+  const filesBlock = Object.entries(fileContents)
+    .map(([fp, content]) => `### ${fp}\n\`\`\`\n${content.slice(0, 4000)}\n\`\`\``)
+    .join('\n\n');
+
+  const resp = await provider.chat({
+    systemPrompt: [
+      '你是跨文件代码重构专家。基于指令对多个文件进行一致性重构。',
+      '规则:',
+      '  1. 保持公开 API 不变',
+      '  2. 所有文件的修改必须一致（如重命名必须在所有文件中同步）',
+      '  3. 输出 JSON: {"files": [{"path": "...", "content": "重构后完整内容"}], "explanation": "说明"}',
+      styleConstraint,
+    ].filter(Boolean).join('\n'),
+    task: `重构指令: ${instruction}\n\n${filesBlock.slice(0, 12000)}`,
+    context: { projectMeta: '', relevantCode: [], relevantMemory: '', totalTokens: 0, budgetUsed: 0 },
+    history: '',
+  });
+
+  const results: { path: string; original: string; refactored: string }[] = [];
+
+  try {
+    const json = JSON.parse((resp.content.match(/\{[\s\S]*\}/)?.[0] || '{}'));
+    const changedFiles: { path: string; content: string }[] = json.files || [];
+
+    for (const cf of changedFiles) {
+      const original = fileContents[cf.path] || '';
+      if (cf.content && cf.content !== original) {
+        results.push({ path: cf.path, original, refactored: cf.content });
+      }
+    }
+
+    return { files: results, explanation: json.explanation || '' };
+  } catch {
+    return { files: [], explanation: 'AI 输出解析失败' };
+  }
+}
 
 export interface EnforcementResult {
   passed: boolean;
@@ -318,7 +439,7 @@ export async function enforceCodeQuality(
   changes: { file: string; content: string }[],
   rootPath: string,
   identity: { language: string },
-  provider: any,
+  provider: AIProviderAdapter,
   index?: { styleFingerprint?: import('../types.js').StyleFingerprint },
 ): Promise<EnforcementResult> {
   if (changes.length === 0) return { passed: true, changes: [], fixes: 0, diagnostics: '' };
@@ -452,7 +573,44 @@ export async function runCompileCheck(
     }
   }
 
-  // Non-compiled languages — skip enforcement
+  if (lang === 'rust') {
+    try {
+      const { execFileSync } = await import('child_process');
+      execFileSync('cargo', ['check'], { cwd: rootPath, timeout: 60000, encoding: 'utf-8', stdio: 'pipe' });
+      return { passed: true, errors: '' };
+    } catch (e: any) {
+      return { passed: false, errors: (e.stdout || '') + (e.stderr || '') };
+    }
+  }
+
+  if (lang === 'java') {
+    try {
+      const { execFileSync } = await import('child_process');
+      const mvnw = process.platform === 'win32' ? 'mvnw.cmd' : './mvnw';
+      const hasMvnw = await (await import('../utils/fs.js')).fileExists([rootPath, mvnw].join('/').replace(/\/+/g, '/'));
+      if (hasMvnw) {
+        execFileSync(mvnw, ['compile', '-q'], { cwd: rootPath, timeout: 60000, encoding: 'utf-8', stdio: 'pipe' });
+      } else {
+        const mvn = process.platform === 'win32' ? 'mvn.cmd' : 'mvn';
+        execFileSync(mvn, ['compile', '-q'], { cwd: rootPath, timeout: 60000, encoding: 'utf-8', stdio: 'pipe' });
+      }
+      return { passed: true, errors: '' };
+    } catch (e: any) {
+      return { passed: false, errors: (e.stdout || '') + (e.stderr || '') };
+    }
+  }
+
+  if (lang === 'csharp') {
+    try {
+      const { execFileSync } = await import('child_process');
+      execFileSync('dotnet', ['build', '--no-restore'], { cwd: rootPath, timeout: 60000, encoding: 'utf-8', stdio: 'pipe' });
+      return { passed: true, errors: '' };
+    } catch (e: any) {
+      return { passed: false, errors: (e.stdout || '') + (e.stderr || '') };
+    }
+  }
+
+  // Interpreted / non-compiled languages (python, javascript, ruby, php, etc.) — skip enforcement
   return { passed: true, errors: '' };
 }
 
@@ -532,9 +690,11 @@ export function detectEmptyTests(content: string, filePath: string): { isEmpty: 
     issues.push('测试仅有注释，无实际代码');
   }
 
-  // Check for empty test blocks: it("x", () => {})
-  const emptyBlockPattern = /(it|test)\s*\([^)]*\)\s*,\s*(?:async\s*)?\(\s*\)\s*=>\s*\{\s*\}/g;
-  if (emptyBlockPattern.test(content)) {
+  // Check for empty test blocks: it("x", () => {}) and common malformed variants.
+  const emptyBody = String.raw`\{\s*(?:(?:\/\/[^\r\n]*|\/\*[\s\S]*?\*\/)\s*)*\}`;
+  const emptyInlineCallPattern = new RegExp(String.raw`\b(?:it|test)\s*\([\s\S]*?,\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>\s*${emptyBody}\s*\)`, 'g');
+  const detachedEmptyBlockPattern = new RegExp(String.raw`\b(?:it|test)\s*\([^)]*\)\s*,\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>\s*${emptyBody}`, 'g');
+  if (emptyInlineCallPattern.test(content) || detachedEmptyBlockPattern.test(content)) {
     issues.push('存在空测试块 (无实现的箭头函数)');
   }
 
@@ -590,7 +750,7 @@ export async function refactorCode(
   instruction: string,
   rootPath: string,
   index: ProjectIndex | null,
-  provider: any,
+  provider: AIProviderAdapter,
 ): Promise<{ original: string; refactored: string; explanation: string }> {
   const { readFile } = await import('../utils/fs.js');
   const original = await readFile(filePath);
