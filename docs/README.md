@@ -45,6 +45,7 @@ AgentCode 支持把 `AGENTS.md`、`CLAUDE.md`、`.github/copilot-instructions.md
 - [MEMORY_KERNEL](MEMORY_KERNEL.md) — **Memory Kernel v1.0 完整文档** (认知记忆核心)
 - [PROJECT_ANALYSIS](PROJECT_ANALYSIS.md) — **项目完成度分析报告** (2026-05-20)
 - [CAPABILITY_ASSESSMENT](../doc/CAPABILITY_ASSESSMENT.md) — **关键能力综合评分** (AI记忆/工具/代码/测试/架构)
+- [OVERALL_REANALYSIS](../doc/OVERALL_REANALYSIS_2026-05-20.md) — 按“本地工程执行器 + Claude Code替代品 + 长期记忆”重新分析
 - [ARCHITECT_ACCEPTANCE_DEV2_TOOL_PLAN](../doc/ARCHITECT_ACCEPTANCE_DEV2_TOOL_PLAN_2026-05-20.md) — 架构验收记录与程序员2工具能力任务书
 - [USAGE_MARKET_ACCEPTANCE](../doc/USAGE_MARKET_ACCEPTANCE_2026-05-20.md) — 用户视角与市场需求验收报告
 - [CODEX_CLAUDE_MEMORY_ALIGNMENT](../doc/CODEX_CLAUDE_MEMORY_ALIGNMENT.md) — Codex / Claude Code 对标与记忆功能方案

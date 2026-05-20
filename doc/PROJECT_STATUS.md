@@ -25,6 +25,7 @@
 - 关键能力评分：更新 `doc/CAPABILITY_ASSESSMENT.md`，按 AI 记忆、工具、代码、测试、架构、产品可用性重新评分，综合为 7.8/10。
 - 工具能力排期：新增 `doc/ARCHITECT_ACCEPTANCE_DEV2_TOOL_PLAN_2026-05-20.md`，明确程序员2补齐 DOCX/XLSX 工具、工具过程可视化、工具权限产品化和 smoke 验收脚本。
 - 产品定位澄清：PRD 与验收文档已明确 AgentCode 是“本地工程执行器 + Claude Code / Codex 替代品 + 长期记忆系统”，后续代码能力必须按 Claude Code 级闭环验收，Memory Kernel 必须承担跨会话长期项目记忆。
+- 整体重分析：新增 `doc/OVERALL_REANALYSIS_2026-05-20.md`，按三层定位重新评估项目，综合评分更新为 8.0/10。
 
 ### 用户/市场验收发现 (2026-05-20)
 - 真实 CLI 路径通过：`--help`、`setup --mock --json`、`init`、`scan --json`、`doctor --json`、`provider list --json`、`mem status`、`plan create` 均可完成。
@@ -45,7 +46,7 @@ npm run lint
 - `src/index.ts`、`src/cli/repl.ts`、`src/core/ast-parser.ts` 仍是维护风险最高的巨石文件，应随模块拆分继续清理剩余 144 个 ESLint warnings；其中 `index.ts` 已迁出 task/memory 命令，但任务执行主流程仍需继续拆分。
 - PRD 中运行时 `>=18.0.0` 已通过 Memory Kernel 降级路径守住；后续文档应继续明确：SQLite 索引是 Node 24+ 增强能力，Node 18/20 使用 JSONL/rules 文件存储并保留基础 Recall。
 - Acceptance 测试已覆盖 pipeline/codegen/rollback，但 spawn 型验收仍占用约 50-55s，需要后续按 CI 分层拆成 quick/unit 与 acceptance jobs。
-- 程序员2下一轮聚焦工具能力：先补 `read_docx` / `read_xlsx`，再补工具调用过程展示与 `smoke:tools`，每项必须同步测试和文档。
+- 程序员2工具能力进展：`read_docx` / `read_xlsx`、工具执行事件 hook、权限矩阵与 `smoke:tools` 已进入源码和发布产物验收；下一步聚焦工具过程展示接入 CLI/REPL、权限产品化与真实 Provider 黄金路径。
 
 ---
 
