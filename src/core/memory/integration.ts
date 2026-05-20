@@ -25,7 +25,7 @@ export async function getMemoryRuntime(rootPath: string): Promise<MemoryRuntime>
   } catch (err) {
     _runtime = null; // Don't cache a broken instance
     _initRetries++;
-    memdbg.error('integration', `MemoryRuntime 初始化失败 (尝试 ${_initRetries}/${MAX_INIT_RETRIES})`, err);
+    memdbg.warn('integration', `MemoryRuntime 初始化失败 (尝试 ${_initRetries}/${MAX_INIT_RETRIES})`);
 
     if (_initRetries <= MAX_INIT_RETRIES) {
       // Retry: clear singleton and try again next call

@@ -521,7 +521,7 @@ export async function generateChangelog(
   let gitLog = '';
   try {
     const { execFileSync } = await import('child_process');
-    gitLog = execFileSync('git', ['log', '--oneline', '-30'], { cwd: rootPath, encoding: 'utf-8', timeout: 5000 });
+    gitLog = execFileSync('git', ['log', '--oneline', '-30'], { cwd: rootPath, encoding: 'utf-8', timeout: 5000, stdio: 'pipe' });
   } catch { return '  无法读取 git 历史（需在 git 仓库中运行）'; }
   if (!gitLog.trim()) return '  Git 历史为空';
   const prompt = `将以下 git 提交记录整理为结构化的 CHANGELOG。按类型分组(feat/fix/docs/chore)，用中文描述。

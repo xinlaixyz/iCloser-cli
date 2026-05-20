@@ -1,9 +1,10 @@
 // Git utilities for iCloser Agent Shell
-import { execSync, execFileSync } from 'child_process';
-import * as path from 'path';
+import { execFileSync } from 'child_process';
+import { validateCommitSafety, type CommitSecurityConfig } from '../core/commit-security.js';
 
 function git(args: string[], rootPath: string, timeout = 10000, maxBuffer?: number): string {
-  return execFileSync('git', args, { cwd: rootPath, timeout, encoding: 'utf-8', ...(maxBuffer ? { maxBuffer } : {}) });
+  // stdio: 'pipe' captures stderr so git warnings/fatals never bleed to the user's terminal
+  return execFileSync('git', args, { cwd: rootPath, timeout, encoding: 'utf-8', stdio: 'pipe', ...(maxBuffer ? { maxBuffer } : {}) });
 }
 function gitQuiet(args: string[], rootPath: string, timeout = 10000): string {
   return execFileSync('git', args, { cwd: rootPath, timeout, encoding: 'utf-8', stdio: 'pipe' });
@@ -63,66 +64,15 @@ export function getGitStatus(rootPath: string): GitStatus {
   };
 }
 
-/** Glob pattern matcher for sensitive-file checks.
- *  Supports: *.ext, dir/**, dir/*, **\/dir, {a,b}, exact, * wildcards.
- *  No dependencies required — purposefully minimal. */
-function matchSensitivePattern(name: string, pattern: string): boolean {
-  const p = pattern.toLowerCase();
-  const n = name.toLowerCase().replace(/\\/g, '/');
-
-  // {a,b,c} alternation → expand to multiple patterns
-  const braceMatch = p.match(/^(.+)\{([^}]+)\}(.*)$/);
-  if (braceMatch) {
-    const options = braceMatch[2].split(',');
-    return options.some(opt => matchSensitivePattern(name, braceMatch[1] + opt + braceMatch[3]));
-  }
-
-  // ** recursive match: dir/** → matches dir/ and anything under
-  if (p.includes('**')) {
-    const parts = p.split('**');
-    if (parts.length === 2) {
-      const prefix = parts[0]; // e.g. "src/"
-      const suffix = parts[1]; // e.g. "/*.ts" or ""
-      if (!suffix) return n.startsWith(prefix);                    // dir/**
-      const cleanSuffix = suffix.startsWith('/') ? suffix.slice(1) : suffix;
-      return n.startsWith(prefix) && n.endsWith(cleanSuffix);       // dir/**/*.ts
-    }
-  }
-
-  // * wildcard (non-recursive, single-segment)
-  if (p.includes('*')) {
-    const regexStr = '^' + p.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '[^/]*') + '$';
-    try { return new RegExp(regexStr).test(n); } catch { return false; }
-  }
-
-  // Exact match or suffix match
-  return n === p || n.endsWith('/' + p);
-}
-
 export function createCommit(
   rootPath: string,
   message: string,
   files: string[],
   /** Optional security config (forward-compat, existing callers pass nothing). */
-  config?: { security?: { sensitiveFiles?: string[] } }
+  config?: CommitSecurityConfig
 ): boolean {
-  // ── Pre-flight validation ──────────────────────────────────
-  if (!message.trim()) return false;                      // empty message
-
-  const sensitivePatterns = config?.security?.sensitiveFiles ?? [];
-  const rootResolved = path.resolve(rootPath);
-
-  for (const file of files) {
-    // Path-traversal guard: file must stay inside rootPath
-    const rel = path.relative(rootResolved, path.resolve(rootPath, file));
-    if (rel.startsWith('..') || path.isAbsolute(rel)) return false;
-
-    // Sensitive-file guard: reject .env, *.pem, *.key, etc.
-    const base = path.basename(file);
-    if (sensitivePatterns.some(p => matchSensitivePattern(base, p) || matchSensitivePattern(file, p))) {
-      return false;
-    }
-  }
+  const safety = validateCommitSafety(rootPath, message, files, config);
+  if (!safety.ok) return false;
 
   // ── Execute ───────────────────────────────────────────────
   try {

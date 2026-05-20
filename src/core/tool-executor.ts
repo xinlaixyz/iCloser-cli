@@ -188,6 +188,29 @@ function compressCommandOutput(output: string): string {
     `\n(输出共 ${lines.length} 行，已压缩为关键行)`;
 }
 
+async function suppressPdfParserNoise<T>(fn: () => Promise<T>): Promise<T> {
+  const isPdfNoise = (s: string) => /Indexing all PDF|pdfjs-dist/i.test(s);
+  const origWarn = console.warn.bind(console);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const origStderrWrite = (process.stderr as any).write.bind(process.stderr);
+  console.warn = (...args: unknown[]) => {
+    if (!isPdfNoise(args.map(a => String(a)).join(' '))) origWarn(...args);
+  };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (process.stderr as any).write = (chunk: unknown, ...rest: unknown[]): boolean => {
+    const s = typeof chunk === 'string' ? chunk : Buffer.isBuffer(chunk) ? chunk.toString() : String(chunk);
+    if (isPdfNoise(s)) return true;
+    return origStderrWrite(chunk, ...rest) as boolean;
+  };
+  try {
+    return await fn();
+  } finally {
+    console.warn = origWarn;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (process.stderr as any).write = origStderrWrite;
+  }
+}
+
 // ── P1-4: Platform-aware command auto-conversion ──
 
 const WIN_CMD_MAP: Record<string, string> = {
@@ -763,7 +786,7 @@ async function _executeTool(name: string, args: Record<string, unknown>, rootPat
       const query = (args.query as string) || '';
       if (!query) return '错误：缺少 query 参数';
       if (!isWebSearchAvailable()) return '网络搜索暂不可用';
-      const results = await searchWeb(query, { maxResults: 3 });
+      const results = await searchWeb(query, { maxResults: 3, rootPath });
       if (results.length === 0) return '未找到相关结果';
       return results.map(r => `[${r.title}](${r.url})\n${r.snippet}`).join('\n\n');
     }
@@ -814,7 +837,7 @@ async function _executeTool(name: string, args: Record<string, unknown>, rootPat
       const gitArgs = ALLOWED[action] || ALLOWED.status;
       try {
         const { execFileSync } = await import('child_process');
-        const output = execFileSync('git', gitArgs, { cwd: rootPath, timeout: 10000, encoding: 'utf-8' });
+        const output = execFileSync('git', gitArgs, { cwd: rootPath, timeout: 10000, encoding: 'utf-8', stdio: 'pipe' });
         return output.slice(0, 1000) || '(无输出)';
       } catch { return 'Git 不可用或非 Git 仓库'; }
     }
@@ -861,9 +884,11 @@ async function _executeTool(name: string, args: Record<string, unknown>, rootPat
         const pdfModule: any = await import('pdf-parse');
         const fsPromises = await import('fs/promises');
         const buf = await fsPromises.readFile(fullPath);
-        const parser = new pdfModule.PDFParse(new Uint8Array(buf));
-        await parser.load();
-        const data: any = await parser.getText();
+        const data: any = await suppressPdfParserNoise(async () => {
+          const parser = new pdfModule.PDFParse(new Uint8Array(buf));
+          await parser.load();
+          return parser.getText();
+        });
         const text = (data.text || '').trim();
         const numPages = data.pages?.length || data.total || '未知';
         if (!text) return `PDF 解析完成但无文本内容（可能为扫描件或图片 PDF）。页数: ${numPages}`;
