@@ -1,5 +1,6 @@
 import * as path from 'path';
 import { ensureDir, fileExists, getFileSize, writeFile, readFile } from '../utils/fs.js';
+import type { AIProviderAdapter } from '../ai/provider.js';
 import type { AutopilotTestPlan, AutopilotTestTarget } from './autopilot.js';
 
 export interface TestDraft {
@@ -29,7 +30,7 @@ export interface TestWriteReceipt extends TestDraft {
 export async function buildTestWritePlan(
   rootPath: string,
   plan: AutopilotTestPlan,
-  options: { module?: string; maxFiles?: number } = {},
+  options: { module?: string; maxFiles?: number; provider?: AIProviderAdapter } = {},
 ): Promise<TestWritePlan> {
   const target = pickTarget(plan, options.module);
   if (!target) {
@@ -52,7 +53,7 @@ export async function buildTestWritePlan(
 
   for (const pair of pairs) {
     const fullPath = path.join(rootPath, pair.testFile);
-    const content = await generateTestContent(rootPath, pair.sourceFile, pair.testFile, plan.detectedFramework);
+    const content = await generateTestContent(rootPath, pair.sourceFile, pair.testFile, plan.detectedFramework, options.provider);
     tests.push({
       file: pair.testFile,
       sourceFile: pair.sourceFile,
@@ -132,22 +133,131 @@ function pickTarget(plan: AutopilotTestPlan, moduleName?: string): AutopilotTest
   return candidates[0] || null;
 }
 
-async function generateTestContent(rootPath: string, sourceFile: string, testFile: string, framework: string): Promise<string> {
+async function generateTestContent(
+  rootPath: string, sourceFile: string, testFile: string, framework: string,
+  provider?: AIProviderAdapter,
+): Promise<string> {
   const ext = path.posix.extname(sourceFile.toLowerCase());
-  if (ext === '.go') return generateGoTest(sourceFile);
-  if (ext === '.py') return generatePythonTest(sourceFile);
-  if (ext === '.java') return generateJavaTest(sourceFile);
 
-  // C1-fix: extract real exports from source so tests target actual functions
+  // Extract source for AI analysis + export detection
+  let sourceContent = '';
   let exports: { name: string; kind: string }[] = [];
   try {
     const fullPath = path.join(rootPath, sourceFile);
-    const content = await readFile(fullPath);
-    exports = extractExportsRegex(content);
-  } catch { /* best-effort, fallback to generic module test */ }
+    sourceContent = await readFile(fullPath);
+    exports = extractExportsRegex(sourceContent);
+  } catch { /* best-effort */ }
 
+  // T10: AI-driven test generation for JS/TS with real provider
+  if (provider && exports.length > 0 && /\.(ts|tsx|js|jsx)$/i.test(ext)) {
+    try {
+      const aiContent = await generateAITestContent(sourceFile, testFile, framework, sourceContent, exports, provider);
+      if (aiContent?.trim().length > 50) return aiContent;
+    } catch { /* fall through to template */ }
+  }
+
+  // Enhanced template-based (used when AI unavailable)
+  if (ext === '.go') return generateGoTest(sourceFile);
+  if (ext === '.py') return generatePythonTest(sourceFile);
+  if (ext === '.java') return generateJavaTest(sourceFile);
   return generateJavaScriptTest(sourceFile, testFile, framework, exports);
 }
+
+// ── T10: AI-driven test content generation ──
+
+async function generateAITestContent(
+  sourceFile: string, testFile: string, framework: string,
+  sourceContent: string, exports: { name: string; kind: string }[],
+  provider: AIProviderAdapter,
+): Promise<string> {
+  const fns = exports.filter(e => e.kind === 'function');
+  const classes = exports.filter(e => e.kind === 'class');
+  const testApi = framework.toLowerCase().includes('jest') ? 'jest' : 'vitest';
+
+  const prompt = [
+    `为以下源文件生成${testApi}单元测试。`,
+    `源文件: ${sourceFile}  测试文件: ${testFile}`,
+    `导入: import { describe, expect, it } from '${testApi === 'jest' ? '@jest/globals' : 'vitest'}'`,
+    `导出函数: ${fns.map(f => f.name).join(', ') || '无'}`,
+    `导出类: ${classes.map(c => c.name).join(', ') || '无'}`,
+    '',
+    '要求:',
+    '1. 每个导出函数至少1个行为验证（检查返回值/副作用，不只 typeof）',
+    '2. 有参数的函数传入合理样本值',
+    '3. async函数用 async/await',
+    '4. 可能抛异常的函数测试错误路径',
+    '5. 匹配现有代码风格',
+    '6. 只输出完整测试代码，不要markdown包裹，不要解释',
+    '',
+    '```typescript',
+    sourceContent.slice(0, 4000),
+    '```',
+  ].join('\n');
+
+  const resp = await provider.chat({
+    systemPrompt: `你是测试专家。生成${testApi}单元测试。每个导出函数至少1个行为验证。只输出代码，不要解释。`,
+    task: prompt,
+    context: { projectMeta: '', relevantCode: [], relevantMemory: '', totalTokens: 0, budgetUsed: 0 },
+    history: '',
+  });
+
+  const content = (resp.content || '').trim();
+  return content.replace(/^```[\w]*\n?/, '').replace(/\n?```$/, '');
+}
+
+// ── T10: Full verify-repair loop ──
+
+export interface TestVerifyResult { rounds: number; passed: boolean; diagnostics: string; testOutput: string; }
+
+export async function generateAndVerifyTests(
+  rootPath: string,
+  sourceFiles: { file: string; testFile: string; framework: string }[],
+  provider: AIProviderAdapter,
+): Promise<TestVerifyResult> {
+  const diagnostics: string[] = [];
+  const MAX_ROUNDS = 3;
+
+  for (let round = 1; round <= MAX_ROUNDS; round++) {
+    const testContents: { file: string; content: string }[] = [];
+    for (const sf of sourceFiles) {
+      const content = await generateTestContent(rootPath, sf.file, sf.testFile, sf.framework, provider);
+      testContents.push({ file: sf.testFile, content });
+    }
+
+    for (const tc of testContents) {
+      const fp = path.join(rootPath, tc.file);
+      await ensureDir(path.dirname(fp));
+      await writeFile(fp, tc.content);
+    }
+
+    try {
+      const { execSync } = await import('child_process');
+      const cmd = process.platform === 'win32' ? 'npx.cmd' : 'npx';
+      const output = execSync(`${cmd} vitest run ${testContents.map(t => t.file).join(' ')}`, {
+        cwd: rootPath, timeout: 120000, encoding: 'utf-8', maxBuffer: 5 * 1024 * 1024,
+      });
+      return { rounds: round, passed: true, diagnostics: diagnostics.join('\n'), testOutput: output };
+    } catch (e: any) {
+      const errOut = (e.stdout || '') + (e.stderr || '');
+      diagnostics.push(`Round ${round}: ${(e as Error).message.slice(0, 200)}`);
+      if (round < MAX_ROUNDS) {
+        try {
+          const fixResp = await provider.chat({
+            systemPrompt: '你是测试修复专家。分析失败原因并修复测试。只输出修复后的完整测试代码。',
+            task: `测试失败:\n${errOut.slice(0, 3000)}\n\n当前测试:\n${testContents.map(t => `### ${t.file}\n${t.content.slice(0, 2000)}`).join('\n\n')}`,
+            context: { projectMeta: '', relevantCode: [], relevantMemory: '', totalTokens: 0, budgetUsed: 0 },
+            history: '',
+          });
+          const fixed = (fixResp.content || '').replace(/^```[\w]*\n?/, '').replace(/\n?```$/, '');
+          if (fixed.trim()) for (const tc of testContents) tc.content = fixed;
+        } catch { /* continue loop */ }
+      }
+    }
+  }
+  return { rounds: MAX_ROUNDS, passed: false, diagnostics: diagnostics.join('\n'), testOutput: '' };
+}
+
+// ── Export extraction ──
 
 function extractExportsRegex(content: string): { name: string; kind: string }[] {
   const exports: { name: string; kind: string }[] = [];
