@@ -740,17 +740,19 @@ async function assembleRelevantCode(
   index: ProjectIndex,
   budget: number
 ): Promise<CodeSnippet[]> {
-  // Score files by relevance to the task description
+  // Score files — content is cached inside scored entries so we never read twice
   const scored = await scoreFiles(task.description, index);
 
   const snippets: CodeSnippet[] = [];
   let usedTokens = 0;
 
-  for (const { file, score } of scored) {
+  for (const { file, score, content: cachedContent } of scored) {
     if (usedTokens >= budget) break;
 
     try {
-      const content = await readFile(file);
+      // Reuse content captured during scoring; fall back to a fresh read only
+      // if the cache entry is somehow absent (should not happen in practice).
+      const content = cachedContent ?? await readFile(file);
       const relPath = relativePath(file, index.rootPath);
       const tokens = estimateTokens(content);
 
@@ -849,12 +851,22 @@ async function assembleRelevantCode(
  * @param index - 项目索引（包含模块、文件、导出等信息）
  * @returns 按得分降序排列的文件评分列表，最多 50 个
  */
+/**
+ * Score files for relevance AND cache their content so `assembleRelevantCode`
+ * can skip re-reading the same bytes a second time (P2#15 fix).
+ *
+ * The returned `content` field is populated only for files that were successfully
+ * read during scoring; callers must handle the `undefined` case.
+ */
 async function scoreFiles(
   description: string,
   index: ProjectIndex
-): Promise<{ file: string; score: number }[]> {
+): Promise<{ file: string; score: number; content?: string }[]> {
   const lower = description.toLowerCase();
   const keywords = extractSearchKeywords(description);
+
+  // Content read during scoring — shared with the assembly phase (avoid double-read)
+  const contentCache = new Map<string, string>();
 
   const results: { file: string; score: number }[] = [];
 
@@ -882,9 +894,11 @@ async function scoreFiles(
         if (filePath.includes(kw)) score += 0.1;
       }
 
-      // Content-based scoring (shallow check)
+      // Content-based scoring — cache the read so assembly phase can reuse it
       try {
         const content = await readFile(fullPath);
+        contentCache.set(fullPath, content);           // ← cache for assembly phase
+
         const contentLower = content.toLowerCase();
         for (const kw of keywords) {
           const count = (contentLower.match(new RegExp(escapeRegExp(kw), 'g')) || []).length;
@@ -927,8 +941,11 @@ async function scoreFiles(
     else if (KEY_DIRS.some(d => dirPath.includes(d)) && fn.match(/^(main|app|server|index|handler|router|config|db|model)\.\w+$/)) r.score = Math.max(r.score, 0.6);
   }
 
-  // Sort by score descending, then take top N
-  return results.sort((a, b) => b.score - a.score).slice(0, 50);
+  // Attach cached content to each result entry before returning
+  return results
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 50)
+    .map(r => ({ ...r, content: contentCache.get(r.file) }));
 }
 
 function extractSearchKeywords(description: string): string[] {
@@ -1279,17 +1296,62 @@ function isMemoryCandidateRelevant(taskDescription: string, summary: string, con
   return overlapCount >= 2;
 }
 
-function extractMemoryMatchTokens(text: string): string[] {
+/** @internal — exported for unit tests; not part of public API. */
+export function extractMemoryMatchTokens(text: string): string[] {
   const normalized = text.toLowerCase();
-  const latinTokens = normalized
-    .split(/[^a-z0-9_./-]+/)
-    .map(token => token.trim())
-    .filter(token => token.length >= 3);
-  const chineseHints = [
-    '用户', '登录', '接口', '文档', '报告', '测试', '验证', '配置', '记忆',
-    '模板', '规则', '组件', '页面', '样式', '数据库', '权限', '安全',
-  ].filter(token => normalized.includes(token));
-  return [...new Set([...latinTokens, ...chineseHints])].slice(0, 12);
+  const tokens = new Set<string>();
+
+  // Latin tokens: split, filter short ones, also split camelCase/snake_case identifiers
+  for (const token of normalized.split(/[^a-z0-9_./-]+/)) {
+    const t = token.trim();
+    if (t.length >= 3) tokens.add(t);
+    for (const part of splitIdentifier(t)) {
+      if (part.length >= 3) tokens.add(part);
+    }
+  }
+
+  // Chinese → English alias expansion (same 20 groups as extractSearchKeywords)
+  // NOTE: no /g flag here — .test() does not need it and /g causes lastIndex drift
+  const chineseAliases: Array<[RegExp, string[]]> = [
+    [/用户|账号|账户|会员|登录|登陆|鉴权|权限|认证/, ['user', 'account', 'member', 'auth', 'login', 'permission', 'session', 'jwt', 'token', 'oauth']],
+    [/支付|交易|转账|汇款|订单|结算|账单/, ['payment', 'transaction', 'transfer', 'order', 'billing', 'invoice']],
+    [/钱包|余额|资金|充值|提现/, ['wallet', 'balance', 'fund', 'deposit', 'withdraw']],
+    [/风控|风险|限额|审批/, ['risk', 'limit', 'approval', 'kyc', 'compliance']],
+    [/代理|自动化|编排/, ['agent', 'bot', 'orchestration', 'automation']],
+    [/服务|业务|后端|中间件/, ['service', 'backend', 'server', 'middleware']],
+    [/接口|路由|控制器|端点/, ['api', 'route', 'router', 'controller', 'handler', 'endpoint']],
+    [/校验|验证|检查|审计/, ['validate', 'validation', 'verify', 'check', 'audit']],
+    [/配置|设置|环境/, ['config', 'setting', 'env', 'environment']],
+    [/数据库|字段|模型|实体|仓储/, ['database', 'db', 'model', 'schema', 'entity', 'repository', 'dao']],
+    [/测试|用例|单元|集成|验收/, ['test', 'spec', 'unit', 'integration', 'e2e', 'acceptance']],
+    [/记忆|规则|约束|偏好/, ['memory', 'rule', 'constraint', 'preference']],
+    [/任务|队列|调度|执行/, ['task', 'queue', 'schedule', 'execution', 'pipeline']],
+    [/上下文|压缩|预算/, ['context', 'compress', 'compression', 'budget']],
+    [/扫描|索引|识别|检测|发现/, ['scan', 'scanner', 'index', 'detect', 'discovery']],
+    [/安全|敏感|危险|漏洞|注入/, ['security', 'sensitive', 'dangerous', 'vulnerability', 'injection']],
+    [/报告|变更|差异|回执/, ['report', 'diff', 'change', 'receipt']],
+    [/前端|界面|页面|组件|视图|面板/, ['frontend', 'ui', 'view', 'component', 'page', 'panel', 'layout']],
+    [/样式|布局|响应式/, ['style', 'css', 'layout', 'responsive']],
+    [/部署|构建|发布|上线/, ['deploy', 'build', 'release', 'ci', 'cd', 'pipeline']],
+    [/容器|镜像/, ['docker', 'container', 'image', 'kubernetes', 'k8s']],
+    [/监控|日志|报警|追踪/, ['monitor', 'log', 'alert', 'trace', 'observability']],
+    [/合约|智能合约|签名/, ['contract', 'solidity', 'abi', 'signature', 'ecdsa']],
+    [/区块链|预测市场/, ['chain', 'blockchain', 'prediction', 'market', 'oracle']],
+    [/文档|指南|说明/, ['doc', 'readme', 'guide', 'documentation']],
+    [/启动|运行|开始/, ['start', 'run', 'dev', 'serve', 'launch']],
+    [/分析|审查/, ['analysis', 'review', 'scan', 'inspect']],
+    [/修复|错误/, ['fix', 'bug', 'error', 'repair', 'patch']],
+    [/重构|整理|优化|清理/, ['refactor', 'clean', 'optimize', 'restructure']],
+    [/补全|生成|创建/, ['complete', 'generate', 'create', 'scaffold']],
+  ];
+
+  for (const [pattern, aliases] of chineseAliases) {
+    if (pattern.test(text)) {
+      for (const alias of aliases) tokens.add(alias);
+    }
+  }
+
+  return [...tokens].slice(0, 20);
 }
 
 function extractSymbolsFromDescription(description: string, index: import('../types.js').ProjectIndex): string[] {

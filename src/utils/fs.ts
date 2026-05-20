@@ -1,9 +1,25 @@
 // File system utilities for iCloser Agent Shell
 import fse from 'fs-extra';
 import { readFile as nodeReadFile, writeFile as nodeWriteFile, stat as nodeStat, readdir as nodeReaddir } from 'fs/promises';
+import { realpathSync } from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import fastGlob from 'fast-glob';
+
+/**
+ * Walk up the directory tree and return the realpathSync of the deepest
+ * ancestor that already exists on disk.  Returns null only at the fs root.
+ */
+function resolveExistingAncestor(dir: string): string | null {
+  let cur = path.normalize(dir);
+  for (let i = 0; i < 64; i++) {
+    try { return realpathSync(cur); } catch { /* ENOENT — directory not created yet */ }
+    const parent = path.dirname(cur);
+    if (parent === cur) return null; // reached filesystem root
+    cur = parent;
+  }
+  return null;
+}
 
 export async function ensureDir(dir: string): Promise<void> {
   await fse.ensureDir(dir);
@@ -31,12 +47,32 @@ export async function readFile(filePath: string, options?: { encoding?: 'auto' |
 export async function writeFile(filePath: string, content: string, rootPath?: string, options?: { matchNewline?: boolean }): Promise<void> {
   const resolved = path.resolve(filePath);
   if (rootPath) {
-    const rel = path.relative(path.resolve(rootPath), resolved);
+    const rootResolved = path.resolve(rootPath);
+    // Layer 1 — logical path check (fast, catches plain `..` traversal)
+    const rel = path.relative(rootResolved, resolved);
     if (rel.startsWith('..') || path.isAbsolute(rel)) {
       throw new Error(`路径遍历拒绝: ${filePath}`);
     }
-  } else if (resolved.includes('..')) {
-    throw new Error(`路径遍历拒绝: ${filePath}`);
+    // Layer 2 — symlink resolution check (catches symlink-escape attacks)
+    // Walk up to the deepest existing ancestor and verify it is still inside rootPath.
+    try {
+      const realRoot = realpathSync(rootResolved);
+      const realParent = resolveExistingAncestor(path.dirname(resolved));
+      if (realParent !== null) {
+        const realRel = path.relative(realRoot, realParent);
+        if (realRel.startsWith('..') || path.isAbsolute(realRel)) {
+          throw new Error(`符号链接路径遍历拒绝: ${filePath}`);
+        }
+      }
+    } catch (err) {
+      // Only swallow ENOENT (rootPath itself not yet created); rethrow everything else.
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    }
+  } else {
+    // Fallback when rootPath is absent: basic `..` check on the resolved path.
+    if (resolved.includes('..')) {
+      throw new Error(`路径遍历拒绝: ${filePath}`);
+    }
   }
   // Match existing newline style if possible (F10)
   let finalContent = content;

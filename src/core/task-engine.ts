@@ -15,13 +15,26 @@ export interface TaskEngineOptions {
 }
 
 // ============================================================
-// Task store (in-memory, would be persistent in production)
+// Task store — lazy-load cache for disk-persisted tasks.
+// Disk is the authoritative source of truth; taskStore is a
+// read-through cache populated by loadTask / persistTask.
+// All durable mutations must go through persistTask().
 // ============================================================
 const taskStore = new Map<string, Task>();
 const fileLocks = new Map<string, string>();      // file -> taskId
 const taskQueue: string[] = [];                    // ordered task IDs
 const taskDependencies = new Map<string, string[]>(); // taskId -> depends on taskIds
 let lastTaskCreatedAtMs = 0;
+
+/**
+ * Single choke-point for all in-memory task mutations.
+ * Keeps taskStore and taskQueue in sync; future dirty-tracking or
+ * reactive hooks should be added here rather than scattered in callers.
+ */
+function cacheTask(task: Task): void {
+  taskStore.set(task.id, task);
+  if (!taskQueue.includes(task.id)) taskQueue.push(task.id);
+}
 
 // ============================================================
 // Task Creation
@@ -49,8 +62,7 @@ export function createTask(
     agentExecutions: [],
   };
 
-  taskStore.set(id, task);
-  taskQueue.push(id);
+  cacheTask(task);
   return task;
 }
 
@@ -64,6 +76,33 @@ export function createTasks(
 // ============================================================
 // Plan generation
 // ============================================================
+
+/**
+ * generatePlan now accepts an optional AI provider.
+ * When provided it calls decomposeTaskWithAI first; on failure (no provider,
+ * network error, malformed JSON) it falls back to the keyword-based decomposer.
+ */
+export async function generatePlanAsync(
+  task: Task,
+  description: string,
+  identity: ProjectIdentity,
+  index: ProjectIndex,
+  provider?: import('../ai/provider.js').AIProviderAdapter,
+): Promise<TaskPlan> {
+  const subGoals = provider
+    ? await decomposeTaskWithAI(description, identity, index, provider)
+    : decomposeTask(description, identity, index);
+
+  const affectedFiles = identifyFiles(description, index);
+  const estimatedImpact = estimateImpact(description, affectedFiles, index);
+  const lockedFiles = affectedFiles.filter(f => !fileLocks.has(f));
+  const plan: TaskPlan = { subGoals, affectedFiles, estimatedImpact, dependencies: [], lockedFiles };
+  task.plan = plan;
+  cacheTask(task);
+  return plan;
+}
+
+/** Synchronous overload kept for backward compatibility. */
 export function generatePlan(
   task: Task,
   description: string,
@@ -114,7 +153,7 @@ export function acquireFileLocks(task: Task): string[] {
   if (conflicts.length > 0) {
     task.status = 'blocked';
     task.errorLog.push(`文件冲突：${conflicts.join(', ')} 被其他任务锁定`);
-    taskStore.set(task.id, task);
+    cacheTask(task);
   }
 
   return locked;
@@ -154,7 +193,7 @@ export function updateTaskStatus(taskId: string, status: TaskStatus, rootPath?: 
     if (status === 'running' && !task.startedAt) {
       task.startedAt = new Date().toISOString();
     }
-    taskStore.set(taskId, task);
+    cacheTask(task);
 
     // Memory Kernel hooks (fire-and-forget)
     if (rootPath) {
@@ -184,7 +223,7 @@ export function setTaskLoopStep(taskId: string, step: TaskLoopStepId): void {
       currentStep: step,
       status: 'running',
     };
-    taskStore.set(taskId, task);
+    cacheTask(task);
   }
 }
 
@@ -192,7 +231,7 @@ export function advanceTaskLoopState(taskId: string, options: { verification?: T
   const task = taskStore.get(taskId);
   if (task) {
     task.loopState = advanceTaskLoop(task.loopState || createTaskLoopState(), options);
-    taskStore.set(taskId, task);
+    cacheTask(task);
   }
 }
 
@@ -204,14 +243,14 @@ export function completeTaskLoop(taskId: string, verification: TaskLoopVerificat
       currentStep: 'verify-result',
       verification,
     }, { verification });
-    taskStore.set(taskId, task);
+    cacheTask(task);
   }
 }
 export function addFileChange(taskId: string, change: FileChange): void {
   const task = taskStore.get(taskId);
   if (task) {
     task.changes.push(change);
-    taskStore.set(taskId, task);
+    cacheTask(task);
   }
 }
 
@@ -219,7 +258,7 @@ export function addReasoning(taskId: string, reasoning: ChangeReasoning): void {
   const task = taskStore.get(taskId);
   if (task) {
     task.reasoning.push(reasoning);
-    taskStore.set(taskId, task);
+    cacheTask(task);
   }
 }
 
@@ -227,7 +266,7 @@ export function setVerifyResult(taskId: string, result: VerifyResult): void {
   const task = taskStore.get(taskId);
   if (task) {
     task.verifyResult = result;
-    taskStore.set(taskId, task);
+    cacheTask(task);
   }
 }
 
@@ -265,7 +304,7 @@ export function cancelTask(taskId: string): boolean {
     task.status = 'cancelled';
     task.completedAt = new Date().toISOString();
     releaseFileLocks(task);
-    taskStore.set(taskId, task);
+    cacheTask(task);
     return true;
   }
   return false;
@@ -313,7 +352,7 @@ export function scheduleTasks(maxParallel: number): ScheduleSlot[] {
       if (conflictFiles.length > 0) {
         task.status = 'blocked';
         task.errorLog.push(`文件冲突（与其他并行任务）：${conflictFiles.join(', ')}`);
-        taskStore.set(task.id, task); // Persist blocked state
+        cacheTask(task); // mark blocked in cache
         // Try next task
         continue;
       }
@@ -325,7 +364,83 @@ export function scheduleTasks(maxParallel: number): ScheduleSlot[] {
 }
 
 // ============================================================
-// Task decomposition (simplified — production uses AI)
+// AI-powered task decomposition (P2#14)
+// ============================================================
+
+/**
+ * Ask the AI provider to semantically decompose the task description into
+ * sub-goals and return them as structured SubGoal objects.
+ *
+ * Expected AI response format (JSON block):
+ * ```json
+ * [
+ *   { "description": "...", "files": ["src/..."] },
+ *   ...
+ * ]
+ * ```
+ * Falls back to keyword decomposition if the AI is unavailable or returns
+ * unparseable output.
+ */
+async function decomposeTaskWithAI(
+  description: string,
+  identity: ProjectIdentity,
+  index: ProjectIndex,
+  provider: import('../ai/provider.js').AIProviderAdapter,
+): Promise<SubGoal[]> {
+  const fileList = index.modules
+    .flatMap(m => m.files)
+    .slice(0, 60)
+    .join('\n');
+
+  const prompt = [
+    `你是一个工程规划专家。将以下任务分解为 2-6 个有序子目标，每个子目标对应一个具体的代码改动范围。`,
+    ``,
+    `任务：${description}`,
+    `项目语言：${identity.language}，框架：${identity.framework}`,
+    ``,
+    `项目文件（前 60 个）：`,
+    fileList,
+    ``,
+    `以如下 JSON 格式回复（不要添加任何其他文字）：`,
+    `[{"description":"子目标说明","files":["相关文件路径"]},...]`,
+  ].join('\n');
+
+  try {
+    const response = await provider.chat({
+      systemPrompt: '你是工程任务分解助手，只输出 JSON，不输出其他内容。',
+      task: prompt,
+      history: '',
+      context: {
+        projectMeta: '',
+        relevantCode: [],
+        relevantMemory: '',
+        totalTokens: 0,
+        budgetUsed: 0,
+      },
+    });
+
+    // Extract JSON block from response (handle markdown code fences)
+    const raw = response.content.trim();
+    const jsonStr = raw.startsWith('[') ? raw : (raw.match(/```(?:json)?\s*([\s\S]+?)```/)?.[1] ?? raw);
+    const parsed = JSON.parse(jsonStr) as Array<{ description: string; files?: string[] }>;
+
+    if (!Array.isArray(parsed) || parsed.length === 0) throw new Error('empty');
+
+    let counter = 1;
+    return parsed.slice(0, 8).map(item => ({
+      id: `sg-${counter++}`,
+      description: String(item.description || '').trim() || '代码修改',
+      files: Array.isArray(item.files) ? item.files.slice(0, 10) : [],
+      status: 'pending' as const,
+    }));
+  } catch {
+    // AI unavailable or returned malformed output — fall back gracefully
+    return decomposeTask(description, identity, index);
+  }
+}
+
+// ============================================================
+// Task decomposition (keyword-based fallback)
 // ============================================================
 function decomposeTask(
   description: string,
@@ -478,7 +593,14 @@ function generateTaskId(): string {
   return `task-${ts}-${rand}`;
 }
 
+/**
+ * Canonical write path — updates both the in-memory cache and disk.
+ * All durable mutations should call this instead of raw taskStore.set().
+ */
 export async function persistTask(rootPath: string, task: Task): Promise<void> {
+  // Keep the cache in sync first (fast path for subsequent reads)
+  cacheTask(task);
+  // Then flush to disk (authoritative store)
   const taskDir = path.join(rootPath, '.icloser', 'tasks', task.id);
   await ensureDir(taskDir);
   await writeJson(path.join(taskDir, 'task.json'), task);
@@ -488,10 +610,7 @@ export async function loadTask(rootPath: string, taskId: string): Promise<Task |
   const taskPath = path.join(rootPath, '.icloser', 'tasks', taskId, 'task.json');
   if (await fileExists(taskPath)) {
     const task = await readJson(taskPath) as unknown as Task;
-    taskStore.set(task.id, task);
-    if (!taskQueue.includes(task.id)) {
-      taskQueue.push(task.id);
-    }
+    cacheTask(task);
     if (task.plan?.dependencies?.length) {
       taskDependencies.set(task.id, task.plan.dependencies);
     }
@@ -502,17 +621,27 @@ export async function loadTask(rootPath: string, taskId: string): Promise<Task |
 
 export async function listTasks(rootPath: string): Promise<Task[]> {
   const tasksDir = path.join(rootPath, '.icloser', 'tasks');
-  if (!(await fileExists(tasksDir))) return [];
 
-  const dirs = await listDir(tasksDir);
-  const tasks: Task[] = [];
-  for (const dir of dirs) {
-    const taskPath = path.join(tasksDir, dir, 'task.json');
-    if (await fileExists(taskPath)) {
-      tasks.push(await readJson(taskPath) as unknown as Task);
+  // Disk is authoritative: read all persisted tasks first
+  const seen = new Map<string, Task>();
+  if (await fileExists(tasksDir)) {
+    const dirs = await listDir(tasksDir);
+    for (const dir of dirs) {
+      const taskPath = path.join(tasksDir, dir, 'task.json');
+      if (await fileExists(taskPath)) {
+        const t = await readJson(taskPath) as unknown as Task;
+        seen.set(t.id, t);
+      }
     }
   }
-  return tasks.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+
+  // Supplement with in-memory tasks not yet flushed to disk
+  // (e.g. created but persistTask not called yet)
+  for (const [id, task] of taskStore) {
+    if (!seen.has(id)) seen.set(id, task);
+  }
+
+  return [...seen.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
 

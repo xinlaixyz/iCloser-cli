@@ -634,7 +634,30 @@ async function handleInlineConfirm(input: string): Promise<boolean> {
 }
 
 async function doCommit(msg: string): Promise<void> {
-  try { const { execFileSync } = await import('child_process'); const cwd = process.cwd(); const st = execFileSync('git', ['status', '--porcelain'], { cwd, encoding: 'utf-8', timeout: 5000 }); if (!st.trim()) { console.log(`  ${C.dim('无变更')}\n`); return; } const message = msg || 'iCloser: 代码修改'; execFileSync('git', ['add', '-A'], { cwd, timeout: 10000 }); execFileSync('git', ['commit', '-m', message], { cwd, timeout: 10000 }); console.log(`  ${I.ok} 已提交\n`); } catch (err) { console.log(`  ${I.err} ${(err as Error).message}\n`); }
+  try {
+    const cwd = process.cwd();
+    const { getGitStatus, createCommit } = await import('../utils/git.js');
+    const status = getGitStatus(cwd);
+    const filesToCommit = [...status.staged, ...status.changed, ...status.untracked];
+    if (filesToCommit.length === 0) { console.log(`  ${C.dim('无变更')}\n`); return; }
+
+    // Load config to apply security.sensitiveFiles guard
+    let commitConfig: { security?: { sensitiveFiles?: string[] } } | undefined;
+    try {
+      const cfg = await loadConfig(cwd);
+      if (cfg?.security?.sensitiveFiles) {
+        commitConfig = { security: { sensitiveFiles: cfg.security.sensitiveFiles } };
+      }
+    } catch { /* no config — proceed without sensitive-file filter */ }
+
+    const message = msg || 'iCloser: 代码修改';
+    const ok = createCommit(cwd, message, filesToCommit, commitConfig);
+    if (ok) {
+      console.log(`  ${I.ok} 已提交\n`);
+    } else {
+      console.log(`  ${I.err} 提交被拒绝（可能包含敏感文件或无法提交的文件）\n`);
+    }
+  } catch (err) { console.log(`  ${I.err} ${(err as Error).message}\n`); }
 }
 
 async function doUndo(): Promise<void> {

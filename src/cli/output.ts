@@ -24,10 +24,36 @@ export function success(msg: string): void {
   console.log(`${ICONS.success} ${msg}`);
 }
 
+/**
+ * Sentinel error class for expected early-exit conditions.
+ * printError() silently ignores these to prevent double-logging.
+ */
+export class FailError extends Error {
+  readonly isFail = true as const;
+  constructor(msg: string) {
+    super(msg);
+    this.name = 'FailError';
+  }
+}
+
+/**
+ * fail(msg) — expected early-exit: logs the message, sets exit code, then throws
+ * a FailError so Commander stops the action.  printError() will NOT re-print it.
+ */
 export function fail(msg: string): never {
   console.log(`${ICONS.fail} ${msg}`);
   process.exitCode = 1;
-  // Throw to stop execution; Commander or Node will exit with code 1 after flushing
+  throw new FailError(msg);
+}
+
+/**
+ * fatal(msg) — unexpected error: logs with a [FATAL] prefix and throws a plain
+ * Error so the catch block can display additional context via printError().
+ * Use for programming errors, missing dependencies, or truly unexpected states.
+ */
+export function fatal(msg: string): never {
+  console.log(`${ICONS.fail} ${chalk.red('[FATAL]')} ${msg}`);
+  process.exitCode = 1;
   throw new Error(msg);
 }
 
@@ -293,6 +319,9 @@ export function printGateResult(result: {
 }
 
 export function printError(err: Error | string): void {
+  // FailError was already printed by fail() — avoid the double-error problem.
+  if (err instanceof FailError) return;
+
   if (
     typeof err === 'object' &&
     err !== null &&

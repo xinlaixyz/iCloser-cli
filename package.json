@@ -20,8 +20,12 @@
     "dev": "tsx src/index.ts",
     "start": "node dist/index.js",
     "lint": "node scripts/check-lint.mjs",
-    "test": "vitest run",
-    "test:watch": "vitest",
+    "format": "prettier --write \"src/**/*.ts\" \"tests/**/*.ts\" \"scripts/**/*.mjs\"",
+    "format:check": "prettier --check \"src/**/*.ts\" \"tests/**/*.ts\" \"scripts/**/*.mjs\"",
+    "test": "node --no-warnings ./node_modules/vitest/vitest.mjs run",
+    "test:watch": "node --no-warnings ./node_modules/vitest/vitest.mjs",
+    "test:coverage": "node --no-warnings ./node_modules/vitest/vitest.mjs run --coverage",
+    "test:acceptance": "node --no-warnings ./node_modules/vitest/vitest.mjs run tests/acceptance",
     "smoke": "node scripts/release-smoke.mjs",
     "package": "node scripts/build-package.mjs",
     "smoke:project": "node scripts/real-project-smoke.mjs",
@@ -40,8 +44,11 @@
     "smoke:multilang": "node scripts/multilang-smoke.mjs",
     "smoke:web-search": "node scripts/web-search-smoke.mjs",
     "smoke:agent": "node scripts/agent-smoke.mjs",
+    "smoke:ai": "node scripts/ai-capability-smoke.mjs",
+    "smoke:tools": "node scripts/tool-capability-smoke.mjs",
     "perf": "node scripts/perf-bench.mjs",
-    "acceptance": "node scripts/live-acceptance.mjs"
+    "acceptance": "node scripts/live-acceptance.mjs",
+    "release": "node scripts/release.mjs"
   },
   "keywords": [
     "cli",
@@ -56,9 +63,9 @@
   ],
   "repository": {
     "type": "git",
-    "url": ""
+    "url": "git+https://github.com/iCloser/icloser-agent-shell.git"
   },
-  "homepage": "",
+  "homepage": "https://github.com/iCloser/icloser-agent-shell",
   "author": "iCloser",
   "license": "MIT",
   "engines": {
@@ -73,14 +80,12 @@
     "@anthropic-ai/sdk": "^0.39.0",
     "chalk": "^5.3.0",
     "commander": "^12.1.0",
-    "diff": "^7.0.0",
     "fast-glob": "^3.3.2",
     "fs-extra": "^11.2.0",
-    "glob": "^11.0.0",
     "ignore": "^6.0.2",
-    "marked": "^14.1.0",
     "openai": "^4.77.0",
     "ora": "^8.1.1",
+    "pdf-parse": "^2.4.5",
     "semver": "^7.6.3",
     "tree-sitter": "^0.22.4",
     "tree-sitter-go": "^0.25.0",
@@ -88,18 +93,17 @@
     "tree-sitter-kotlin": "^0.3.8",
     "tree-sitter-python": "^0.25.0",
     "tree-sitter-sql": "^0.1.0",
-    "tree-sitter-typescript": "^0.23.2",
-    "yaml": "^2.6.1"
+    "tree-sitter-typescript": "^0.23.2"
   },
   "devDependencies": {
-    "@types/diff": "^6.0.0",
     "@types/fs-extra": "^11.0.4",
     "@types/node": "^22.10.0",
     "@types/semver": "^7.5.8",
     "@typescript-eslint/eslint-plugin": "^8.59.3",
     "@typescript-eslint/parser": "^8.59.3",
-    "@vitest/coverage-v8": "^4.1.6",
+    "@vitest/coverage-v8": "^2.1.9",
     "eslint": "^10.3.0",
+    "prettier": "^3.8.3",
     "tree-sitter-cli": "^0.24.0",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0",

@@ -21,12 +21,18 @@ import {
 } from './cli/output.js';
 import { startRepl } from './cli/repl.js';
 import type { AgentStatus, AgentType, AIProvider, ICloserConfig, MemoryCandidate, ProjectMemory, Task, VerifyStage } from './types.js';
+import { registerTaskCommands, statusLabel, printTaskPlan } from './commands/task.js';
+import { registerMemoryCommands } from './commands/memory.js';
 
 const program = new Command();
 program.name('ic').description('iCloser Agent Shell — AI 工程执行 CLI').version('0.1.0');
 
 // ── Shared helpers from task-pipeline.ts ──
 import { applyCompileGate, runCodeGenerationPipeline, getToolStrategy, isAnalysisOnlyTask } from './core/task-pipeline.js';
+
+// Register extracted command modules
+registerTaskCommands(program);
+registerMemoryCommands(program);
 
 // ============================================================
 // ic setup
@@ -553,7 +559,7 @@ program.command('t')
       const description = taskDescriptions[0];
       progress(`解析任务：${chalk.cyan(description)}`);
 
-      const { createTask, generatePlan, persistTask } =
+      const { createTask, generatePlanAsync, persistTask } =
         await import('./core/task-engine.js');
       const { recordUserInputEvent } = await import('./core/memory.js');
 
@@ -582,7 +588,12 @@ program.command('t')
       // Generate plan
       progress('生成修改方案...');
       if (index) {
-        task.plan = generatePlan(task, description, config.project.identity, index);
+        let planningProvider: import('./ai/provider.js').AIProviderAdapter | undefined;
+        try {
+          const { createProvider } = await import('./ai/provider.js');
+          planningProvider = createProvider(config.ai);
+        } catch { /* best-effort: generatePlanAsync falls back without a provider */ }
+        task.plan = await generatePlanAsync(task, description, config.project.identity, index, planningProvider);
       }
 
       // P2-3: Forced workflow — always show plan before executing code changes
@@ -608,112 +619,6 @@ program.command('t')
 
       // Execute mode
       await executeTask(task, config, rootPath, index);
-    } catch (err) { printError(err as Error); }
-  });
-
-// ============================================================
-// ic st — shows real task data from .icloser/tasks/
-// ============================================================
-program.command('st')
-  .alias('status')
-  .description('查看任务状态')
-  .argument('[task-id]', '任务 ID（不指定则显示所有）')
-  .allowUnknownOption(true)
-  .action(async (taskId?: string) => {
-    const rootPath = process.cwd();
-    const jsonMode = process.argv.includes('--json');
-    try {
-      const { listTasks, loadTask } = await import('./core/task-engine.js');
-      if (taskId && taskId !== '--json') {
-        const task = await loadTask(rootPath, taskId);
-        if (!task) { warn(`任务 ${chalk.cyan(taskId)} 不存在`); return; }
-        if (jsonMode) {
-          console.log(JSON.stringify(jsonEnvelope('task', serializeTask(task)), null, 2));
-          return;
-        }
-        printTaskDetail(task);
-      } else {
-        const tasks = await listTasks(rootPath);
-        if (tasks.length === 0) {
-          if (jsonMode) {
-            console.log(JSON.stringify(jsonEnvelope('task-list', serializeTaskList([])), null, 2));
-            return;
-          }
-          info('无任务记录。使用 ic t "描述" 创建任务');
-          return;
-        }
-        if (jsonMode) {
-          console.log(JSON.stringify(jsonEnvelope('task-list', serializeTaskList(tasks)), null, 2));
-          return;
-        }
-        printTaskList(tasks);
-      }
-    } catch (err) { printError(err as Error); }
-  });
-
-// ============================================================
-// ic queue — 队列监控 (T3-3)
-// ============================================================
-program.command('queue')
-  .description('查看任务队列（--watch 实时监控）')
-  .option('--watch', '实时监控队列状态（2s刷新，按 q 退出）')
-  .option('--json', 'JSON 格式输出')
-  .action(async (options: { watch?: boolean; json?: boolean }) => {
-    const rootPath = process.cwd();
-    try {
-      const { listTasks } = await import('./core/task-engine.js');
-      if (options.watch) {
-        console.log(chalk.dim('实时监控中（按 q 退出，60s 自动停止）...\n'));
-        const { stdin, stdout } = process;
-        stdin.setRawMode?.(true); stdin.resume();
-        const timer = setInterval(async () => {
-          const tasks = await listTasks(rootPath);
-          stdout.write('\x1b[2J\x1b[H');
-          console.log(chalk.bold(`任务队列 (${tasks.length} 个)\n`));
-          for (const t of tasks.slice(0, 10)) {
-            const icon = t.status === 'completed' ? '✓' : t.status === 'failed' ? '✗' : t.status === 'running' ? '·' : ' ';
-            console.log(`  ${icon} ${chalk.cyan(t.id.slice(-6))} ${chalk.dim(t.description.slice(0, 50))}`);
-          }
-          console.log(chalk.dim(`\n${new Date().toLocaleTimeString()} — 按 q 退出`));
-        }, 2000);
-        let stopWatching: () => void = () => {};
-        stdin.on('data', (d: Buffer) => { if (d.toString().trim() === 'q') { clearInterval(timer); stopWatching(); stdin.setRawMode?.(false); stdin.pause(); } });
-        await new Promise<void>(r => { stopWatching = r; setTimeout(r, 60000); }); clearInterval(timer);
-        return;
-      }
-      const tasks = await listTasks(rootPath);
-      if (options.json) { console.log(JSON.stringify({ tasks: tasks.map(t => ({ id: t.id, description: t.description, status: t.status })) }, null, 2)); return; }
-      if (tasks.length === 0) { info('任务队列为空'); return; }
-      for (const t of tasks) console.log(`  ${chalk.cyan(t.id.slice(-6))} ${chalk.dim(t.description.slice(0, 50))}`);
-    } catch (err) { printError(err as Error); }
-  });
-
-// ============================================================
-// ic d — diff
-// ============================================================
-program.command('d')
-  .alias('diff')
-  .description('查看代码 diff')
-  .argument('[task-id]', '任务 ID（不指定则显示工作区 diff）')
-  .action(async (taskId?: string) => {
-    const rootPath = process.cwd();
-    try {
-      const { parseDiff, renderDiff } = await import('./cli/diff-renderer.js');
-      if (taskId) {
-        const diffPath = path.join(rootPath, '.icloser', 'tasks', taskId, 'diff.patch');
-        if (await fileExists(diffPath)) {
-          const raw = await readFile(diffPath) || '';
-          if (raw.trim()) console.log(renderDiff(parseDiff(raw)));
-          else console.log(chalk.dim('  (空 diff)'));
-        } else {
-          warn(`任务 ${chalk.cyan(taskId)} 的 diff 不存在（任务可能尚未执行）`);
-        }
-      } else {
-        if (!isGitRepo(rootPath)) { warn('当前目录不是 Git 仓库'); return; }
-        const diff = getDiff(rootPath);
-        if (diff) console.log(renderDiff(parseDiff(diff)));
-        else console.log(chalk.dim('  工作区无变更'));
-      }
     } catch (err) { printError(err as Error); }
   });
 
@@ -763,33 +668,6 @@ program.command('y')
     } catch (err) { printError(err as Error); }
   });
 
-program.command('n')
-  .alias('reject')
-  .description('拒绝并取消任务')
-  .argument('<task-id>', '任务 ID')
-  .action(async (taskId: string) => {
-    const rootPath = process.cwd();
-    try {
-      const { loadTask, updateTaskStatus, releaseFileLocks, persistTask } =
-        await import('./core/task-engine.js');
-      const task = await loadTask(rootPath, taskId);
-      if (!task) { warn(`任务 ${chalk.cyan(taskId)} 不存在`); return; }
-
-      if (task.changes.length > 0 && isGitRepo(rootPath)) {
-        try {
-          const { execFileSync } = await import('child_process');
-          const taskFiles = task.changes.map(c => c.file);
-          execFileSync('git', ['checkout', '--', ...taskFiles], { cwd: rootPath, timeout: 10000 });
-          info('已回滚任务文件变更');
-        } catch { /* best-effort */ }
-      }
-      updateTaskStatus(taskId, 'cancelled');
-      releaseFileLocks(task);
-      await persistTask(rootPath, task);
-      warn(`任务 ${chalk.cyan(taskId)} 已取消`);
-    } catch (err) { printError(err as Error); }
-  });
-
 // ============================================================
 // ic gate — REAL gate check
 // ============================================================
@@ -824,569 +702,6 @@ program.command('g')
       } else {
         printGateResult(result, task);
       }
-    } catch (err) { printError(err as Error); }
-  });
-
-// ============================================================
-// ic log / ic r — real task history & report
-// ============================================================
-program.command('l')
-  .alias('log')
-  .description('查看任务历史')
-  .argument('[task-id]', '任务 ID（不指定则列出历史）')
-  .action(async (taskId?: string) => {
-    const rootPath = process.cwd();
-    try {
-      if (taskId) {
-        const reportPath = path.join(rootPath, '.icloser', 'tasks', taskId, 'report.md');
-        if (await fileExists(reportPath)) {
-          console.log(await readFile(reportPath));
-        } else {
-          const { loadTask } = await import('./core/task-engine.js');
-          const task = await loadTask(rootPath, taskId);
-          if (task) {
-            section(`任务 ${chalk.cyan(task.id)}`);
-            detail('状态', statusLabel(task.status));
-            detail('描述', task.description);
-            detail('修改文件', `${task.changes.length} 个`);
-            if (task.completedAt) detail('完成', task.completedAt.substring(0, 19));
-          } else { warn(`任务 ${chalk.cyan(taskId)} 不存在`); }
-        }
-      } else {
-        const { listTasks } = await import('./core/task-engine.js');
-        const tasks = await listTasks(rootPath);
-        if (tasks.length === 0) { info('暂无历史任务'); return; }
-        printTaskList(tasks);
-      }
-    } catch (err) { printError(err as Error); }
-  });
-
-program.command('r')
-  .alias('report')
-  .description('查看最近一次任务报告')
-  .option('--regenerate', '强制重新生成报告')
-  .option('--json', 'JSON 格式输出任务数据')
-  .option('--pm', '产品经理视角：进度/阻塞/风险/下一步')
-  .option('--qa', '质量视角：测试覆盖/失败清单/回归风险')
-  .option('--arch', '架构师视角：债务/耦合度/模块健康')
-  .action(async (options) => {
-    const rootPath = process.cwd();
-    const { jsonEnvelope } = await import('./cli/json.js');
-    try {
-      const { listTasks } = await import('./core/task-engine.js');
-      const tasks = await listTasks(rootPath);
-      if (tasks.length === 0) { info('还没有任务。运行 ic t "你的任务描述" 创建第一个任务'); return; }
-      const latest = tasks.find(t => t.status === 'completed' || t.status === 'failed');
-      if (!latest) { info('没有已完成或失败的任务。当前任务可能还在执行中，运行 ic st 查看'); return; }
-
-      if (options.json) {
-        console.log(JSON.stringify(jsonEnvelope('report', { taskId: latest.id, status: latest.status, description: latest.description, changes: latest.changes, agentExecutions: latest.agentExecutions, verifyResult: latest.verifyResult })));
-        return;
-      }
-
-      const reportPath = path.join(rootPath, '.icloser', 'tasks', latest.id, 'report.md');
-      const hasReport = await fileExists(reportPath);
-
-      const config = await loadConfig(rootPath);
-      if (options.regenerate || !hasReport) {
-        if (config) {
-          progress('重新生成报告...');
-          const { generateTaskReport, generateReasoningFile } = await import('./report/generator.js');
-          await generateTaskReport(rootPath, latest, config);
-          await generateReasoningFile(rootPath, latest);
-          success(`报告已生成: ${chalk.cyan(reportPath)}`);
-        }
-      }
-
-      // PM4: Multi-perspective reports
-      if (options.pm || options.qa || options.arch) {
-        const perspective = options.pm ? 'pm' : options.qa ? 'qa' : 'arch';
-        const summary = generatePerspectiveReport(latest, perspective);
-        console.log(summary);
-      } else if (await fileExists(reportPath)) {
-        console.log(await readFile(reportPath));
-      } else {
-        warn('报告文件不存在，使用 --regenerate 重新生成');
-      }
-    } catch (err) { printError(err as Error); }
-  });
-
-// ============================================================
-// ic mem — real memory
-// ============================================================
-program.command('mem')
-  .alias('memory')
-  .description('查看和管理项目记忆')
-  .argument('[args...]', 'status / recall <q> / import/export/manifests / bootstrap / consolidate / forget / inspect <type> / rule add/list / 搜索关键词')
-  .action(async (args: string[] = []) => {
-    const rootPath = process.cwd();
-    try {
-      const [verb, ...rest] = args;
-      const query = args.join(' ').trim();
-      if (!verb || verb === 'help') {
-        console.log(`\n${chalk.bold('ic mem — 项目记忆管理')}\n`);
-        console.log(`  ${chalk.cyan('ic mem')}                      查看记忆摘要`);
-        console.log(`  ${chalk.cyan('ic mem events')}              查看用户输入事件`);
-        console.log(`  ${chalk.cyan('ic mem candidates')}          查看记忆候选`);
-        console.log(`  ${chalk.cyan('ic mem review')}              待确认记忆审查`);
-        console.log(`  ${chalk.cyan('ic mem import [file...]')}     导入 AGENTS.md / CLAUDE.md 等 Agent 记忆文件`);
-        console.log(`  ${chalk.cyan('ic mem export [file]')}        导出项目规则到 AGENTS.md`);
-        console.log(`  ${chalk.cyan('ic mem manifests')}            查看可识别的 Agent 记忆文件`);
-        console.log(`  ${chalk.cyan('ic mem approve <序号|id>')}    批准记忆候选`);
-        console.log(`  ${chalk.cyan('ic mem reject <序号|id>')}     拒绝记忆候选`);
-        console.log(`  ${chalk.cyan('ic mem global')}              查看全局记忆`);
-        console.log(`  ${chalk.cyan('ic mem <关键词>')}             搜索记忆\n`);
-        return;
-      }
-      if (verb === 'events') {
-        await printMemoryEvents(rootPath);
-      } else if (verb === 'candidates') {
-        await printMemoryCandidates(rootPath);
-      } else if (verb === 'review') {
-        await printMemoryReview(rootPath);
-      } else if (verb === 'import') {
-        const { memoryManifestImport } = await import('./core/memory/cli-handlers.js');
-        await memoryManifestImport(rootPath, rest);
-      } else if (verb === 'export') {
-        const { memoryManifestExport } = await import('./core/memory/cli-handlers.js');
-        await memoryManifestExport(rootPath, rest[0] || 'AGENTS.md');
-      } else if (verb === 'manifests') {
-        const { printMemoryManifestFiles } = await import('./core/memory/cli-handlers.js');
-        await printMemoryManifestFiles(rootPath);
-      } else if (verb === 'approve' || verb === 'accept') {
-        await updateMemoryCandidateReview(rootPath, rest.join(' ').trim(), 'approved');
-      } else if (verb === 'reject' || verb === 'archive') {
-        await updateMemoryCandidateReview(rootPath, rest.join(' ').trim(), 'archived');
-      } else if (verb === 'status') {
-        const { printMemoryKernelStatus } = await import('./core/memory/cli-handlers.js');
-        await printMemoryKernelStatus(rootPath);
-      } else if (verb === 'recall') {
-        const { printMemoryRecall } = await import('./core/memory/cli-handlers.js');
-        await printMemoryRecall(rootPath, rest.join(' ').trim());
-      } else if (verb === 'consolidate') {
-        const { runMemoryConsolidate } = await import('./core/memory/cli-handlers.js');
-        await runMemoryConsolidate(rootPath);
-      } else if (verb === 'forget') {
-        const { runMemoryForget } = await import('./core/memory/cli-handlers.js');
-        await runMemoryForget(rootPath);
-      } else if (verb === 'inspect') {
-        const { printMemoryInspect } = await import('./core/memory/cli-handlers.js');
-        await printMemoryInspect(rootPath, rest[0] || '');
-      } else if (verb === 'rule') {
-        const sub = rest[0]; const ruleContent = rest.slice(1).join(' ').trim();
-        const { memoryRuleAdd, memoryRuleList, memoryRuleDelete } = await import('./core/memory/cli-handlers.js');
-        if (sub === 'add' && ruleContent) { await memoryRuleAdd(rootPath, ruleContent); }
-        else if (sub === 'list') { await memoryRuleList(rootPath); }
-        else if (sub === 'delete' && ruleContent) { await memoryRuleDelete(rootPath, ruleContent); }
-        else { console.log(`  ${chalk.cyan('ic mem rule add <描述>')} / ${chalk.cyan('list')} / ${chalk.cyan('delete <id>')}`); }
-      } else if (verb === 'bootstrap') {
-        progress('正在从项目历史引导 Memory Kernel...');
-        try {
-          const { getMemoryRuntime } = await import('./core/memory/integration.js');
-          const runtime = await getMemoryRuntime(rootPath);
-          const { bootstrapMemoryKernel } = await import('./core/memory/bootstrap.js');
-          const result = await bootstrapMemoryKernel(rootPath, runtime);
-          success(`Bootstrap 完成: ${result.episodesCreated} 事件, ${result.rulesCreated} 规则, ${result.patternsFound.length} 模式`);
-          if (result.errors.length > 0) {
-            for (const err of result.errors) warn(err);
-          }
-        } catch (err) { warn(`Bootstrap 失败: ${(err as Error).message}`); }
-      } else if (verb === 'stats') {
-        const { printMemoryStats } = await import('./core/memory/cli-handlers.js');
-        await printMemoryStats(rootPath);
-      } else if (verb === 'global') {
-        const { loadGlobalMemory } = await import('./core/memory.js');
-        const gm = await loadGlobalMemory();
-        section('全局记忆');
-        detail('技术栈', `${gm.techStacks.size} 个`);
-        detail('模式', `${gm.patterns.size} 个`);
-        detail('踩坑', `${gm.pitfalls.length} 条`);
-        detail('Skill 历史', `${gm.skillHistory.length} 条`);
-        detail('偏好 AI', gm.preferences.preferredAI);
-        detail('并发数', `${gm.preferences.maxParallelTasks}`);
-      } else if (query) {
-        const { loadProjectMemory, searchMemory } = await import('./core/memory.js');
-        const memory = await loadProjectMemory(rootPath);
-        const results = await searchMemory(memory, query);
-        if (results.length === 0) {
-          info(`未找到匹配 "${chalk.cyan(query)}" 的记忆`);
-        } else {
-          section(`搜索结果 (${results.length} 条)`);
-          for (const r of results.slice(0, 10)) {
-            if ('decision' in r) console.log(`  ${chalk.cyan('[决策]')} ${(r as import('./types.js').DecisionRecord).decision.substring(0, 80)}`);
-            else if ('scope' in r) console.log(`  ${chalk.cyan('[约束]')} ${(r as import('./types.js').ArchitectureRule).description}`);
-            else if ('content' in r) console.log(`  ${chalk.cyan('[反馈]')} ${(r as import('./types.js').FeedbackRecord).content.substring(0, 80)}`);
-            else if ('taskId' in r) console.log(`  ${chalk.cyan('[任务]')} ${(r as import('./types.js').TaskRecord).summary.substring(0, 80)}`);
-          }
-        }
-      } else {
-        const { loadProjectMemory } = await import('./core/memory.js');
-        const config = await loadConfig(rootPath);
-        const memory = await loadProjectMemory(rootPath);
-        section('项目记忆');
-        if (config) {
-          detail('项目', config.project.name);
-          detail('语言', config.project.identity.language);
-          detail('框架', config.project.identity.framework || '无');
-        }
-        detail('任务记录', `${memory.taskHistory.length} 条`);
-        detail('架构约束', `${memory.rules.length} 条`);
-        detail('决策记录', `${memory.decisions.length} 条`);
-        detail('用户反馈', `${memory.feedbacks.length} 条`);
-      }
-      console.log();
-    } catch (err) { printError(err as Error); }
-  });
-
-async function printMemoryEvents(rootPath: string): Promise<void> {
-  const { loadUserInputEvents } = await import('./core/memory.js');
-  const events = await loadUserInputEvents(rootPath);
-  if (events.length === 0) {
-    info('暂无用户输入事件。运行 ic init 和 ic t 后会开始记录。');
-    return;
-  }
-  section(`用户输入事件 (最近 ${Math.min(events.length, 10)} 条)`);
-  const recent = events.slice(-10).reverse();
-  for (const e of recent) {
-    const kindLabel = e.kind === 'task-description' ? '任务' :
-      e.kind === 'rule' ? '约束' :
-      e.kind === 'slash-command' ? '命令' :
-      e.kind === 'api-key' ? 'API Key' :
-      e.kind === 'chat' ? '对话' :
-      e.kind === 'approval' ? '审批' :
-      e.kind === 'rejection' ? '拒绝' :
-      e.kind === 'correction' ? '修正' : '其他';
-    const icon = e.redacted ? chalk.yellow('▸') : chalk.green('▸');
-    const created = e.createdAt.substring(0, 19).replace('T', ' ');
-    const preview = e.content.length > 80 ? e.content.substring(0, 80) + '...' : e.content;
-    const flags = [
-      e.redacted ? chalk.yellow('已脱敏') : '',
-      e.taskId ? chalk.dim(`task:${e.taskId.substring(0, 10)}`) : '',
-    ].filter(Boolean).join(' ');
-    console.log(`  ${icon} ${chalk.dim(`[${created}]`)} ${chalk.cyan(`[${kindLabel}]`)} ${preview}`);
-    if (flags) console.log(`    ${chalk.dim(flags)}`);
-  }
-}
-
-async function printMemoryReview(rootPath: string): Promise<void> {
-  const { loadProjectMemory } = await import('./core/memory.js');
-  const memory = await loadProjectMemory(rootPath);
-  const pending = getPendingMemoryCandidates(memory);
-  if (pending.length === 0) {
-    success('没有需要你确认的记忆。系统会继续自动整理低风险内容。');
-    return;
-  }
-
-  section(`需要确认的记忆 (${pending.length} 条)`);
-  for (const [index, candidate] of pending.slice(0, 5).entries()) {
-    const n = index + 1;
-    const riskLabel = candidate.riskLevel === 'high' ? chalk.red('高风险') :
-      candidate.riskLevel === 'medium' ? chalk.yellow('中风险') :
-      chalk.green('低风险');
-    console.log(`  ${chalk.cyan(`[${n}]`)} ${candidate.summary}`);
-    console.log(`      ${riskLabel} ${chalk.dim('|')} ${candidate.reason}`);
-  }
-  console.log();
-  console.log(`  ${chalk.green('[1]')} 保存第 1 条到项目记忆`);
-  console.log(`      ${chalk.cyan('ic mem approve 1')}`);
-  console.log(`  ${chalk.yellow('[2]')} 暂不保存第 1 条`);
-  console.log(`      ${chalk.cyan('ic mem reject 1')}`);
-  console.log(`  ${chalk.dim('[3]')} 以后再说`);
-  console.log();
-}
-
-async function updateMemoryCandidateReview(
-  rootPath: string,
-  selector: string,
-  status: 'approved' | 'archived'
-): Promise<void> {
-  if (!selector) {
-    warn(`请告诉我要处理第几条，例如：${chalk.cyan(`ic mem ${status === 'approved' ? 'approve' : 'reject'} 1`)}`);
-    return;
-  }
-
-  const { loadProjectMemory, saveProjectMemory } = await import('./core/memory.js');
-  const memory = await loadProjectMemory(rootPath);
-  const match = resolveMemoryCandidate(memory, selector);
-  if (!match) {
-    warn(`没有找到待确认记忆：${chalk.cyan(selector)}。先运行 ${chalk.cyan('ic mem review')} 查看序号。`);
-    return;
-  }
-
-  const now = new Date().toISOString();
-  match.reviewStatus = status;
-  match.updatedAt = now;
-  match.metadata.reviewStatus = status;
-  match.metadata.updatedAt = now;
-  await saveProjectMemory(rootPath, memory);
-
-  if (status === 'approved') {
-    success(`已保存到项目记忆：${match.summary}`);
-  } else {
-    warn(`已暂不保存：${match.summary}`);
-  }
-}
-
-function getPendingMemoryCandidates(memory: ProjectMemory): MemoryCandidate[] {
-  return (memory.memoryCandidates || []).filter(candidate => candidate.reviewStatus === 'proposed');
-}
-
-function resolveMemoryCandidate(memory: ProjectMemory, selector: string): MemoryCandidate | null {
-  const pending = getPendingMemoryCandidates(memory);
-  const asNumber = Number(selector);
-  if (Number.isInteger(asNumber) && asNumber >= 1 && asNumber <= pending.length) {
-    return pending[asNumber - 1];
-  }
-  return pending.find(candidate => candidate.id === selector || candidate.id.startsWith(selector)) || null;
-}
-
-async function printMemoryCandidates(rootPath: string): Promise<void> {
-  const { loadProjectMemory } = await import('./core/memory.js');
-  const memory = await loadProjectMemory(rootPath);
-  const candidates = memory.memoryCandidates || [];
-  if (candidates.length === 0) {
-    info('暂无自动整理的记忆。你直接使用任务和规则命令后，系统会自动归纳。');
-    return;
-  }
-
-  const approved = candidates.filter(c => c.reviewStatus === 'approved').length;
-  const proposed = candidates.filter(c => c.reviewStatus === 'proposed').length;
-  const archived = candidates.filter(c => c.reviewStatus === 'archived').length;
-  section('记忆处理');
-  detail('自动保存', `${approved} 条`);
-  detail('待确认', `${proposed} 条`);
-  detail('已归档', `${archived} 条`);
-  console.log();
-
-  const recent = candidates.slice(-10).reverse();
-  for (const c of recent) {
-    const statusLabel = c.reviewStatus === 'approved' ? chalk.green('已自动保存') :
-      c.reviewStatus === 'proposed' ? chalk.yellow(c.suggestedAction === 'ask-now' ? '需要确认' : '待确认') :
-      c.reviewStatus === 'archived' ? chalk.dim('已归档') :
-      chalk.dim('草稿');
-    const riskLabel = c.riskLevel === 'high' ? chalk.red('高风险') :
-      c.riskLevel === 'medium' ? chalk.yellow('中风险') :
-      chalk.green('低风险');
-    const kindLabel = c.kind === 'preference' ? '偏好' :
-      c.kind === 'rule' ? '规则' :
-      c.kind === 'template' ? '模板' :
-      c.kind === 'fact' ? '事实' :
-      c.kind === 'sensitive' ? '敏感输入' : '其他';
-    const created = c.createdAt.substring(0, 19).replace('T', ' ');
-    console.log(`  ${chalk.cyan(`[${kindLabel}]`)} ${c.summary}`);
-    console.log(`    ${statusLabel} ${chalk.dim('|')} ${riskLabel} ${chalk.dim('|')} ${chalk.dim(created)}`);
-    if (c.reason) console.log(`    ${chalk.dim(c.reason)}`);
-  }
-}
-
-// ============================================================
-// ============================================================
-// ic overview — project health dashboard
-// ============================================================
-program.command('overview')
-  .alias('info')
-  .description('项目健康总览：初始化状态、Provider、任务、Agent、工具能力')
-  .option('--json', 'JSON 格式输出')
-  .action(async (options?: { json?: boolean }) => {
-    const rootPath = process.cwd();
-    try {
-      const { loadConfig } = await import('./config.js');
-      const { loadProjectIndex } = await import('./core/scanner.js');
-      const { listTasks } = await import('./core/task-engine.js');
-      const { getProviderStatus } = await import('./ai/provider.js');
-      const { buildToolCapabilitySnapshot } = await import('./core/tool-registry.js');
-
-      const config = await loadConfig(rootPath);
-      const index = await loadProjectIndex(rootPath);
-      const tasks = await listTasks(rootPath);
-      const providerStatus = getProviderStatus(config?.ai || { provider: 'mock', model: 'mock-offline', maxTokens: 100000, temperature: 0.3 });
-      const toolSnapshot = buildToolCapabilitySnapshot();
-
-      const completed = tasks.filter(t => t.status === 'completed').length;
-      const failed = tasks.filter(t => t.status === 'failed').length;
-      const running = tasks.filter(t => t.status === 'running').length;
-      const availableTools = toolSnapshot.capabilities.filter(c => c.status === 'available').length;
-
-      if (options?.json) {
-        console.log(JSON.stringify(jsonEnvelope('overview', {
-          rootPath,
-          initialized: !!config,
-          language: index?.identity.language || 'unknown',
-          framework: index?.identity.framework || 'unknown',
-          provider: providerStatus.name,
-          providerReady: providerStatus.ready,
-          keySource: providerStatus.keySource,
-          model: config?.ai.model || 'unknown',
-          modules: index?.modules.length || 0,
-          files: index?.modules.reduce((s, m) => s + m.files.length, 0) || 0,
-          tasks: { total: tasks.length, completed, failed, running },
-          tools: { total: toolSnapshot.capabilities.length, available: availableTools },
-          toolDetails: toolSnapshot.capabilities.map(c => ({ name: c.name, status: c.status })),
-          lastScan: index?.lastScan || null,
-        }), null, 2));
-        return;
-      }
-
-      section('项目健康总览');
-      console.log();
-      if (!config) { warn('项目未初始化，运行 ic init'); console.log(); return; }
-
-      detail('语言', index?.identity.language || '—');
-      detail('框架', index?.identity.framework || '—');
-      detail('模块', `${index?.modules.length || 0} 个 / ${index?.modules.reduce((s, m) => s + m.files.length, 0) || 0} 文件`);
-      detail('Provider', `${providerStatus.name} ${providerStatus.ready ? chalk.green('✓') : chalk.red('✗')} ${providerStatus.keySource ? chalk.dim('(' + providerStatus.keySource + ')') : ''}`);
-      detail('模型', config?.ai.model || '—');
-      console.log();
-      detail('任务', `${chalk.cyan(String(tasks.length))} 个 ${chalk.dim(`(完成 ${completed}, 失败 ${failed}, 运行中 ${running})`)}`);
-      detail('工具', `${availableTools}/${toolSnapshot.capabilities.length} 可用`);
-      console.log();
-      if (index?.lastScan) detail('最后扫描', index.lastScan);
-      info(`运行 ${chalk.cyan('ic overview --json')} 获取 JSON 格式`);
-      console.log();
-    } catch (err) { printError(err as Error); }
-  });
-
-// ic loop — task loop status & visualization
-// ============================================================
-program.command('loop')
-  .description('查看三步任务循环状态和工具能力矩阵')
-  .option('--json', 'JSON 格式输出')
-  .action(async (options?: { json?: boolean }) => {
-    try {
-      const { buildTaskThinkingLoop, renderTaskThinkingLoop } = await import('./core/task-loop.js');
-      const loop = buildTaskThinkingLoop();
-
-      if (options?.json) {
-        const { buildToolCapabilitySnapshot } = await import('./core/tool-registry.js');
-        const snapshot = buildToolCapabilitySnapshot();
-        console.log(JSON.stringify(jsonEnvelope('loop-status', {
-          steps: loop.steps.map(s => ({
-            id: s.id, name: s.name, owner: s.owner,
-            tools: s.requiredToolCategories,
-            rule: s.userVisibleRule,
-          })),
-          tools: snapshot.capabilities.map(c => ({
-            id: c.id, name: c.name, status: c.status,
-            fallback: c.status !== 'available' ? c.fallback : null,
-          })),
-          policy: loop.policy,
-        }), null, 2));
-      } else {
-        section('任务循环');
-        console.log(renderTaskThinkingLoop(loop));
-        console.log();
-        info('运行 ic loop --json 获取 JSON 格式');
-      }
-    } catch (err) { printError(err as Error); }
-  });
-
-// ============================================================
-// ic intel — code intelligence queries
-// ============================================================
-program.command('intel')
-  .alias('ci')
-  .description('代码智能查询：符号定义、调用关系、模块导出、依赖分析')
-  .argument('[query...]', '查询内容，例如：谁调用了 scanProject / 模块 src/core 的导出')
-  .option('--json', 'JSON 格式输出')
-  .option('--callers', '仅显示调用者')
-  .option('--dataflow', '类型级数据流分析 (TS Compiler API)')
-  .option('--impact', '影响面分析 (TS Compiler API)')
-  .action(async (args: string[] = [], options?: { json?: boolean; callers?: boolean; dataflow?: boolean; impact?: boolean }) => {
-    const rootPath = process.cwd();
-    const query = args.join(' ').trim();
-    if (!query) { info('用法：ic intel <符号名 | 函数名 | 文件名 | 模块名>'); info('自然语言：ic intel 谁调用了 scanProject'); return; }
-    try {
-      const { loadProjectIndex } = await import('./core/scanner.js');
-      const index = await loadProjectIndex(rootPath);
-      if (!index) { fail('项目未扫描，先运行 ic scan'); }
-
-      // Symbol search
-      const symbolHits = index.modules.flatMap(m =>
-        m.exports.filter(e => e.name === query || e.name.toLowerCase().includes(query.toLowerCase())).map(e => ({ mod: m.name, exp: e }))
-      );
-
-      // Callers-only mode
-      if (options?.callers && index.callGraph) {
-        const callers = index.callGraph.filter(e => e.callee.includes(query));
-        if (options?.json) {
-          console.log(JSON.stringify(jsonEnvelope('intel-callers', { symbol: query, count: callers.length, callers: callers.map(c => ({ caller: c.caller, file: c.callerFile, line: c.line })) }), null, 2));
-        } else {
-          section(`调用者: ${chalk.cyan(query)} (${callers.length})`);
-          for (const c of callers.slice(0, 15)) console.log(`  ${chalk.cyan(c.caller)} ${chalk.dim('L' + c.line + '  ' + c.callerFile)}`);
-          if (callers.length > 15) info(`还有 ${callers.length - 15} 条...`);
-        }
-        console.log();
-        return;
-      }
-
-      // JSON output
-      if (options?.json) {
-        const callers = index.callGraph?.filter(e => e.callee.includes(query)) || [];
-        console.log(JSON.stringify(jsonEnvelope('intel', {
-          query,
-          symbols: symbolHits.map(h => ({ name: h.exp.name, kind: h.exp.kind, module: h.mod, signature: h.exp.signature, file: h.exp.file, line: h.exp.line })),
-          callers: callers.map(c => ({ caller: c.caller, file: c.callerFile, line: c.line })),
-        }), null, 2));
-        return;
-      }
-
-      if (symbolHits.length > 0) {
-        section(`代码智能: ${chalk.cyan(query)}`);
-        console.log();
-        for (const h of symbolHits.slice(0, 10)) {
-          detail(h.exp.name, `${h.exp.kind}  ${chalk.dim('→')} ${chalk.cyan(h.mod)}  ${chalk.dim(h.exp.signature?.substring(0, 60) || '')}`);
-        }
-        // Callers from call graph
-        if (index.callGraph) {
-          const callers = index.callGraph.filter(e => e.callee.includes(query));
-          if (callers.length > 0) {
-            console.log();
-            info(`调用者 (${callers.length}):`);
-            for (const c of callers.slice(0, 8)) {
-              console.log(`  ${chalk.cyan(c.caller)} ${chalk.dim('→ L' + c.line + '  ' + c.callerFile)}`);
-            }
-          }
-        }
-      } else {
-        // Module/file search
-        const mod = index.modules.find(m => m.name.includes(query) || m.files.some(f => f.includes(query)));
-        if (mod) {
-          section(`模块 ${chalk.cyan(mod.name)} (${mod.exports.length} 导出, ${mod.imports.length} 导入)`);
-          if (mod.exports.length > 0) {
-            for (const e of mod.exports.slice(0, 15)) {
-              detail(e.name, `${e.kind}  ${chalk.dim(e.signature?.substring(0, 50) || '')}`);
-            }
-          }
-          const deps = index.dependencyGraph.get(mod.name) || [];
-          if (deps.length > 0) {
-            console.log();
-            info(`依赖: ${deps.map(d => chalk.cyan(d)).join(', ')}`);
-          }
-        } else {
-          warn(`未找到符号或模块: ${query}`);
-          info('试试 ic intel <函数名> 或 ic intel <模块名>');
-        }
-      }
-      // TS Compiler API data flow analysis (type-level, cross-file)
-      if (options?.dataflow || options?.impact) {
-        try {
-          const { analyzeTSProject, analyzeImpactWithTSC, formatDataFlowSummary } = await import('./core/ts-dataflow.js');
-          progress('类型级数据流分析...');
-          const result = analyzeTSProject(rootPath);
-          if (options?.impact) {
-            const impact = analyzeImpactWithTSC(rootPath, query || 'main');
-            section(`影响面: ${chalk.cyan(query || 'main')}`);
-            console.log(`  直接: ${impact.directlyAffected.length}  间接: ${impact.indirectlyAffected.length}  文件: ${impact.filesToCheck.length}`);
-            if (impact.directlyAffected.length > 0) console.log(`  直接: ${impact.directlyAffected.map(s => chalk.cyan(s)).join(', ')}`);
-            if (impact.indirectlyAffected.length > 0) console.log(`  间接: ${impact.indirectlyAffected.slice(0, 10).map(s => chalk.cyan(s)).join(', ')}`);
-            console.log(`  ${impact.assessment}`);
-          } else {
-            console.log(formatDataFlowSummary(result));
-          }
-        } catch (err) { warn(`TS 数据流分析失败: ${(err as Error).message.slice(0, 200)}`); }
-      }
-
-      console.log();
     } catch (err) { printError(err as Error); }
   });
 
@@ -1765,12 +1080,18 @@ program.command('start')
       progress(`启动 npm run ${scriptName}...`);
       const { spawn } = await import('child_process');
       const child = spawn('npm', ['run', scriptName], { cwd, stdio: 'inherit', shell: process.platform === 'win32', detached: true, windowsHide: true });
-      // Persist PID so `ic stop` can kill the exact process
+      // Persist PID metadata so `ic stop` can kill the exact process with validation
       if (child.pid) {
         const { writeFile: fsPid, mkdir: fsMkdir } = await import('fs/promises');
         try {
           await fsMkdir(path.join(cwd, '.icloser'), { recursive: true });
-          await fsPid(path.join(cwd, '.icloser', 'dev-server.pid'), String(child.pid), 'utf-8');
+          const meta = JSON.stringify({
+            pid: child.pid,
+            cwd,
+            script: scriptName,
+            startedAt: new Date().toISOString(),
+          });
+          await fsPid(path.join(cwd, '.icloser', 'dev-server.pid'), meta, 'utf-8');
         } catch { /* best-effort — not fatal */ }
       }
       child.unref();
@@ -1790,13 +1111,19 @@ program.command('stop')
       const { readFile: fsRead, unlink } = await import('fs/promises');
       const pidFile = path.join(cwd, '.icloser', 'dev-server.pid');
 
-      // Read the PID written by `ic start`
+      // Read the JSON metadata written by `ic start`; validate project cwd before trusting the PID
       let pid: number | null = null;
       try {
         const raw = await fsRead(pidFile, 'utf-8');
-        const parsed = parseInt(raw.trim(), 10);
-        if (Number.isFinite(parsed) && parsed > 0) pid = parsed;
-      } catch { /* pid file absent — server was never started or already cleaned up */ }
+        const meta = JSON.parse(raw) as { pid?: unknown; cwd?: unknown; script?: unknown; startedAt?: unknown };
+        if (typeof meta.cwd === 'string' && meta.cwd !== cwd) {
+          info(`PID 文件归属目录不匹配（记录: ${meta.cwd}，当前: ${cwd}），取消停止操作`);
+          return;
+        }
+        if (typeof meta.pid === 'number' && Number.isFinite(meta.pid) && meta.pid > 0) {
+          pid = meta.pid;
+        }
+      } catch { /* pid file absent or malformed — server was never started or already cleaned up */ }
 
       if (!pid) {
         info('未找到后台服务记录（.icloser/dev-server.pid 不存在），无法精确停止');
@@ -1886,24 +1213,6 @@ program.command('web')
         if (results.length === 0) info('未找到结果');
       }
     } catch (err) { fail(`网络搜索失败: ${(err as Error).message}`); }
-  });
-
-program.command('cancel')
-  .description('取消排队中的任务')
-  .argument('<task-id>', '任务 ID')
-  .action(async (taskId: string) => {
-    const rootPath = process.cwd();
-    try {
-      const { loadTask, cancelTask, persistTask } = await import('./core/task-engine.js');
-      const task = await loadTask(rootPath, taskId);
-      if (!task) { warn(`任务 ${chalk.cyan(taskId)} 不存在`); return; }
-      if (cancelTask(taskId)) {
-        await persistTask(rootPath, task);
-        success(`任务 ${chalk.cyan(taskId)} 已取消`);
-      } else {
-        warn(`任务状态为 ${statusLabel(task.status)}，无法取消`);
-      }
-    } catch (err) { printError(err as Error); }
   });
 
 // ============================================================
@@ -4509,164 +3818,9 @@ ${errorText.substring(0, 3000)}
 }
 
 // ════════════════════════════════════════════════════════════
-// Output helpers
+// Output helpers (statusLabel / printTaskPlan / printTaskDetail
+//  are now in src/commands/task.ts — imported at top of file)
 // ════════════════════════════════════════════════════════════
-function statusLabel(status: string): string {
-  const m: Record<string, string> = {
-    queued: '排队中', scheduled: '已调度', running: '执行中', verifying: '验证中',
-    completed: '已完成', failed: '失败', cancelled: '已取消', blocked: '已阻塞', paused: '已暂停',
-  };
-  return m[status] || status;
-}
-
-function printTaskPlan(task: Task): void {
-  console.log();
-  section('修改计划预览');
-  if (task.plan && task.plan.subGoals.length > 0) {
-    console.log();
-    for (const sg of task.plan.subGoals) {
-      const icon = sg.status === 'done' ? '[✓]' : sg.status === 'failed' ? '[✗]' : '[ ]';
-      console.log(`  ${chalk.cyan(icon)} ${sg.description}`);
-      if (sg.files.length > 0) {
-        const fl = sg.files.slice(0, 5).join(', ');
-        console.log(`     ${chalk.dim(`涉及：${fl}${sg.files.length > 5 ? ` 等 ${sg.files.length} 个文件` : ''}`)}`);
-      }
-    }
-  }
-  if (task.plan?.affectedFiles && task.plan.affectedFiles.length > 0) {
-    console.log();
-    console.log(`  ${chalk.dim('影响文件:')}`);
-    for (const f of task.plan.affectedFiles.slice(0, 15)) {
-      console.log(`    ${chalk.yellow('✎')} ${chalk.dim(f)}`);
-    }
-    if (task.plan.affectedFiles.length > 15) {
-      console.log(`    ${chalk.dim(`... 等 ${task.plan.affectedFiles.length} 个文件`)}`);
-    }
-  }
-  console.log();
-  detail('风险等级', task.plan?.estimatedImpact === 'high' ? chalk.red('高') :
-    task.plan?.estimatedImpact === 'medium' ? chalk.yellow('中') : chalk.green('低'));
-}
-
-function printTaskDetail(task: Task): void {
-  section(`任务 ${chalk.cyan(task.id)}`);
-  detail('状态', statusLabel(task.status));
-  detail('描述', task.description);
-  detail('优先级', task.priority);
-  detail('创建', task.createdAt.substring(0, 19));
-  if (task.startedAt) detail('开始', task.startedAt.substring(0, 19));
-  if (task.completedAt) detail('完成', task.completedAt.substring(0, 19));
-  detail('修改', `${task.changes.length} 个文件`);
-  detail('推理', `${task.reasoning.length} 条记录`);
-
-  // Verification stages detail
-  if (task.verifyResult) {
-    detail('验证', task.verifyResult.overall === 'pass' ? chalk.green('通过') : chalk.red('失败'));
-    if (task.verifyResult.totalTests > 0) detail('测试', `${task.verifyResult.passedTests}/${task.verifyResult.totalTests}`);
-    if (task.verifyResult.attempts > 1) detail('重试', `${task.verifyResult.attempts} 轮`);
-
-    if (task.verifyResult.stages.length > 0) {
-      console.log();
-      console.log(`  ${chalk.bold('验证阶段:')}`);
-      for (const s of task.verifyResult.stages) {
-        const icon = s.status === 'pass' ? ICONS.success :
-          s.status === 'fail' ? ICONS.fail : ICONS.warn;
-        const dur = s.duration > 0 ? ` ${chalk.dim(`(${(s.duration / 1000).toFixed(1)}s)`)}` : '';
-        const ec = s.exitCode != null ? ` ${chalk.dim(`exit=${s.exitCode}`)}` : '';
-        console.log(`  ${icon} ${s.stage.padEnd(18)}${dur}${ec}`);
-        if (s.command) {
-          console.log(`     ${chalk.dim('$ ' + s.command.substring(0, 72))}`);
-        }
-        // Show error summary for failed stages
-        if (s.status === 'fail') {
-          const errText = s.stderr || s.errorDetails || '';
-          if (errText.trim()) {
-            const summary = errText.trim().split('\n').filter(l => l.trim()).slice(0, 5).join('\n');
-            console.log(`     ${chalk.red(summary.substring(0, 500))}`);
-          }
-        }
-      }
-    }
-  } else {
-    // No verifyResult — show what WOULD run
-    detail('验证', chalk.dim('未执行'));
-    try {
-      const rootPath = process.cwd();
-      printPlannedVerification(rootPath).catch(() => {});
-    } catch { /* best-effort */ }
-  }
-
-  // Gate result summary
-  if (task.gateResult) {
-    const gr = task.gateResult;
-    console.log();
-    console.log(`  ${chalk.bold('门禁检查:')} ${gr.passed ? chalk.green('通过') : chalk.red(`阻塞 (${gr.blocking.length} 项)`)}`);
-
-    // Security gate with structured issues
-    try {
-      const gs = formatGateSummary(gr);
-      if (gs.security) {
-        const sc = gs.security;
-        const icon = sc.status === 'pass' ? ICONS.success : sc.status === 'fail' ? ICONS.fail : ICONS.warn;
-        console.log(`  ${icon} 安全门禁 — ${sc.detail}`);
-
-        // Structured issues (dev2 format)
-        if (sc.structuredIssues.length > 0) {
-          for (const iss of sc.structuredIssues.slice(0, 8)) {
-            const loc = iss.line ? `${iss.file}:${iss.line}` : iss.file;
-            const sev = iss.severity === 'high' ? chalk.red('HIGH') :
-              iss.severity === 'medium' ? chalk.yellow('MED') : chalk.dim('LOW');
-            console.log(`  ${chalk.dim('▸')} ${sev} ${chalk.dim(loc.padEnd(28))} ${chalk.cyan(iss.ruleId)}`);
-            if (iss.evidence) {
-              console.log(`     ${chalk.dim(iss.evidence.substring(0, 100))}`);
-            }
-            if (iss.message) {
-              console.log(`     ${chalk.dim(iss.message.substring(0, 120))}`);
-            }
-          }
-          if (sc.structuredIssues.length > 8) {
-            console.log(`  ${chalk.dim(`... 还有 ${sc.structuredIssues.length - 8} 个问题`)}`);
-          }
-        } else if (sc.issues.length > 0) {
-          // Fallback to suggestion text
-          for (const s of sc.issues.slice(0, 5)) {
-            console.log(`     ${chalk.red(s.substring(0, 100))}`);
-          }
-        }
-      }
-    } catch { /* fallback to basic display */ }
-  }
-
-  if (task.errorLog.length > 0) {
-    console.log();
-    console.log(`  ${chalk.dim('错误日志:')}`);
-    for (const err of task.errorLog.slice(-3)) {
-      console.log(`  ${chalk.red(err.substring(0, 120))}`);
-    }
-  }
-  console.log();
-}
-
-// Show planned verification commands (when no verifyResult yet)
-async function printPlannedVerification(rootPath: string): Promise<void> {
-  const config = await loadConfig(rootPath);
-  if (!config) return;
-  const { resolveVerificationCommand } = await import('./core/verifier.js');
-  console.log(`\n  ${chalk.dim('计划执行的验证命令:')}`);
-  for (const stage of config.execution.verifyStages) {
-    try {
-      const cmd = await resolveVerificationCommand(rootPath, config.project.identity, stage);
-      if (cmd) {
-        console.log(`  ${chalk.dim('·')} ${stage.padEnd(18)} ${chalk.dim('$ ' + cmd.command.substring(0, 60))}`);
-      } else {
-        console.log(`  ${chalk.dim('·')} ${stage.padEnd(18)} ${chalk.dim('(跳过)')}`);
-      }
-    } catch {
-      console.log(`  ${chalk.dim('·')} ${stage.padEnd(18)} ${chalk.dim('(不可用)')}`);
-    }
-  }
-}
-
 
 function printSecurityRules(config: ICloserConfig, jsonMode = false): void {
   const disabled = new Set(config.security.disabledRules || []);
@@ -4933,25 +4087,6 @@ function printProviderEnv(provider: AIProvider): void {
   console.log();
 }
 
-function printTaskList(tasks: Task[]): void {
-  const order: Record<string, number> = { running: 0, verifying: 1, queued: 2, scheduled: 3, blocked: 4, completed: 5, failed: 6, cancelled: 7 };
-  const sorted = tasks.sort((a, b) => (order[a.status] ?? 9) - (order[b.status] ?? 9));
-  section(`任务列表 (${tasks.length} 条)`);
-  console.log();
-  for (const t of sorted.slice(0, 30)) {
-    const icon = t.status === 'completed' ? ICONS.success :
-      t.status === 'failed' ? ICONS.fail :
-      t.status === 'running' || t.status === 'verifying' ? ICONS.progress :
-      t.status === 'blocked' ? ICONS.warn : ICONS.info;
-    const id = t.id.substring(0, 10);
-    const desc = t.description.substring(0, 45);
-    const stat = statusLabel(t.status);
-    const time = t.createdAt.substring(11, 19);
-    console.log(`  ${icon} ${chalk.cyan(id)}  ${chalk.dim(stat.padEnd(6) + time)}  ${desc}`);
-  }
-  console.log();
-}
-
 function printGateResult(result: import('./types.js').GateResult, _task: Task): void {
   console.log();
   for (const c of result.checks) {
@@ -4983,50 +4118,6 @@ function printGateResult(result: import('./types.js').GateResult, _task: Task): 
     console.log(`${ICONS.fail} ${chalk.red.bold(`门禁阻塞 (${result.blocking.length} 项):`)} ${blockers}`);
   }
   console.log();
-}
-
-// PM4: Multi-perspective report generator
-function generatePerspectiveReport(task: Task, perspective: string): string {
-  const lines: string[] = [];
-  const pct = task.status === 'completed' ? 100 : task.status === 'running' ? 50 : 0;
-  const bar = '█'.repeat(Math.round(pct / 5)) + '░'.repeat(20 - Math.round(pct / 5));
-
-  if (perspective === 'pm') {
-    lines.push(chalk.bold.blue('\n# PM 视角 — 项目状态报告\n'));
-    lines.push(`| 指标 | 值 |`);
-    lines.push(`|------|-----|`);
-    lines.push(`| 任务 | ${task.id.slice(0, 12)} |`);
-    lines.push(`| 描述 | ${task.description.slice(0, 60)} |`);
-    lines.push(`| 状态 | ${task.status} |`);
-    lines.push(`| 进度 | ${bar} ${pct}% |`);
-    if (task.milestone) lines.push(`| 里程碑 | ${task.milestone} |`);
-    if (task.storyPoints) lines.push(`| 复杂度 | ${task.storyPoints} pts |`);
-    const blocks = task.blockedBy || [];
-    if (blocks.length > 0) lines.push(`| 阻塞项 | ${blocks.join(', ')} |`);
-    lines.push(`\n## 下一步建议`);
-    if (task.status === 'blocked') lines.push(`- ⚠️ 解除阻塞项后继续`);
-    else if (task.status === 'failed') lines.push(`- 运行 ic t --retry ${task.id} 重试`);
-    else if (task.status === 'completed') lines.push(`- ✅ 可进入下一里程碑`);
-    else lines.push(`- 继续执行当前任务`);
-  } else if (perspective === 'qa') {
-    lines.push(chalk.bold.yellow('\n# QA 视角 — 质量报告\n'));
-    if (task.verifyResult) {
-      lines.push(`| 阶段 | 结果 |`);
-      lines.push(`|------|------|`);
-      for (const s of task.verifyResult.stages) {
-        lines.push(`| ${s.stage} | ${s.status === 'pass' ? '✅' : '❌'} |`);
-      }
-      lines.push(`\n测试: ${task.verifyResult.passedTests}/${task.verifyResult.totalTests} 通过`);
-    } else { lines.push('暂无验证结果'); }
-  } else if (perspective === 'arch') {
-    lines.push(chalk.bold.magenta('\n# 架构师视角 — 模块健康\n'));
-    lines.push(`| 检查项 | 状态 |`);
-    lines.push(`|------|------|`);
-    lines.push(`| 变更文件 | ${task.changes.length} |`);
-    lines.push(`| 推理链 | ${task.reasoning.length} 条 |`);
-    lines.push(`| 风险等级 | ${task.reasoning.some(r => r.riskLevel === 'high') ? '高' : '低'} |`);
-  }
-  return lines.join('\n') + '\n';
 }
 
 // TI1: Map recognized intents to tool strategies (unified — uses classifier output when available)

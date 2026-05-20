@@ -20,6 +20,99 @@ function recordToolUse(name: string, success: boolean): void {
   toolStats.set(name, s);
 }
 
+// ── P0-vis: Tool execution event system ──────────────────────────────────────
+
+export interface ToolExecutionEvent {
+  /** 'start' fires before execution; 'end' fires after */
+  phase: 'start' | 'end';
+  toolName: string;
+  args: Record<string, unknown>;
+  taskId?: string;
+  /** Only present on 'end' events */
+  durationMs?: number;
+  success?: boolean;
+  resultSnippet?: string;
+}
+
+type ToolListener = (event: ToolExecutionEvent) => void;
+const toolListeners: ToolListener[] = [];
+
+/** Subscribe to tool execution lifecycle events (all call sites, globally). */
+export function onToolExecution(listener: ToolListener): void {
+  toolListeners.push(listener);
+}
+
+/** Unsubscribe from tool execution events. */
+export function offToolExecution(listener: ToolListener): void {
+  const i = toolListeners.indexOf(listener);
+  if (i !== -1) toolListeners.splice(i, 1);
+}
+
+function emitToolEvent(event: ToolExecutionEvent): void {
+  for (const l of toolListeners) {
+    try { l(event); } catch { /* listener errors must not crash the calling tool */ }
+  }
+}
+
+function toolArgSummary(toolName: string, args: Record<string, unknown>): string {
+  void toolName;
+  if (args.path) return `· ${String(args.path).slice(0, 60)}`;
+  if (args.url) return `· ${String(args.url).slice(0, 60)}`;
+  if (args.query) return `· "${String(args.query).slice(0, 50)}"`;
+  if (args.pattern) return `· /${String(args.pattern).slice(0, 40)}/`;
+  if (args.command) return `· ${String(args.command).slice(0, 50)}`;
+  if (args.file) return `· ${String(args.file).slice(0, 60)}`;
+  return '';
+}
+
+/**
+ * Format a tool-start event as a single CLI progress line.
+ * Example: "  → read_file · src/utils/fs.ts"
+ */
+export function formatToolStart(event: ToolExecutionEvent): string {
+  return `  → ${event.toolName}${toolArgSummary(event.toolName, event.args)}`;
+}
+
+/**
+ * Format a tool-end event as a completion line.
+ * Example: "  ✓ read_file 142ms — 1234chars"
+ */
+export function formatToolEnd(event: ToolExecutionEvent): string {
+  const icon = event.success !== false ? '✓' : '✗';
+  const dur = event.durationMs != null ? ` ${event.durationMs}ms` : '';
+  const snip = event.resultSnippet ? ` — ${event.resultSnippet}` : '';
+  return `  ${icon} ${event.toolName}${dur}${snip}`;
+}
+
+// ── P2: Tool result source citation ──────────────────────────────────────────
+
+/**
+ * Builds a compact citation tag to append to tool results so the LLM and humans
+ * can trace which tool + source produced a piece of information.
+ *
+ * Format: [来源: <tool> · <source> · <N>chars]
+ */
+export function buildToolCitation(toolName: string, args: Record<string, unknown>, resultLen: number): string {
+  const source = ((): string => {
+    if (args.path) return String(args.path);
+    if (args.url) return String(args.url).slice(0, 80);
+    if (args.query) return `"${String(args.query).slice(0, 50)}"`;
+    if (args.pattern) return `/${String(args.pattern).slice(0, 40)}/`;
+    if (args.file) return String(args.file);
+    if (args.command) return `\`${String(args.command).slice(0, 50)}\``;
+    if (args.action) return String(args.action);
+    return '';
+  })();
+  const parts = [toolName, source, `${resultLen}chars`].filter(Boolean);
+  return `\n[来源: ${parts.join(' · ')}]`;
+}
+
+/** Tools whose results carry a source citation (knowledge-producing reads). */
+const CITE_TOOLS = new Set([
+  'read_file', 'read_docx', 'read_xlsx', 'read_pdf',
+  'search_code', 'web_fetch', 'web_search', 'code_intel',
+]);
+
 // ── P1-3: Adaptive retry tracking ──
 interface ToolAttempt {
   tool: string;
@@ -234,6 +327,142 @@ export function getToolHealth(): { name: string; status: 'available' | 'limited'
   }));
 }
 
+// ── P1: Tool permission matrix & sandbox documentation ───────────────────────
+
+export interface ToolPermission {
+  name: string;
+  displayName: string;
+  canReadFiles: boolean;
+  canWriteFiles: boolean;
+  canRunCommands: boolean;
+  canAccessNetwork: boolean;
+  requiresConfirmation: boolean;
+  riskLevel: 'low' | 'medium' | 'high';
+  sandboxNote: string;
+}
+
+const TOOL_PERMISSIONS: Record<string, ToolPermission> = {
+  read_file: {
+    name: 'read_file', displayName: '文件读取',
+    canReadFiles: true, canWriteFiles: false, canRunCommands: false, canAccessNetwork: false,
+    requiresConfirmation: false, riskLevel: 'low',
+    sandboxNote: '只读访问项目文件；不能写入、执行或访问网络。',
+  },
+  read_docx: {
+    name: 'read_docx', displayName: 'Word 文档读取',
+    canReadFiles: true, canWriteFiles: false, canRunCommands: false, canAccessNetwork: false,
+    requiresConfirmation: false, riskLevel: 'low',
+    sandboxNote: '只读解析 .docx 格式；ZIP 解压在内存中进行，不执行宏。',
+  },
+  read_xlsx: {
+    name: 'read_xlsx', displayName: 'Excel 表格读取',
+    canReadFiles: true, canWriteFiles: false, canRunCommands: false, canAccessNetwork: false,
+    requiresConfirmation: false, riskLevel: 'low',
+    sandboxNote: '只读解析 .xlsx 格式；仅提取单元格文本，不执行公式或宏。',
+  },
+  read_pdf: {
+    name: 'read_pdf', displayName: 'PDF 读取',
+    canReadFiles: true, canWriteFiles: false, canRunCommands: false, canAccessNetwork: false,
+    requiresConfirmation: false, riskLevel: 'low',
+    sandboxNote: '只读解析 PDF；如需第三方库（pdf-parse），须 npm install。',
+  },
+  search_code: {
+    name: 'search_code', displayName: '代码搜索',
+    canReadFiles: true, canWriteFiles: false, canRunCommands: false, canAccessNetwork: false,
+    requiresConfirmation: false, riskLevel: 'low',
+    sandboxNote: '在项目文件内执行正则搜索，只读，无网络访问。',
+  },
+  run_command: {
+    name: 'run_command', displayName: '命令执行',
+    canReadFiles: true, canWriteFiles: true, canRunCommands: true, canAccessNetwork: true,
+    requiresConfirmation: true, riskLevel: 'high',
+    sandboxNote: '在项目目录下运行本地命令；危险命令（rm -rf 等）被 deny-list 拦截；高风险操作需用户确认。',
+  },
+  web_search: {
+    name: 'web_search', displayName: '网络搜索',
+    canReadFiles: false, canWriteFiles: false, canRunCommands: false, canAccessNetwork: true,
+    requiresConfirmation: false, riskLevel: 'medium',
+    sandboxNote: '通过 DuckDuckGo API 发起只读搜索请求；不发送任何本地文件内容。',
+  },
+  web_fetch: {
+    name: 'web_fetch', displayName: '网页抓取',
+    canReadFiles: false, canWriteFiles: false, canRunCommands: false, canAccessNetwork: true,
+    requiresConfirmation: false, riskLevel: 'medium',
+    sandboxNote: '抓取指定 URL 的公开内容；本地文件与项目代码不会被上传。',
+  },
+  code_intel: {
+    name: 'code_intel', displayName: '代码智能',
+    canReadFiles: true, canWriteFiles: false, canRunCommands: false, canAccessNetwork: false,
+    requiresConfirmation: false, riskLevel: 'low',
+    sandboxNote: '静态 AST 解析；只读，无网络，不执行代码。',
+  },
+  git_status: {
+    name: 'git_status', displayName: 'Git 状态',
+    canReadFiles: false, canWriteFiles: false, canRunCommands: false, canAccessNetwork: false,
+    requiresConfirmation: false, riskLevel: 'low',
+    sandboxNote: '只允许只读 git 子命令（status/log/diff/branch）；不能提交、推送或修改仓库。',
+  },
+  list_dir: {
+    name: 'list_dir', displayName: '目录列表',
+    canReadFiles: false, canWriteFiles: false, canRunCommands: false, canAccessNetwork: false,
+    requiresConfirmation: false, riskLevel: 'low',
+    sandboxNote: '只返回文件/目录名列表；不读取文件内容。',
+  },
+  get_project_overview: {
+    name: 'get_project_overview', displayName: '项目画像',
+    canReadFiles: true, canWriteFiles: false, canRunCommands: false, canAccessNetwork: false,
+    requiresConfirmation: false, riskLevel: 'low',
+    sandboxNote: '聚合多个只读源（文件读取、AST 解析、记忆）生成项目概览，无写入或网络操作。',
+  },
+};
+
+/** Return the permission record for every registered tool definition. */
+export function getToolPermissionMatrix(): ToolPermission[] {
+  // Defer TOOL_DEFINITIONS — function is called after the array is initialized
+  return TOOL_DEFINITIONS.map(t => TOOL_PERMISSIONS[t.name] ?? {
+    name: t.name,
+    displayName: t.name,
+    canReadFiles: false, canWriteFiles: false, canRunCommands: false, canAccessNetwork: false,
+    requiresConfirmation: false, riskLevel: 'low' as const,
+    sandboxNote: '无额外权限声明。',
+  });
+}
+
+const RISK_ICON: Record<string, string> = { low: '🟢', medium: '🟡', high: '🔴' };
+
+/**
+ * Render a human-readable permission table for all registered tools.
+ * Suitable for a /tools permissions command or the smoke script.
+ */
+export function renderToolPermissionTable(): string {
+  const perms = getToolPermissionMatrix();
+  const COL = { name: 14, r: 5, w: 5, cmd: 5, net: 5, confirm: 5 };
+  const header = [
+    '工具'.padEnd(COL.name), '读文件'.padEnd(COL.r), '写文件'.padEnd(COL.w),
+    '命令'.padEnd(COL.cmd), '网络'.padEnd(COL.net), '需确认'.padEnd(COL.confirm), '风险',
+  ].join(' │ ');
+  const sep = '─'.repeat(header.length);
+  const rows = perms.map(p => [
+    p.displayName.slice(0, COL.name).padEnd(COL.name),
+    (p.canReadFiles    ? '✓' : '─').padEnd(COL.r),
+    (p.canWriteFiles   ? '✓' : '─').padEnd(COL.w),
+    (p.canRunCommands  ? '✓' : '─').padEnd(COL.cmd),
+    (p.canAccessNetwork ? '✓' : '─').padEnd(COL.net),
+    (p.requiresConfirmation ? '✓' : '─').padEnd(COL.confirm),
+    RISK_ICON[p.riskLevel],
+  ].join(' │ '));
+  return [header, sep, ...rows].join('\n');
+}
+
+/** Return the sandbox note for a specific tool, formatted for display. */
+export function renderToolSandboxNote(toolName: string): string {
+  const p = TOOL_PERMISSIONS[toolName];
+  if (!p) return `${toolName}: 无沙箱说明。`;
+  return `${p.displayName} [${RISK_ICON[p.riskLevel]} ${p.riskLevel}]\n  ${p.sandboxNote}`;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: 'read_file',
@@ -348,6 +577,28 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
       required: ['path'],
     },
   },
+  {
+    name: 'read_docx',
+    description: '读取 Word (.docx) 文档，提取段落文本内容，用于分析文档规格、需求或说明。',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: '.docx 文件路径（相对于项目根目录）' },
+      },
+      required: ['path'],
+    },
+  },
+  {
+    name: 'read_xlsx',
+    description: '读取 Excel (.xlsx) 表格，以 Tab 分隔文本返回各行数据，用于分析数据表、配置表或报告。',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: '.xlsx 文件路径（相对于项目根目录）' },
+      },
+      required: ['path'],
+    },
+  },
 ];
 
 export function buildToolDefinitions(): ToolDefinition[] {
@@ -359,21 +610,40 @@ export function buildToolDefinitions(): ToolDefinition[] {
 }
 
 export async function executeToolCall(name: string, args: Record<string, unknown>, rootPath: string, taskId?: string): Promise<string> {
+  const startMs = Date.now();
+  emitToolEvent({ phase: 'start', toolName: name, args, taskId });
+
   try {
-    const result = await _executeTool(name, args, rootPath);
-    const success = !result.startsWith('错误') && !result.startsWith('命令执行失败') && !result.startsWith('搜索错误');
+    const raw = await _executeTool(name, args, rootPath);
+    const success = !raw.startsWith('错误') && !raw.startsWith('命令执行失败') && !raw.startsWith('搜索错误');
     recordToolUse(name, success);
 
     // P1-3: Track attempt for adaptive retry
     if (taskId) {
-      const summary = success ? (result.includes('找到') ? 'found' : result.includes('命令执行成功') ? 'ok' : 'ok') : result.slice(0, 50);
+      const summary = success
+        ? (raw.includes('找到') ? 'found' : raw.includes('命令执行成功') ? 'ok' : 'ok')
+        : raw.slice(0, 50);
       recordToolAttempt(taskId, name, args, summary);
     }
 
+    const durationMs = Date.now() - startMs;
+    emitToolEvent({
+      phase: 'end', toolName: name, args, taskId,
+      durationMs, success,
+      resultSnippet: `${raw.length}chars`,
+    });
+
+    // P2: Append citation tag to knowledge-producing results
+    const result = (success && CITE_TOOLS.has(name))
+      ? raw + buildToolCitation(name, args, raw.length)
+      : raw;
+
     return result;
   } catch (e) {
+    const durationMs = Date.now() - startMs;
     recordToolUse(name, false);
     if (taskId) recordToolAttempt(taskId, name, args, 'error: ' + (e as Error).message.slice(0, 80));
+    emitToolEvent({ phase: 'end', toolName: name, args, taskId, durationMs, success: false });
     return `工具执行异常: ${(e as Error).message}`;
   }
 }
@@ -510,14 +780,24 @@ async function _executeTool(name: string, args: Record<string, unknown>, rootPat
         const symbol = args.symbol as string | undefined;
         if (symbol) {
           const match = parsed.exports.find(e => e.name === symbol);
-          if (match) return `${match.kind} ${match.name}: ${match.signature}`;
-          return `未找到符号：${symbol}`;
+          if (!match) return `未找到符号：${symbol}`;
+          // Return symbol with callers and data flow if available
+          const parts = [`${match.kind} ${match.name}: ${match.signature}`];
+          const callers = parsed.callGraph.filter(e => e.callee === symbol);
+          if (callers.length > 0) parts.push(`调用者 (${callers.length}): ${callers.map(c => c.caller).join(', ')}`);
+          if (parsed.dataFlow?.length) {
+            const symbolFlows = parsed.dataFlow.filter(df => df.def.name === symbol);
+            if (symbolFlows.length > 0) parts.push(`数据流: ${symbolFlows[0].uses.length} 次使用`);
+          }
+          return parts.join('\n');
         }
 
         const lines: string[] = [];
         if (parsed.exports.length > 0) lines.push(`导出 (${parsed.exports.length}): ` + parsed.exports.map(e => `${e.kind} ${e.name}`).join(', '));
         if (parsed.functions.length > 0) lines.push(`函数 (${parsed.functions.length}): ` + parsed.functions.map(f => f.name).join(', '));
         if (parsed.classes.length > 0) lines.push(`类 (${parsed.classes.length}): ` + parsed.classes.map(c => c.name).join(', '));
+        if (parsed.callGraph.length > 0) lines.push(`调用关系 (${parsed.callGraph.length}): ` + parsed.callGraph.slice(0, 8).map(e => `${e.caller}→${e.callee}`).join(', '));
+        if (parsed.dataFlow?.length) lines.push(`数据流边 (${parsed.dataFlow.length})`);
         return lines.join('\n') || '无符号信息';
       } catch { return '代码智能暂不可用'; }
     }
@@ -599,6 +879,40 @@ async function _executeTool(name: string, args: Record<string, unknown>, rootPat
           return `PDF 读取不可用: pdf-parse 未安装。`;
         }
         return `PDF 读取失败: ${msg}`;
+      }
+    }
+
+    case 'read_docx': {
+      const docPath = (args.path as string) || '';
+      if (!docPath) return '错误：缺少 path 参数';
+      const fullDocPath = resolvePath(docPath, rootPath);
+      try {
+        const { readDocxFile } = await import('./doc-reader.js');
+        const doc = await readDocxFile(fullDocPath);
+        const titleTag = doc.metadata.title ? ` · ${doc.metadata.title}` : '';
+        const header = `[DOCX${titleTag}]\n\n`;
+        return header + doc.text;
+      } catch (err) {
+        const msg = (err as Error).message;
+        if (msg.includes('ENOENT')) return `错误：文件不存在 ${docPath}`;
+        return `DOCX 读取失败: ${msg}`;
+      }
+    }
+
+    case 'read_xlsx': {
+      const xlsxPath = (args.path as string) || '';
+      if (!xlsxPath) return '错误：缺少 path 参数';
+      const fullXlsxPath = resolvePath(xlsxPath, rootPath);
+      try {
+        const { readXlsxFile } = await import('./doc-reader.js');
+        const doc = await readXlsxFile(fullXlsxPath);
+        const rowCount = doc.text ? doc.text.split('\n').length : 0;
+        const header = `[XLSX · ${rowCount} 行]\n\n`;
+        return header + doc.text;
+      } catch (err) {
+        const msg = (err as Error).message;
+        if (msg.includes('ENOENT')) return `错误：文件不存在 ${xlsxPath}`;
+        return `XLSX 读取失败: ${msg}`;
       }
     }
 
