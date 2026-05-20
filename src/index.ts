@@ -2566,54 +2566,34 @@ program.command("code")
         return;
       }
 
-      // C11: Incremental code review — 4-dimension AI analysis on changed files
+      // T4b: Structured code review — 4-dimension scoring + issues list
       if (subcommand === "review" && args.length > 0) {
         const targetPath = path.resolve(rootPath, args[0]);
         const { fileExists } = await import("./utils/fs.js");
         if (!(await fileExists(targetPath))) { fail("文件不存在: " + args[0]); return; }
         const content = await readFile(targetPath);
         progress(`AI 代码审查: ${args[0]} (安全/风格/bug/性能)`);
-        const resp = await provider.chat({
-          systemPrompt: [
-            "你是资深代码审查专家。按以下 4 个维度逐行审查，输出 Markdown 报告。",
-            "1. 安全检查: 密钥泄露、SQL注入、XSS、路径遍历、命令注入",
-            "2. 风格一致: 命名、缩进、引号、分号是否与项目一致",
-            "3. Bug 风险: 空指针、未处理异常、竞态条件、逻辑错误",
-            "4. 性能问题: N+1查询、不必要循环、内存泄漏、阻塞操作",
-            "每个问题标注: 维度 | 行号 | 严重度(high/medium/low) | 建议修复",
-            "最后给出总评分 (1-10) 和一句话总结。",
-          ].join("\n"),
-          task: `审查文件: ${args[0]}\n\n\`\`\`\n${content.slice(0, 8000)}\n\`\`\``,
-          context: { projectMeta: "", relevantCode: [], relevantMemory: "", totalTokens: 0, budgetUsed: 0 }, history: "",
-        });
-        console.log(`\n  ${chalk.bold.cyan("◆ 代码审查: " + args[0])}\n`);
-        console.log(resp.content || "审查完成（无问题）");
+        // Load style fingerprint for context-aware review
+        let styleFp: import('./types.js').StyleFingerprint | undefined;
+        try { const idx = await (await import('./core/scanner.js')).loadProjectIndex(rootPath); styleFp = idx?.styleFingerprint; } catch { /* best-effort */ }
+        const { reviewCode, formatCodeReview } = await import('./core/code-writer.js');
+        const review = await reviewCode(args[0], content, provider, styleFp);
+        section('代码审查: ' + args[0]);
+        console.log(formatCodeReview(review));
         console.log();
         return;
       }
 
       if (subcommand === "review" && args.length === 0) {
-        // Review git diff instead
         const { isGitRepo, getDiff } = await import("./utils/git.js");
         if (!isGitRepo(rootPath)) { fail("非 Git 仓库，请指定文件: ic code review <文件>"); return; }
         const diff = getDiff(rootPath, false);
         if (!diff.trim()) { info("工作区无变更"); return; }
         progress("AI 增量代码审查 (git diff)...");
-        const resp = await provider.chat({
-          systemPrompt: [
-            "你是资深代码审查专家。对以下 git diff 进行审查，输出 Markdown 报告。",
-            "1. 安全检查: 密钥泄露、SQL注入、XSS、路径遍历、命令注入",
-            "2. 风格一致: 命名、缩进、引号、分号",
-            "3. Bug 风险: 空指针、未处理异常、逻辑错误",
-            "4. 性能问题: N+1查询、不必要循环、内存泄漏",
-            "每个问题标注: 维度 | 文件:行号 | 严重度 | 建议",
-            "最后给出总评分和一句话总结。",
-          ].join("\n"),
-          task: `审查以下 git diff:\n\n\`\`\`diff\n${diff.slice(0, 6000)}\n\`\`\``,
-          context: { projectMeta: "", relevantCode: [], relevantMemory: "", totalTokens: 0, budgetUsed: 0 }, history: "",
-        });
-        console.log(`\n  ${chalk.bold.cyan("◆ 增量代码审查")}\n`);
-        console.log(resp.content || "审查完成（无问题）");
+        const { reviewDiff, formatCodeReview } = await import('./core/code-writer.js');
+        const review = await reviewDiff(diff, provider);
+        section('增量代码审查');
+        console.log(formatCodeReview(review));
         console.log();
         return;
       }

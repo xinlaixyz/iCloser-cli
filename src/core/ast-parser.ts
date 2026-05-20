@@ -778,6 +778,7 @@ export function parseGoSourceText(source: string): ParsedFile {
       classes: [],
       interfaces: extractGoInterfaces(tree.rootNode, source),
       callGraph: extractGoCallGraph(tree.rootNode, source),
+      dataFlow: extractGoDataFlow(tree.rootNode, source),
     };
   } catch {
     return parseGoRegex(source);
@@ -947,6 +948,32 @@ function extractGoCallGraph(node: TreeSitterSyntaxNode, source: string): AstCall
   return edges;
 }
 
+// T11: Go variable definition → usage data flow
+function extractGoDataFlow(node: TreeSitterSyntaxNode, source: string): import('../types.js').DataFlowEdge[] | undefined {
+  const edges: import('../types.js').DataFlowEdge[] = [];
+  function walk(n: TreeSitterSyntaxNode, currFn?: string) {
+    if (n.type === 'function_declaration' || n.type === 'method_declaration') {
+      const fnName = goNodeName(n) || '<anonymous>';
+      for (let i = 0; i < n.childCount; i++) walk(n.child(i)!, fnName);
+      return;
+    }
+    if (n.type === 'short_var_declaration') {
+      for (let i = 0; i < n.childCount; i++) {
+        const c = n.child(i)!;
+        if (c.type === 'identifier' && !edges.some(e => e.def.name === c.text)) {
+          edges.push({ def: { name: c.text, kind: 'const', file: '', line: c.startPosition.row + 1, functionName: currFn }, uses: [] });
+        }
+      }
+    }
+    if (n.type === 'identifier') {
+      for (const e of edges) { if (e.def.name === n.text) { e.uses.push({ name: n.text, file: '', line: n.startPosition.row + 1, usageKind: 'read' }); break; } }
+    }
+    for (let i = 0; i < n.childCount; i++) walk(n.child(i)!, currFn);
+  }
+  walk(node);
+  return edges.length > 0 ? edges : undefined;
+}
+
 function isGoExported(name: string): boolean {
   return name.length > 0 && name[0] === name[0].toUpperCase() && name[0] !== '_';
 }
@@ -1029,6 +1056,7 @@ export function parsePythonSourceText(source: string): ParsedFile {
       classes: extractPythonClasses(tree.rootNode, source),
       interfaces: [],
       callGraph: [],
+      dataFlow: extractPythonDataFlow(tree.rootNode, source),
     };
   } catch {
     return parsePythonRegex(source);
@@ -1434,8 +1462,25 @@ function pyNodeName(node: TreeSitterSyntaxNode): string | null {
 
 function pySignature(node: TreeSitterSyntaxNode, source: string): string {
   const text = source.substring(node.startIndex, node.endIndex).split('\n')[0].trim();
-  // Remove leading 'def ' or 'class ' for brevity? No, keep it.
   return text.length > 100 ? text.substring(0, 100) + '…' : text;
+}
+
+// T11: Python variable definition → usage data flow
+function extractPythonDataFlow(node: TreeSitterSyntaxNode, source: string): import('../types.js').DataFlowEdge[] | undefined {
+  const edges: import('../types.js').DataFlowEdge[] = [];
+  function walk(n: TreeSitterSyntaxNode, currFn?: string) {
+    if (n.type === 'function_definition') { const fnName = pyNodeName(n) || '<anonymous>'; for (const c of n.namedChildren) walk(c, fnName); return; }
+    if (n.type === 'assignment') {
+      const left = n.childForFieldName?.('left') || n.namedChildren[0];
+      if (left && left.type === 'identifier' && !edges.some(e => e.def.name === left.text)) {
+        edges.push({ def: { name: left.text, kind: 'const', file: '', line: left.startPosition.row + 1, functionName: currFn }, uses: [] });
+      }
+    }
+    if (n.type === 'identifier') { for (const e of edges) { if (e.def.name === n.text) { e.uses.push({ name: n.text, file: '', line: n.startPosition.row + 1, usageKind: 'read' }); break; } } }
+    for (const c of n.namedChildren) walk(c, currFn);
+  }
+  walk(node);
+  return edges.length > 0 ? edges : undefined;
 }
 
 function pyExtractParams(node: TreeSitterSyntaxNode, source: string): string[] {
@@ -2260,6 +2305,9 @@ const SWIFT_EXTS = new Set(['.swift']);
 const OBJC_EXTS = new Set(['.m', '.mm', '.h']);
 const SQL_EXTS = new Set(['.sql', '.mysql', '.psql']);
 const TS_EXTS = new Set(['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs']);
+const C_EXTS = new Set(['.c']);
+const CPP_EXTS = new Set(['.cpp', '.cc', '.cxx', '.c++', '.hpp', '.hh', '.hxx']);
+const RUST_EXTS = new Set(['.rs']);
 
 type TreeSitterSyntaxNode = import('tree-sitter').SyntaxNode;
 
@@ -2273,10 +2321,13 @@ export function parseSourceFile(filePath: string): Promise<ParsedFile> {
   if (SWIFT_EXTS.has(ext)) return toPromise(parseSwiftSourceFile(filePath));
   if (OBJC_EXTS.has(ext)) return toPromise(parseObjcSourceFile(filePath));
   if (SQL_EXTS.has(ext)) return toPromise(parseSqlSourceFile(filePath));
+  if (C_EXTS.has(ext)) return toPromise(parseCSourceFile(filePath));
+  if (CPP_EXTS.has(ext)) return toPromise(parseCppSourceFile(filePath));
+  if (RUST_EXTS.has(ext)) return toPromise(parseRustSourceFile(filePath));
   return parseTsSourceFile(filePath);
 }
 
-export function parseSourceText(source: string, options?: { language?: 'typescript' | 'go' | 'python' | 'java' | 'kotlin' | 'swift' | 'objc' | 'sql'; isTsx?: boolean }): ParsedFile {
+export function parseSourceText(source: string, options?: { language?: 'typescript' | 'go' | 'python' | 'java' | 'kotlin' | 'swift' | 'objc' | 'sql' | 'c' | 'cpp' | 'rust'; isTsx?: boolean }): ParsedFile {
   const lang = options?.language;
   if (lang === 'go') return parseGoSourceText(source);
   if (lang === 'python') return parsePythonSourceText(source);
@@ -2285,6 +2336,9 @@ export function parseSourceText(source: string, options?: { language?: 'typescri
   if (lang === 'swift') return parseSwiftRegex(source);
   if (lang === 'objc') return parseObjcRegex(source);
   if (lang === 'sql') return parseSqlSourceText(source);
+  if (lang === 'c') return parseCRegex(source);
+  if (lang === 'cpp') return parseCppRegex(source);
+  if (lang === 'rust') return parseRustRegex(source);
   return parseTsSourceText(source, options?.isTsx);
 }
 
@@ -2461,4 +2515,134 @@ export function analyzeImpact(
 }
 
 function toPromise<T>(value: T | Promise<T>): Promise<T> { return Promise.resolve(value); }
-// iCloser mock edit: 测试Agent桥接
+
+// ── T11: C / C++ / Rust regex fallback parsers (tree-sitter attempted, grammar ABI may vary) ──
+
+let cLanguageAvailable = true; let cppLanguageAvailable = true; let rustLanguageAvailable = true;
+let C: any; let Cpp: any; let Rust: any;
+try { C = require('tree-sitter-c').language || require('tree-sitter-c'); } catch { cLanguageAvailable = false; }
+try { Cpp = require('tree-sitter-cpp').language || require('tree-sitter-cpp'); } catch { cppLanguageAvailable = false; }
+try { Rust = require('tree-sitter-rust').language || require('tree-sitter-rust'); } catch { rustLanguageAvailable = false; }
+
+function parseCSourceFile(filePath: string): ParsedFile {
+  try {
+    if (!cLanguageAvailable || !C) return parseCRegex('');
+    const parser = new Parser(); parser.setLanguage(C as any);
+    const content = require('fs').readFileSync(filePath, 'utf-8') as string;
+    const tree = parser.parse(content);
+    return extractGenericAst(tree.rootNode, filePath, content, ['function_definition', 'declaration'], 'c');
+  } catch { return parseCRegex(''); }
+}
+
+function parseCppSourceFile(filePath: string): ParsedFile {
+  try {
+    if (!cppLanguageAvailable || !Cpp) return parseCppRegex('');
+    const parser = new Parser(); parser.setLanguage(Cpp as any);
+    const content = require('fs').readFileSync(filePath, 'utf-8') as string;
+    const tree = parser.parse(content);
+    return extractGenericAst(tree.rootNode, filePath, content, ['function_definition', 'class_specifier', 'declaration'], 'cpp');
+  } catch { return parseCppRegex(''); }
+}
+
+function parseRustSourceFile(filePath: string): ParsedFile {
+  try {
+    if (!rustLanguageAvailable || !Rust) return parseRustRegex('');
+    const parser = new Parser(); parser.setLanguage(Rust as any);
+    const content = require('fs').readFileSync(filePath, 'utf-8') as string;
+    const tree = parser.parse(content);
+    return extractGenericAst(tree.rootNode, filePath, content, ['function_item', 'struct_item', 'impl_item', 'trait_item', 'mod_item'], 'rust');
+  } catch { return parseRustRegex(''); }
+}
+
+// Generic tree-sitter AST extraction for C-family / Rust
+function extractGenericAst(root: any, filePath: string, content: string, functionNodeTypes: string[], lang: string): ParsedFile {
+  const fns: AstFunction[] = []; const classes: AstClass[] = []; const exports: AstExport[] = [];
+  const callGraph: AstCallEdge[] = []; const dataFlow: DataFlowEdge[] = [];
+  const lines = content.split('\n');
+  const getLine = (node: any) => node.startPosition?.row + 1 || 1;
+
+  function walk(node: any) {
+    if (!node?.type) return;
+    const type = node.type as string;
+
+    if (functionNodeTypes.includes(type) && node.nameNode) {
+      const name = content.slice(node.nameNode.startIndex, node.nameNode.endIndex);
+      const line = getLine(node);
+      const params = node.descendantsOfType?.('parameter') || [];
+      const sig = `${name}(${params.map((p: any) => content.slice(p.startIndex, p.endIndex)).join(', ')})`;
+      fns.push({ name, params: [], returnType: '', isAsync: false, isExported: true, isDefault: false, line });
+      exports.push({ name, kind: 'function', signature: sig, isDefault: false, line });
+    }
+
+    if ((type === 'class_specifier' || type === 'struct_item' || type === 'impl_item') && node.nameNode) {
+      const name = content.slice(node.nameNode.startIndex, node.nameNode.endIndex);
+      classes.push({ name, extends: '', implements: [], methods: [], properties: [], isExported: true, isDefault: false, line: getLine(node) });
+      exports.push({ name, kind: 'class', signature: `class ${name}`, isDefault: false, line: getLine(node) });
+    }
+
+    if (type === 'call_expression' && node.functionNode) {
+      const caller = content.slice(node.functionNode.startIndex, node.functionNode.endIndex);
+      callGraph.push({ caller: `(unknown)`, callee: caller, callerFile: filePath, callerLine: getLine(node) });
+    }
+
+    // Extract variable def/use for data flow
+    if (type === 'let_declaration' || type === 'const_declaration' || type === 'variable_declaration') {
+      const nameNode = node.nameNode || node.descendantsOfType?.('identifier')?.[0];
+      if (nameNode) {
+        const name = content.slice(nameNode.startIndex, nameNode.endIndex);
+        dataFlow.push({ def: { name, kind: 'const', file: filePath, line: getLine(node) }, uses: [] });
+      }
+    }
+
+    if (node.children) for (const child of node.children) walk(child);
+  }
+  walk(root);
+
+  return { filePath, exports, imports: [], functions: fns, classes, interfaces: [], callGraph, dataFlow: dataFlow.length > 0 ? dataFlow : undefined };
+}
+
+// ── T11: C / C++ / Rust regex fallback parsers ──
+
+function parseCRegex(source: string): ParsedFile { return parseClikeRegex(source, 'c'); }
+function parseCppRegex(source: string): ParsedFile { return parseClikeRegex(source, 'cpp'); }
+function parseRustRegex(source: string): ParsedFile { return parseRustRegexInner(source); }
+
+function parseClikeRegex(source: string, lang: string): ParsedFile {
+  const fns: AstFunction[] = []; const exports: AstExport[] = [];
+  const fnPattern = /(?:^|\n)\s*([\w\s*]+)\s+(\w+)\s*\(([^)]*)\)\s*\{?/g;
+  let m: RegExpExecArray | null;
+  while ((m = fnPattern.exec(source)) !== null) {
+    const name = m[2]; if (/^(if|for|while|switch|return|sizeof)$/.test(name)) continue;
+    fns.push({ name, params: m[3].split(',').map(p => p.trim()).filter(Boolean), returnType: m[1].trim(), isAsync: false, isExported: true, isDefault: false, line: (source.substring(0, m.index).match(/\n/g) || []).length + 1 });
+    exports.push({ name, kind: 'function', signature: `${m[1]} ${name}(${m[3]})`, isDefault: false, line: fns[fns.length - 1].line });
+  }
+  return { filePath: '', exports, imports: [], functions: fns, classes: [], interfaces: [], callGraph: [], dataFlow: extractVarDefs(source, fns.map(f => f.name)) };
+}
+
+function parseRustRegexInner(source: string): ParsedFile {
+  const fns: AstFunction[] = []; const exports: AstExport[] = []; const structs: AstClass[] = [];
+  const fnRe = /(?:^|\n)\s*(?:pub\s+)?fn\s+(\w+)\s*[<(]([^)]*)[>)]\s*(?:->\s*([^{]+))?/g;
+  let m: RegExpExecArray | null;
+  while ((m = fnRe.exec(source)) !== null) {
+    fns.push({ name: m[1], params: m[2].split(',').map(p => p.trim()).filter(Boolean), returnType: (m[3] || '').trim(), isAsync: source.includes('async fn ' + m[1]), isExported: source.includes('pub fn'), isDefault: false, line: (source.substring(0, m.index).match(/\n/g) || []).length + 1 });
+    exports.push({ name: m[1], kind: 'function', signature: `fn ${m[1]}(${m[2]})`, isDefault: false, line: fns[fns.length - 1].line });
+  }
+  const structRe = /(?:^|\n)\s*(?:pub\s+)?struct\s+(\w+)/g;
+  while ((m = structRe.exec(source)) !== null) {
+    structs.push({ name: m[1], extends: '', implements: [], methods: [], properties: [], isExported: source.includes('pub struct'), isDefault: false, line: (source.substring(0, m.index).match(/\n/g) || []).length + 1 });
+  }
+  return { filePath: '', exports, imports: [], functions: fns, classes: structs, interfaces: [], callGraph: [], dataFlow: extractVarDefs(source, fns.map(f => f.name)) };
+}
+
+// ── T11: Basic data flow for Go and Python (extract variable defs + function calls) ──
+
+function extractVarDefs(source: string, fnNames: string[]): DataFlowEdge[] | undefined {
+  const edges: DataFlowEdge[] = [];
+  const defRe = /(?:^|\n)\s*(?:let|const|var)\s+(\w+)\s*[:=]\s*(.+)/g;
+  let m: RegExpExecArray | null;
+  while ((m = defRe.exec(source)) !== null) {
+    const line = (source.substring(0, m.index).match(/\n/g) || []).length + 1;
+    edges.push({ def: { name: m[1], kind: 'const', file: '', line }, uses: [] });
+  }
+  return edges.length > 0 ? edges : undefined;
+}

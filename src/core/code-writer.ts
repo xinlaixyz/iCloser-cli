@@ -280,6 +280,139 @@ export async function generateWithVerifyLoop(
   };
 }
 
+// ── T4b: Structured code review — 4-dimension scoring + issues list ──
+
+export interface CodeReviewIssue {
+  dimension: 'security' | 'style' | 'bugs' | 'performance';
+  line?: number;
+  severity: 'high' | 'medium' | 'low';
+  description: string;
+  suggestion: string;
+}
+
+export interface CodeReview {
+  summary: string;
+  overallScore: number;  // 1-10
+  dimensions: {
+    security: { score: number; issues: number };
+    style: { score: number; issues: number };
+    bugs: { score: number; issues: number };
+    performance: { score: number; issues: number };
+  };
+  issues: CodeReviewIssue[];
+  rawReport: string;  // full AI output for fallback display
+}
+
+export async function reviewCode(
+  filePath: string, content: string, provider: AIProviderAdapter,
+  styleFingerprint?: StyleFingerprint,
+): Promise<CodeReview> {
+  const styleHints = styleFingerprint
+    ? `项目风格: 命名${styleFingerprint.namingConvention}, 缩进${styleFingerprint.indentStyle}(${styleFingerprint.indentSize}), 引号${styleFingerprint.quoteStyle}, 分号${styleFingerprint.semicolons ? '有' : '无'}`
+    : '';
+
+  const resp = await provider.chat({
+    systemPrompt: [
+      '你是资深代码审查专家。按4个维度审查代码，输出结构化JSON报告。',
+      '1. 安全检查: 密钥泄露、SQL注入、XSS、路径遍历、命令注入',
+      '2. 风格一致: 命名、缩进、引号、分号是否与项目一致',
+      '3. Bug 风险: 空指针、未处理异常、竞态条件、逻辑错误',
+      '4. 性能问题: N+1查询、不必要循环、内存泄漏、阻塞操作',
+      '输出格式: {"summary":"一句话总结","overallScore":7,"dimensions":{"security":{"score":8,"issues":0},"style":{"score":7,"issues":1},"bugs":{"score":6,"issues":2},"performance":{"score":8,"issues":0}},"issues":[{"dimension":"bugs","line":42,"severity":"high","description":"...","suggestion":"..."}]}',
+      '如果无问题返回空issues数组。score为1-10。只输出JSON，不要其他文字。',
+      styleHints,
+    ].filter(Boolean).join('\n'),
+    task: `审查文件: ${filePath}\n\n\`\`\`\n${content.slice(0, 8000)}\n\`\`\``,
+    context: { projectMeta: '', relevantCode: [], relevantMemory: '', totalTokens: 0, budgetUsed: 0 },
+    history: '',
+  });
+
+  return parseCodeReviewResponse(resp.content || '', filePath, content);
+}
+
+export async function reviewDiff(
+  diff: string, provider: AIProviderAdapter,
+): Promise<CodeReview> {
+  const resp = await provider.chat({
+    systemPrompt: [
+      '你是资深代码审查专家。对git diff进行审查，输出结构化JSON报告。',
+      '维度: security/style/bugs/performance',
+      '输出: {"summary":"...","overallScore":7,"dimensions":{"security":{"score":8,"issues":0},...},"issues":[{"dimension":"bugs","line":42,"severity":"high","description":"...","suggestion":"..."}]}',
+      '只输出JSON。',
+    ].join('\n'),
+    task: `审查git diff:\n\n\`\`\`diff\n${diff.slice(0, 6000)}\n\`\`\``,
+    context: { projectMeta: '', relevantCode: [], relevantMemory: '', totalTokens: 0, budgetUsed: 0 },
+    history: '',
+  });
+
+  return parseCodeReviewResponse(resp.content || '', '(diff)', diff);
+}
+
+function parseCodeReviewResponse(raw: string, filePath: string, content: string): CodeReview {
+  const defaultReview: CodeReview = {
+    summary: '审查完成',
+    overallScore: 7,
+    dimensions: { security: { score: 7, issues: 0 }, style: { score: 7, issues: 0 }, bugs: { score: 7, issues: 0 }, performance: { score: 7, issues: 0 } },
+    issues: [],
+    rawReport: raw,
+  };
+
+  try {
+    const json = JSON.parse((raw.match(/\{[\s\S]*\}/)?.[0] || '{}'));
+    if (!json.overallScore && !json.dimensions && !json.issues) return defaultReview;
+
+    return {
+      summary: json.summary || defaultReview.summary,
+      overallScore: typeof json.overallScore === 'number' ? Math.max(1, Math.min(10, json.overallScore)) : defaultReview.overallScore,
+      dimensions: {
+        security: { score: json.dimensions?.security?.score ?? 7, issues: json.dimensions?.security?.issues ?? 0 },
+        style: { score: json.dimensions?.style?.score ?? 7, issues: json.dimensions?.style?.issues ?? 0 },
+        bugs: { score: json.dimensions?.bugs?.score ?? 7, issues: json.dimensions?.bugs?.issues ?? 0 },
+        performance: { score: json.dimensions?.performance?.score ?? 7, issues: json.dimensions?.performance?.issues ?? 0 },
+      },
+      issues: Array.isArray(json.issues) ? json.issues.map((i: any) => ({
+        dimension: ['security','style','bugs','performance'].includes(i.dimension) ? i.dimension : 'bugs',
+        line: typeof i.line === 'number' ? i.line : undefined,
+        severity: ['high','medium','low'].includes(i.severity) ? i.severity : 'medium',
+        description: i.description || '',
+        suggestion: i.suggestion || '',
+      })) : [],
+      rawReport: raw,
+    };
+  } catch { return defaultReview; }
+}
+
+export function formatCodeReview(review: CodeReview): string {
+  const dims = review.dimensions;
+  const scoreColor = (s: number) => s >= 8 ? '🟢' : s >= 5 ? '🟡' : '🔴';
+  const sevIcon = (s: string) => s === 'high' ? '🔴' : s === 'medium' ? '🟡' : '🟢';
+
+  const lines = [
+    `总体评分: ${review.overallScore}/10  ${review.summary}`,
+    '',
+    `| 维度 | 评分 | 问题数 |`,
+    `|------|------|--------|`,
+    `| 安全 | ${scoreColor(dims.security.score)} ${dims.security.score}/10 | ${dims.security.issues} |`,
+    `| 风格 | ${scoreColor(dims.style.score)} ${dims.style.score}/10 | ${dims.style.issues} |`,
+    `| Bug  | ${scoreColor(dims.bugs.score)} ${dims.bugs.score}/10 | ${dims.bugs.issues} |`,
+    `| 性能 | ${scoreColor(dims.performance.score)} ${dims.performance.score}/10 | ${dims.performance.issues} |`,
+  ];
+
+  if (review.issues.length > 0) {
+    lines.push('', '## 问题清单', '');
+    const bySeverity = [...review.issues].sort((a, b) =>
+      ({ high: 0, medium: 1, low: 2 })[a.severity] - ({ high: 0, medium: 1, low: 2 })[b.severity]
+    );
+    for (const issue of bySeverity) {
+      const loc = issue.line ? `L${issue.line}` : '';
+      lines.push(`${sevIcon(issue.severity)} **[${issue.dimension}]** ${loc} ${issue.description}`);
+      if (issue.suggestion) lines.push(`   → ${issue.suggestion}`);
+    }
+  }
+
+  return lines.join('\n');
+}
+
 // C9: Generate scaffolding for common patterns, style-aware
 export function generateScaffold(
   type: 'crud' | 'middleware' | 'route' | 'component',
