@@ -20,6 +20,9 @@ export interface TSDataFlowUse {
   usageKind: 'read' | 'write' | 'call_arg' | 'return' | 'assign_to';
   type: string;
   context: string;
+  /** Resolved callee info (set by TS type checker during Pass 2, avoids regex in Pass 3) */
+  calleeName?: string;
+  calleeFile?: string;
 }
 
 export interface TSDataFlowEdge {
@@ -248,6 +251,28 @@ function collectUsesAndBuildEdges(
               }
               const edge = edges.get(key)!;
               if (!edge.uses.some(u => u.line === useLine)) {
+                // T6: Resolve callee via TS type checker for call_arg usages (avoids regex in Pass 3)
+                let calleeName: string | undefined;
+                let calleeFile: string | undefined;
+                if (usageKind === 'call_arg') {
+                  try {
+                    let callNode: ts.Node | undefined = node.parent;
+                    while (callNode && !ts.isCallExpression(callNode)) {
+                      callNode = callNode.parent;
+                    }
+                    if (callNode && ts.isCallExpression(callNode)) {
+                      const calleeSymbol = checker.getSymbolAtLocation(callNode.expression);
+                      if (calleeSymbol) {
+                        calleeName = calleeSymbol.getName();
+                        const calleeDecl = calleeSymbol.valueDeclaration || calleeSymbol.declarations?.[0];
+                        if (calleeDecl) {
+                          calleeFile = calleeDecl.getSourceFile().fileName;
+                        }
+                      }
+                    }
+                  } catch { /* callee resolution best-effort */ }
+                }
+
                 edge.uses.push({
                   name: symbolName,
                   file: fileName,
@@ -255,6 +280,8 @@ function collectUsesAndBuildEdges(
                   usageKind,
                   type: useType,
                   context: sourceFile.text.slice(Math.max(0, node.getStart() - 20), Math.min(sourceFile.text.length, node.getEnd() + 20)),
+                  calleeName,
+                  calleeFile,
                 });
               }
               break;
@@ -285,15 +312,21 @@ function buildCrossFileFlow(
     const sinks: TSCrossFileFlow['sinks'] = [];
 
     for (const use of callArgUses) {
-      // Extract callee name from call context (supports obj.method, ns.fn, plain fn)
-      const calleeMatch = use.context.match(/([\w.]+)\s*\(/);
-      if (!calleeMatch) continue;
-      // Use last segment for name matching (e.g. "user.service.update" → "update")
-      const calleeName = calleeMatch[1].split('.').pop()!;
+      // T6: Use TS type checker resolved callee when available; fall back to regex
+      let calleeName = use.calleeName;
+      if (!calleeName) {
+        const calleeMatch = use.context.match(/([\w.]+)\s*\(/);
+        if (!calleeMatch) continue;
+        calleeName = calleeMatch[1].split('.').pop()!;
+      }
+      const calleeFile = use.calleeFile; // exact file from type checker, if available
 
-      // Find callee definition across files
+      // Find callee definition across files (prefer exact file match from type checker)
       for (const [key, def] of defMap) {
-        if (def.name === calleeName && def.file !== edge.def.file) {
+        const nameMatches = def.name === calleeName;
+        const crossFile = def.file !== edge.def.file;
+        const exactFile = calleeFile ? def.file === calleeFile : true; // if type checker gave file, require match
+        if (nameMatches && crossFile && exactFile) {
           sinks.push({
             file: def.file,
             line: def.line,
