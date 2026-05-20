@@ -18,7 +18,14 @@ export async function loadProjectMemory(rootPath: string): Promise<ProjectMemory
   const memoryPath = path.join(rootPath, '.icloser', 'memory.json');
   if (await fileExists(memoryPath)) {
     try {
-      return normalizeProjectMemory(await readJson(memoryPath) as unknown as ProjectMemory, rootPath);
+      const memory = normalizeProjectMemory(await readJson(memoryPath) as unknown as ProjectMemory, rootPath);
+      // Purge expired TTL entries on every load
+      const removed = cleanupStaleMemory(memory);
+      if (removed > 0 && memory.memoryCandidates) {
+        // Save back the cleaned memory so disk stays in sync
+        saveProjectMemory(rootPath, memory).catch(() => {});
+      }
+      return memory;
     } catch { /* corrupted — start fresh */ }
   }
   return createEmptyProjectMemory(rootPath);
@@ -670,20 +677,27 @@ export async function compressProjectMemory(memory: ProjectMemory): Promise<Proj
 // Global Memory (Cross-Project)
 // ============================================================
 function getGlobalMemoryPath(): string {
-  const home = process.env.HOME || process.env.USERPROFILE || '~';
-  const globalDir = path.join(home, '.icloser', 'global-memory');
+  const globalRoot = process.env.ICLOSER_HOME || path.join(
+    process.env.HOME || process.env.USERPROFILE || '~',
+    '.icloser'
+  );
+  const globalDir = path.join(globalRoot, 'global-memory');
   return path.join(globalDir, 'memory.json');
 }
 
 export async function loadGlobalMemory(): Promise<GlobalMemory> {
   const memPath = getGlobalMemoryPath();
-  if (await fileExists(memPath)) {
-    const raw = await readJson(memPath) as unknown as Record<string, unknown>;
-    // Convert plain objects back to Maps
-    const globalMem = raw as unknown as GlobalMemory;
-    globalMem.techStacks = new Map(Object.entries((raw.techStacks as Record<string, unknown>) || {})) as Map<string, TechStackMemory>;
-    globalMem.patterns = new Map(Object.entries((raw.patterns as Record<string, unknown>) || {})) as Map<string, PatternMemory>;
-    return globalMem;
+  try {
+    if (await fileExists(memPath)) {
+      const raw = await readJson(memPath) as unknown as Record<string, unknown>;
+      // Convert plain objects back to Maps
+      const globalMem = raw as unknown as GlobalMemory;
+      globalMem.techStacks = new Map(Object.entries((raw.techStacks as Record<string, unknown>) || {})) as Map<string, TechStackMemory>;
+      globalMem.patterns = new Map(Object.entries((raw.patterns as Record<string, unknown>) || {})) as Map<string, PatternMemory>;
+      return globalMem;
+    }
+  } catch {
+    // Global memory is useful context, but it must not block normal task execution.
   }
   return createEmptyGlobalMemory();
 }
@@ -697,7 +711,12 @@ export async function saveGlobalMemory(memory: GlobalMemory): Promise<void> {
     techStacks: Object.fromEntries(memory.techStacks),
     patterns: Object.fromEntries(memory.patterns),
   };
-  await writeJson(memPath, serializable);
+  try {
+    await writeJson(memPath, serializable);
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code !== 'EACCES' && code !== 'EPERM') throw e;
+  }
 }
 
 export function createEmptyGlobalMemory(): GlobalMemory {

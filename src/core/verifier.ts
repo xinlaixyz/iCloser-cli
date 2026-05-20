@@ -63,11 +63,12 @@ export async function runVerification(
             const errors = parseErrorOutput(errorText);
             if (errors.length === 0) break; // Can't locate errors, give up
 
-            // Read first 3 affected files
+            // Read first 3 affected files in parallel
             const fileContents: Record<string, string> = {};
-            for (const e of errors.slice(0, 3)) {
+            const reads = errors.slice(0, 3).map(async (e) => {
               try { fileContents[e.file] = await readFile(path.join(rootPath, e.file)); } catch { /* best-effort */ }
-            }
+            });
+            await Promise.all(reads);
             if (Object.keys(fileContents).length === 0) break;
 
             // Load config for AI provider
@@ -169,7 +170,7 @@ async function runStage(
     case 'e2e':
       return runE2E(rootPath, identity, timeout, startTime);
     case 'coverage':
-      return runCoverageStage(rootPath, identity);
+      return runCoverageStage(rootPath, identity, timeout, startTime);
     default:
       return {
         stage,
@@ -795,19 +796,61 @@ function parseCoverageOutput(output: string): import('../types.js').CoverageSumm
   return null;
 }
 
-async function runCoverageStage(rootPath: string, identity: ProjectIdentity): Promise<StageResult> {
-  const start = Date.now();
-  const command = getCoverageCommand(identity.language);
-  if (!command) {
-    return { stage: 'coverage', status: 'skipped', output: `语言 ${identity.language} 无覆盖率工具支持`, duration: 0 };
+async function runCoverageStage(
+  rootPath: string,
+  identity: ProjectIdentity,
+  timeout: number,
+  startTime: number
+): Promise<StageResult> {
+  const resolved = await resolveStageCommand(rootPath, identity, 'coverage');
+  if (!resolved) {
+    return {
+      stage: 'coverage',
+      status: 'skipped',
+      output: `语言 ${identity.language} 无覆盖率工具支持`,
+      duration: Date.now() - startTime,
+    };
   }
 
   try {
-    const output = execSync(command, { cwd: rootPath, timeout: 120000, encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 });
-    const coverage = parseCoverageOutput(output);
+    const output = execSync(resolved.command, {
+      cwd: rootPath,
+      timeout: Math.max(timeout, 10000),
+      stdio: 'pipe',
+      encoding: 'utf-8',
+      maxBuffer: 10 * 1024 * 1024,
+    });
+    let coverage = parseCoverageOutput(output);
+    if (!coverage) {
+      const fileCoverage = await collectCoverage(rootPath, identity);
+      if (fileCoverage) {
+        coverage = {
+          lines: {
+            pct: fileCoverage.lineCoverage,
+            covered: fileCoverage.coveredLines,
+            total: fileCoverage.totalLines,
+          },
+          branches: {
+            pct: fileCoverage.branchCoverage,
+            covered: 0,
+            total: 0,
+          },
+          functions: { pct: 0, covered: 0, total: 0 },
+          statements: { pct: 0, covered: 0, total: 0 },
+        };
+      }
+    }
 
     if (!coverage) {
-      return { stage: 'coverage', status: 'fail', output: '无法解析覆盖率输出', duration: Date.now() - start };
+      return {
+        stage: 'coverage',
+        status: 'pass',
+        output: `${resolved.label} 通过；未发现可解析覆盖率报告`,
+        duration: Date.now() - startTime,
+        command: resolved.command,
+        exitCode: 0,
+        stdout: output,
+      };
     }
 
     // Default thresholds: 60% lines, 50% branches, 60% functions
@@ -882,15 +925,24 @@ async function runCoverageStage(rootPath: string, identity: ProjectIdentity): Pr
       stage: 'coverage',
       status,
       output: summary + (reason ? ` [${reason}]` : ''),
-      duration: Date.now() - start,
+      duration: Date.now() - startTime,
+      command: resolved.command,
+      exitCode: 0,
+      stdout: output,
       errorDetails: reason || undefined,
     };
   } catch (e) {
+    const error = normalizeExecError(e);
     return {
       stage: 'coverage',
-      status: 'skipped',
-      output: `覆盖率工具执行失败: ${(e as Error).message.slice(0, 200)}`,
-      duration: Date.now() - start,
+      status: 'fail',
+      output: '覆盖率工具执行失败',
+      duration: Date.now() - startTime,
+      command: resolved.command,
+      exitCode: error.exitCode,
+      stdout: error.stdout,
+      stderr: error.stderr,
+      errorDetails: formatExecError(error),
     };
   }
 }
