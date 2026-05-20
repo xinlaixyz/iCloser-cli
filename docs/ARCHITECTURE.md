@@ -21,9 +21,28 @@
 - 语言选择：TypeScript (Node.js >= 18, ES2022)
 - 框架：无框架，vanilla 方案
 - 构建系统：npm (tsc 编译)
-- 测试框架：vitest (112 个测试文件, 1640 passed / 2 skipped, 0 失败)
+- 测试框架：vitest (116 个测试文件, 1715 passed / 2 skipped, 0 失败；2026-05-21 架构师验收)
 - 运行时兼容：Windows / macOS / Linux
 - AI Provider：支持 Claude、DeepSeek、OpenAI、Qwen 及离线 mock
+
+## Commit 安全边界
+
+`createCommit()` 的安全校验已从 `src/utils/git.ts` 抽离为独立模块 `src/core/commit-security.ts`。Git 工具层只负责执行 `git add` / `git commit`，提交前必须先通过 `validateCommitSafety()`。
+
+当前校验范围：
+
+- 提交信息不能为空。
+- 文件列表不能为空。
+- 文件路径不能逃逸项目根目录。
+- 已存在文件会做 `realpathSync` 校验，阻止软链接/真实路径逃逸。
+- 默认拦截 `.env`、`.env.*`、`*.pem`、`*.key`、`*.p12`、`*.pfx`、`id_rsa`、`id_ed25519`、`secrets/**`、`.aws/**`、`.ssh/**`。
+- 调用方仍可通过 `config.security.sensitiveFiles` 追加项目级敏感文件规则。
+
+验收测试：
+
+```bash
+npx vitest run tests/commit-security.test.ts tests/regression-p0.test.ts tests/utils-git.test.ts
+```
 
 ## 模块划分
 

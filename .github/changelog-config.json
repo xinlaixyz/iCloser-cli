@@ -1,0 +1,21 @@
+{
+  "categories": [
+    { "title": "## 🚀 新功能", "labels": ["feat", "feature", "enhancement"] },
+    { "title": "## 🐛 修复", "labels": ["fix", "bug", "bugfix"] },
+    { "title": "## 📖 文档", "labels": ["docs", "documentation"] },
+    { "title": "## 🧪 测试", "labels": ["test", "tests", "testing"] },
+    { "title": "## 🔧 构建/CI", "labels": ["build", "ci", "cd", "chore"] },
+    { "title": "## ⚡ 性能", "labels": ["perf", "performance"] },
+    { "title": "## ♻️ 重构", "labels": ["refactor", "refactoring"] }
+  ],
+  "ignore_labels": ["wip", "skip-changelog"],
+  "sort": "DESC",
+  "template": "${{CHANGELOG}}\n\n---\n\n🤖 由 [Claude Code](https://claude.com/claude-code) 辅助生成",
+  "pr_template": "- ${{TITLE}} (#${{NUMBER}})",
+  "empty_template": "- 无相关变更",
+  "max_issues": 50,
+  "max_pull_requests": 100,
+  "label_extractor": [
+    { "pattern": "^(feat|fix|docs|test|build|ci|chore|perf|refactor)", "target": "$1" }
+  ]
+}

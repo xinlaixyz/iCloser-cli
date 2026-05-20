@@ -3,7 +3,7 @@
 ## 测试策略
 
 当前项目采用分层测试策略：
-- **单元测试** (vitest)：覆盖核心模块（112 个测试文件，覆盖扫描器、任务引擎、AI 输出协议、验证器、内存系统、审计、安全、Agent 管理器等）
+- **单元测试** (vitest)：覆盖核心模块（116 个测试文件，覆盖扫描器、任务引擎、AI 输出协议、验证器、内存系统、审计、安全、Agent 管理器等）
 - **Smoke 测试** (18 个独立脚本)：端到端验证发布质量，覆盖安装、REPL 交互、多语言支持、Agent 执行、Web 搜索、自动修复等场景
 - **CI/CD 集成**：GitHub Actions 自动运行，PR 门禁 + 多平台矩阵
 
@@ -40,7 +40,7 @@ npm run smoke:web-search # 网络搜索测试
 
 ## 测试文件清单
 
-### 单元测试（112 个文件，下表列出全部核心文件及本轮新增文件）
+### 单元测试（116 个文件，下表列出全部核心文件及本轮新增文件）
 
 | 测试文件 | 覆盖模块 |
 |----------|----------|
@@ -79,6 +79,8 @@ npm run smoke:web-search # 网络搜索测试
 | `tests/task-engine.test.ts` | 任务引擎 |
 | `tests/task-loop.test.ts` | 任务循环 |
 | `tests/tool-registry.test.ts` | 工具注册表 |
+| `tests/repl-tool-viz.test.ts` | REPL 工具执行可视化 |
+| `tests/tool-executor-web-search-root.test.ts` | web_search 项目级缓存 rootPath 回归 |
 | `tests/verifier.test.ts` | 验证器 |
 | `tests/dev1-acceptance.test.ts` | 验收测试 |
 | `tests/acceptance/rollback.test.ts` | 回滚验收（快照→持久化→回滚→验证） |
@@ -129,6 +131,7 @@ npm run smoke:web-search # 网络搜索测试
 
 ```bash
 npx vitest run tests/tool-executor.test.ts tests/tool-executor-extra.test.ts tests/tool-loop.test.ts tests/tool-registry.test.ts
+npx vitest run tests/repl-tool-viz.test.ts tests/tool-loop.test.ts
 npx tsc --noEmit
 npm run lint
 ```
@@ -138,17 +141,17 @@ npm run lint
 ## 测试覆盖目标
 
 源码文件 42 个（不含 scanner-worker.ts），分布在 8 个模块中。
-已有 112 个单元测试文件 + 18 个 smoke 脚本，共 1640 个通过测试用例（2 个跳过，0 个失败）。
+已有 116 个单元测试文件 + 18 个 smoke 脚本，共 1715 个通过测试用例（2 个跳过，0 个失败）。
 
 运行 `ic auto tests` 查看覆盖缺口。
 
-### 当前覆盖率（2026-05-20）
+### 当前覆盖率与验收（2026-05-21）
 
 | 指标 | 数值 |
 |------|------|
 | 语句覆盖率 | **60.02%**（17028 / 28370） |
-| 测试用例数 | 1640 通过，2 跳过，0 失败 |
-| 测试文件数 | 112 个（含 3 个 acceptance） |
+| 测试用例数 | 1715 通过，2 跳过，0 失败 |
+| 测试文件数 | 116 个（含 3 个 acceptance） |
 | 前次基准 | ~55.92% |
 | 本轮净增 | +4.10 个百分点（+1165 语句） |
 
@@ -168,6 +171,7 @@ npm run lint
 - 门禁检查器（rollback pass、git dirty/clean）
 - 文件工具（writeFiles 错误路径、readFileChunks 分块读取）
 - 配置管理（setAIProvider、saveConfig/loadConfig、配置验证）
+- 代码能力架构师补漏（web_search rootPath 项目级缓存、doc-reader 加载回归、PDF 工具噪音抑制）
 
 ## CI 集成
 
@@ -221,6 +225,50 @@ CI/CD 通过 GitHub Actions 执行（`.github/workflows/smoke.yml`）：
 - 跨平台兼容：smoke 测试在 Windows、macOS、Ubuntu 上均需通过
 - 测试超时：默认 10 秒，smoke 测试 120 秒
 - 禁止使用真实 API Key：所有测试使用 mock provider
+
+## macOS 顺畅度验收
+
+AgentCode 的产品定位已经升级为“本地工程执行器 + Claude Code / Codex 替代品 + 长期记忆系统”。因此 macOS 不能只作为理论兼容平台，必须作为正式验收门禁。
+
+macOS 真实机器或 `macos-latest` CI 最低命令：
+
+```bash
+npm ci
+npm run build
+npx tsc --noEmit
+npm run lint
+npm test
+npm run smoke
+npm run smoke:tools
+```
+
+macOS 用户路径 smoke：
+
+```bash
+ic --help
+ic setup --mock --json
+ic init
+ic scan --json
+ic doctor --json
+ic provider list --json
+ic mem status
+ic mem manifests
+ic t "读取项目并给出修改计划" --dry-run
+```
+
+macOS 专项检查：
+
+| 维度 | 验收标准 |
+|------|----------|
+| Shell | `ls`、`cat`、`grep`、`python3`、`./mvnw`、`./gradlew` 原生可用 |
+| 路径 | `/Users/<user>/...`、含空格路径、软链接路径安全 |
+| 工具 | `npm run smoke:tools` 覆盖 12 个 AI 工具 |
+| JSON | `--json` stdout 不混入 spinner、warning 或彩色文本 |
+| 记忆 | `AGENTS.md`、`CLAUDE.md` 导入导出正常 |
+| 打包 | tar/pkg 安装后 `ic --help` 可用 |
+| 权限 | Gatekeeper、quarantine、executable bit 问题有清晰提示 |
+
+详细标准见 `doc/MACOS_ACCEPTANCE_STANDARD_2026-05-20.md`。
 
 ---
 

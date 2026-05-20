@@ -48,7 +48,7 @@ export function getGitStatus(rootPath: string): GitStatus {
 
   for (const line of output.trim().split('\n').filter(Boolean)) {
     const status = line.substring(0, 2);
-    const file = line.substring(3);
+    const file = line.slice(2).trimStart();
 
     if (status.startsWith('?')) untracked.push(file);
     else if (status[0] !== ' ') staged.push(file);

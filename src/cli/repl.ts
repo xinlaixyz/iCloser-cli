@@ -57,6 +57,7 @@ import {
   rollbackAutopilotChanges,
   type AutopilotRollbackPlan,
 } from '../core/autopilot-rollback.js';
+import { createToolProgressDisplay } from './tool-display.js';
 
 // ============================================================
 // Session State
@@ -963,22 +964,7 @@ async function handleChatWithTools(input: string, prompt: import('../types.js').
     preloadContext,
     maxRounds,
     tokenBudget,
-    onProgress: (ev) => {
-      if (ev.phase === 'tool_call') {
-        const args = ev.toolArgs || {};
-        const path = String(args.path || args.file || args.pattern || args.query || args.command || '');
-        const hint = path ? path.slice(0, 50) : '';
-        const icon = ev.toolName === 'read_file' ? '📖' : ev.toolName === 'search_code' ? '🔍' : ev.toolName === 'run_command' ? '⚡' : '🔧';
-        process.stdout.write(`\r\x1b[K  ${icon} ${C.dim(ev.toolName)} ${C.dim(hint)}\n`);
-      } else if (ev.phase === 'tool_result') {
-        const len = ev.resultLength || ev.toolResult?.length || 0;
-        const ok = ev.toolResult && !String(ev.toolResult).startsWith('错误') && !String(ev.toolResult).startsWith('未找到');
-        const status = ok ? C.success(' ✓') : C.warn(' ⚠');
-        process.stdout.write(`\r\x1b[K  ${C.dim('  ')}${status} ${C.dim(`${len} 字符`)}\n`);
-      } else if (ev.phase === 'done') {
-        process.stdout.write(`\r\x1b[K  ${C.success('●')} ${C.dim(`${ev.round} 轮完成`)}\n\n`);
-      }
-    },
+    onProgress: createToolProgressDisplay().handle,
   });
 
   if (result.finalResponse) {
@@ -3459,7 +3445,6 @@ async function cmdDocsSlash(args: string): Promise<void> {
     }
   } catch (err) { console.log(`  ${I.err} ${(err as Error).message}\n`); }
 }
-
 
 
 

@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>iCloser</string>
+    <key>CFBundleDisplayName</key>
+    <string>iCloser Agent Shell</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.icloser.xcode-extension</string>
+    <key>CFBundleVersion</key>
+    <string>0.1.0</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1.0</string>
+    <key>NSExtension</key>
+    <dict>
+        <key>NSExtensionAttributes</key>
+        <dict>
+            <key>XCSourceEditorCommandDefinitions</key>
+            <array>
+                <dict>
+                    <key>XCSourceEditorCommandClassName</key>
+                    <string>AnalyzeProjectCommand</string>
+                    <key>XCSourceEditorCommandIdentifier</key>
+                    <string>com.icloser.analyze-project</string>
+                    <key>XCSourceEditorCommandName</key>
+                    <string>Analyze Project</string>
+                </dict>
+                <dict>
+                    <key>XCSourceEditorCommandClassName</key>
+                    <string>GenerateDocsCommand</string>
+                    <key>XCSourceEditorCommandIdentifier</key>
+                    <string>com.icloser.generate-docs</string>
+                    <key>XCSourceEditorCommandName</key>
+                    <string>Generate Documentation</string>
+                </dict>
+                <dict>
+                    <key>XCSourceEditorCommandClassName</key>
+                    <string>FixCodeCommand</string>
+                    <key>XCSourceEditorCommandIdentifier</key>
+                    <string>com.icloser.fix-code</string>
+                    <key>XCSourceEditorCommandName</key>
+                    <string>Fix Code</string>
+                </dict>
+                <dict>
+                    <key>XCSourceEditorCommandClassName</key>
+                    <string>RunTaskCommand</string>
+                    <key>XCSourceEditorCommandIdentifier</key>
+                    <string>com.icloser.run-task</string>
+                    <key>XCSourceEditorCommandName</key>
+                    <string>Run Task</string>
+                </dict>
+                <dict>
+                    <key>XCSourceEditorCommandClassName</key>
+                    <string>ExplainSelectionCommand</string>
+                    <key>XCSourceEditorCommandIdentifier</key>
+                    <string>com.icloser.explain-selection</string>
+                    <key>XCSourceEditorCommandName</key>
+                    <string>Explain Selection</string>
+                </dict>
+            </array>
+            <key>XCSourceEditorExtensionPrincipalClass</key>
+            <string>SourceEditorExtension</string>
+        </dict>
+        <key>NSExtensionPointIdentifier</key>
+        <string>com.apple.dt.Xcode.extension.source-editor</string>
+    </dict>
+</dict>
+</plist>

@@ -1,7 +1,18 @@
 # iCloser Agent Shell — 项目状态总览
 
-生成日期：2026-05-20 (用户/市场验收后)
-状态：✅ 112 测试文件 / 1640 passed / 2 skipped。`tsc --noEmit` 零错误。`npm run build` 通过。`npm run lint` 零错误 / 145 warnings。`npm test` 本机实测 71.85s 通过。Acceptance pipeline/codegen/rollback 均已纳入 Vitest。
+生成日期：2026-05-21 (代码能力架构师验收后)
+状态：✅ 116 测试文件 / 1715 passed / 2 skipped。`tsc --noEmit` 零错误。`npm run lint` 零错误 / 158 warnings。`npm test` 本机实测 94.50s 通过。Acceptance pipeline/codegen/rollback 均已纳入 Vitest。
+
+## 本批次更新 (2026-05-21)
+
+### 阶段: 代码能力提升架构师验收
+- 验收结论：工程师提交的代码能力提升在补漏后通过，不能按原文档写成“零回归”；首次全量测试暴露 `src/core/doc-reader.ts` 的 `pdfParse` 重复声明，已修复。
+- 工具链路补齐：`executeToolCall('web_search')` 现在把 `rootPath` 传给 `searchWeb()`，项目级 `.icloser/web-cache.json` 磁盘缓存正式接入 AI 工具执行主路径。
+- 回归测试：新增 `tests/tool-executor-web-search-root.test.ts`，明确锁定 `web_search` 的 rootPath 传递行为。
+- 输出洁净度：`read_pdf` 工具增加 PDF parser warning 抑制，避免工具结果展示时混入 `Indexing all PDF objects` 噪音。
+- 文档验收：新增 `doc/ARCHITECT_ACCEPTANCE_CODE_CAPABILITY_2026-05-21.md`，记录验收命令、补漏项、能力判断和剩余行动。
+- 整体验收：新增 `doc/OVERALL_ACCEPTANCE_REANALYSIS_2026-05-21.md`，按“本地工程执行器 + Claude Code/Codex 替代品 + 长期记忆系统”重新验收，综合评分 8.1/10，体验评分 7.2/10。
+- 当前验证：`npx tsc --noEmit` 通过；`npm run lint` 通过（158 warnings）；`npm test` 通过（116 files / 1715 passed / 2 skipped）。
 
 ## 本批次更新 (2026-05-20)
 
@@ -10,7 +21,7 @@
 - Memory Kernel：修复 `store.ts` 在 TS/Vitest ESM 路径下 `require('./sqlite-store.js')` 找不到模块的问题；`sqlite-store.ts` 延迟加载 `node:sqlite`，并在 SQLite 不可用时降级为 JSONL 情景日志 + `rules.json/tree.md` 语义记忆，保持 Node >=18 产品承诺。
 - Memory 生命周期：`resetMemoryRuntime()` 改为可等待 shutdown，`context.test.ts` 清理临时目录前显式释放 SQLite 句柄，修复 Windows `EBUSY`。
 - Vitest 配置：关闭 Vitest cache，避免写入 `node_modules/.vite/vitest/results.json` 触发权限问题；`deps.external` 迁移到 `server.deps.external`。
-- 测试性能：`cli-full-coverage.test.ts` 复用共享 fixture，覆盖率型 spawn 测试不再重复 `init + scan` 或跑完整 `t --go` 执行链；完整 `npm test` 本机实测 71.85s。
+- 测试性能：`cli-full-coverage.test.ts` 复用共享 fixture，覆盖率型 spawn 测试不再重复 `init + scan` 或跑完整 `t --go` 执行链；完整 `npm test` 本机实测 68.59s。
 - 输出洁净度：测试脚本通过 `node --no-warnings` 和 `NODE_OPTIONS=--no-warnings` 屏蔽 Node `node:sqlite` experimental warning；跨平台命令测试准备真实文件，消除 `FINDSTR` 噪音。
 - 验收口径：`scan` acceptance 不再依赖 stdout 非空，改为验证命令成功且生成 `.icloser/index.json`，更贴近 PRD 的“项目扫描与索引”产品目标。
 - Lint 噪音：低风险清理测试与 Memory 模块未使用 import/变量，warnings 从 139 降至 120。
@@ -47,6 +58,11 @@ npm run lint
 - PRD 中运行时 `>=18.0.0` 已通过 Memory Kernel 降级路径守住；后续文档应继续明确：SQLite 索引是 Node 24+ 增强能力，Node 18/20 使用 JSONL/rules 文件存储并保留基础 Recall。
 - Acceptance 测试已覆盖 pipeline/codegen/rollback，但 spawn 型验收仍占用约 50-55s，需要后续按 CI 分层拆成 quick/unit 与 acceptance jobs。
 - 程序员2工具能力进展：`read_docx` / `read_xlsx`、工具执行事件 hook、权限矩阵与 `smoke:tools` 已进入源码和发布产物验收；下一步聚焦工具过程展示接入 CLI/REPL、权限产品化与真实 Provider 黄金路径。
+- T4 REPL 工具执行可视化代码级验收通过：`handleChatWithTools()` 已接入 `runToolLoop.onProgress`，工具调用显示 thinking/tool_call/tool_result/synthesizing/done；`tests/repl-tool-viz.test.ts` + `tests/tool-loop.test.ts` 共 29 tests passed。下一步做真实 REPL 和 macOS 终端观感复验。
+- macOS 顺畅度已纳入正式验收标准：新增 `doc/MACOS_ACCEPTANCE_STANDARD_2026-05-20.md`，要求 macOS 真实机器或 `macos-latest` CI 跑通 build/tsc/lint/test/smoke/smoke:tools，并覆盖安装、Unix Shell、`./mvnw`/`./gradlew`、路径权限、长期记忆、JSON 纯净输出和 macOS 打包体验。
+- `createCommit` 安全策略已独立成 `src/core/commit-security.ts`：提交前统一校验空消息、空文件列表、路径逃逸、真实路径逃逸和默认敏感文件；`src/utils/git.ts` 只负责执行 git。新增 `tests/commit-security.test.ts`，定向 30 tests passed。
+- T8 REPL 拆分已开始：新增 `src/cli/tool-display.ts`，先从 `repl.ts` 迁出工具进度显示纯逻辑；`tests/repl-tool-viz.test.ts` 改为直接覆盖独立文件。新增 `doc/tasks/T8-repl-split-start.md`。
+- T9 验证并行化已立项：Day1 安全修复已完成，新增 `doc/tasks/T9-verifier-parallelization-plan.md`；第一版建议只并行 `compile/lint`，coverage/e2e 保持串行，避免写入竞态。
 
 ---
 

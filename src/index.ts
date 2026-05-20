@@ -23,6 +23,7 @@ import { startRepl } from './cli/repl.js';
 import type { AgentStatus, AgentType, AIProvider, ICloserConfig, MemoryCandidate, ProjectMemory, Task, VerifyStage } from './types.js';
 import { registerTaskCommands, statusLabel, printTaskPlan } from './commands/task.js';
 import { registerMemoryCommands } from './commands/memory.js';
+import { registerCollaborationCommands } from './commands/collaboration.js';
 
 const program = new Command();
 program.name('ic').description('iCloser Agent Shell — AI 工程执行 CLI').version('0.1.0');
@@ -33,6 +34,7 @@ import { applyCompileGate, runCodeGenerationPipeline, getToolStrategy, isAnalysi
 // Register extracted command modules
 registerTaskCommands(program);
 registerMemoryCommands(program);
+registerCollaborationCommands(program);
 
 // ============================================================
 // ic setup

@@ -1,0 +1,31 @@
+{
+  "name": "icloser-vscode",
+  "displayName": "iCloser Agent Shell",
+  "description": "Terminal AI Engineering Assistant — understand, edit, verify, report",
+  "version": "0.1.0",
+  "publisher": "icloser",
+  "engines": { "vscode": "^1.85.0" },
+  "categories": ["Other", "Programming Languages"],
+  "activationEvents": ["onCommand:icloser.openTerminal", "onCommand:icloser.runTask"],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      { "command": "icloser.openTerminal", "title": "iCloser: Open Terminal" },
+      { "command": "icloser.runTask", "title": "iCloser: Run Task" },
+      { "command": "icloser.analyzeProject", "title": "iCloser: Analyze Project" },
+      { "command": "icloser.generateDocs", "title": "iCloser: Generate Documentation" },
+      { "command": "icloser.fixError", "title": "iCloser: Fix Error" }
+    ],
+    "keybindings": [
+      { "command": "icloser.openTerminal", "key": "ctrl+shift+i", "mac": "cmd+shift+i" },
+      { "command": "icloser.runTask", "key": "ctrl+shift+t", "mac": "cmd+shift+t" }
+    ],
+    "configuration": {
+      "title": "iCloser",
+      "properties": {
+        "icloser.provider": { "type": "string", "default": "deepseek", "description": "AI Provider" },
+        "icloser.model": { "type": "string", "default": "", "description": "Model name" }
+      }
+    }
+  }
+}

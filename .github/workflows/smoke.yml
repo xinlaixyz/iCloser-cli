@@ -75,3 +75,10 @@ jobs:
 
       - name: Release smoke
         run: npm run smoke
+
+      - name: Tool capability smoke
+        run: npm run smoke:tools
+
+      - name: macOS developer acceptance
+        if: matrix.os == 'macos-latest'
+        run: npm run macos:acceptance -- --ci-smoke

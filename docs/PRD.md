@@ -112,7 +112,7 @@ AgentCode 是基于 TypeScript 的 AI coding agent CLI 系统，产品定位是 
 - 语言：TypeScript (ES2022)
 - 框架：无（vanilla）
 - 构建：npm (tsc)
-- 测试：vitest（112 个测试文件 + 18 个 smoke 脚本，1640 passed / 2 skipped）
+- 测试：vitest（116 个测试文件 + 18 个 smoke 脚本，1715 passed / 2 skipped；2026-05-21 架构师验收）
 - 运行时：>=18.0.0（Node 24+ 自动启用 SQLite 记忆索引；Node 18/20 使用 JSONL/rules 文件降级）
 - 包管理器：npm
 - 部署形态：CLI 工具，npm 包发布

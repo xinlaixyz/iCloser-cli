@@ -2,7 +2,8 @@
 
 日期：2026-05-20
 基线：70 源文件 / 1346 测试 / 代码能力 72.6/100
-终态：70+ 源文件 / 1714 测试 / 代码能力 85.7/100
+工程师终态：70+ 源文件 / 1714 测试 / 代码能力 85.7/100
+架构师验收终态（2026-05-21）：116 测试文件 / 1715 passed / 2 skipped，代码能力维持 **85.7/100**，但需以“修复补漏后通过”为准。
 
 ---
 
@@ -20,7 +21,28 @@
 | `fcffd72` | 阶段三 | T10 AI驱动测试生成 — 分析函数签名→行为断言→验证修复回路(3轮) |
 | `91bf6f9` | 阶段三+四 | T4b 代码审查结构化(4维评分+问题清单) + T11 C/C++/Rust解析器+Go/Python数据流 |
 
-**累计：22 项修复 + 12 项增强 = 34 项质量增量。零回归。**
+**累计：22 项修复 + 12 项增强 = 34 项质量增量。架构师全量验收发现 1 个测试加载回归与 1 个工具链路漏接，已补齐后全量通过。**
+
+---
+
+## 架构师验收补充（2026-05-21）
+
+| 项目 | 结果 |
+|------|------|
+| `npx tsc --noEmit` | 通过 |
+| `npm run lint` | 通过，`eslint ok (158 warnings)` |
+| `npm test` | 116 测试文件通过；1715 passed / 2 skipped |
+| 代码能力定向测试 | 9 个测试文件，171 passed |
+| 文档/PDF/工具补漏测试 | 3 个测试文件，104 passed |
+
+补漏项：
+
+- `src/core/tool-executor.ts`：`web_search` 工具入口补传 `rootPath`，让 `.icloser/web-cache.json` 项目级磁盘缓存真正接入工具主链路。
+- `tests/tool-executor-web-search-root.test.ts`：新增回归测试，锁住 web_search 的项目级缓存参数。
+- `src/core/doc-reader.ts`：修复 `pdfParse` 重复声明导致 Vitest/esbuild 加载失败的问题。
+- `src/core/tool-executor.ts`：为 `read_pdf` 工具增加 PDF parser 噪音抑制，避免工具结果被 stderr warning 污染。
+
+详细验收见 `doc/ARCHITECT_ACCEPTANCE_CODE_CAPABILITY_2026-05-21.md`。
 
 ---
 

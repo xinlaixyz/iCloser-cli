@@ -12,15 +12,27 @@ AgentCode — 基于 TypeScript 构建，定位是本地工程执行器 + Claude
 
 产品底线：具备 Claude Code 级代码能力，包括读代码库、跨文件修改、运行验证、解释 diff、失败后修复、回滚/提交；同时通过 Memory Kernel 形成跨会话、跨任务的项目级长期记忆。
 
-源码文件：57+ 个 | 测试文件：112 个 | 测试基线：1640 passed / 2 skipped | Memory Kernel: 17 模块
+源码文件：57+ 个 | 测试文件：116 个 | 测试基线：1715 passed / 2 skipped | Memory Kernel: 17 模块
 
 ## 快速开始
+
+Windows:
 
 ```bash
 cd D:\temp\Codex\AgentCode
 npm run dev
 npm run build
 npm run test
+```
+
+macOS / Linux:
+
+```bash
+cd /path/to/AgentCode
+npm ci
+npm run build
+npm test
+npm run smoke:tools
 ```
 
 ## 记忆文件
@@ -46,6 +58,8 @@ AgentCode 支持把 `AGENTS.md`、`CLAUDE.md`、`.github/copilot-instructions.md
 - [PROJECT_ANALYSIS](PROJECT_ANALYSIS.md) — **项目完成度分析报告** (2026-05-20)
 - [CAPABILITY_ASSESSMENT](../doc/CAPABILITY_ASSESSMENT.md) — **关键能力综合评分** (AI记忆/工具/代码/测试/架构)
 - [OVERALL_REANALYSIS](../doc/OVERALL_REANALYSIS_2026-05-20.md) — 按“本地工程执行器 + Claude Code替代品 + 长期记忆”重新分析
+- [OVERALL_ACCEPTANCE_REANALYSIS_2026-05-21](../doc/OVERALL_ACCEPTANCE_REANALYSIS_2026-05-21.md) — **最新** 整体验收与重新分析
+- [MACOS_ACCEPTANCE_STANDARD](../doc/MACOS_ACCEPTANCE_STANDARD_2026-05-20.md) — macOS 顺畅度验收标准
 - [ARCHITECT_ACCEPTANCE_DEV2_TOOL_PLAN](../doc/ARCHITECT_ACCEPTANCE_DEV2_TOOL_PLAN_2026-05-20.md) — 架构验收记录与程序员2工具能力任务书
 - [USAGE_MARKET_ACCEPTANCE](../doc/USAGE_MARKET_ACCEPTANCE_2026-05-20.md) — 用户视角与市场需求验收报告
 - [CODEX_CLAUDE_MEMORY_ALIGNMENT](../doc/CODEX_CLAUDE_MEMORY_ALIGNMENT.md) — Codex / Claude Code 对标与记忆功能方案
