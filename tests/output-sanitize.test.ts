@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { sanitizeOutput, sanitizeWrite, getSanitizerStats } from '../src/cli/output.js';
+import { sanitizeOutput, getSanitizerStats } from '../src/cli/output.js';
 
 describe('sanitizeOutput (S20.1)', () => {
   it('passes through normal ASCII text', () => {

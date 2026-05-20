@@ -239,7 +239,6 @@ import {
   enableSecurityRule,
   defaultConfig,
 } from '../src/config.js';
-import { detectProject } from '../src/utils/detect.js';
 
 describe('security rules config', () => {
   // Build a minimal config for testing

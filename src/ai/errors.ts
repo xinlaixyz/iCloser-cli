@@ -51,7 +51,7 @@ export function classifyError(
   const lower = msg.toLowerCase();
 
   // Check if API key is missing from env before any call
-  if (envVars.length > 0 && !hasConfiguredKey && !envVars.some(v => process.env[v])) {
+  if (envVars.length > 0 && !hasConfiguredKey && !envVars.some(v => process.env[v] && process.env[v]!.trim())) {
     return new AICallError(
       'MISSING_API_KEY',
       provider,

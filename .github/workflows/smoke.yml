@@ -1,11 +1,9 @@
 name: Release Smoke
 
+# P1-11: Reduced to PR-only to avoid duplicating ci.yml.
+# ci.yml handles push to main/master with full matrix + Docker check.
 on:
   pull_request:
-  push:
-    branches:
-      - main
-      - master
 
 env:
   NODE_VERSION: '22'

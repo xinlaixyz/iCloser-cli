@@ -60,30 +60,33 @@ export const I = {
   running: C.primary('◉'), waiting: C.warn('◌'),
 };
 
-export function welcomeScreen(provider: string, model: string, projectName?: string): string {
+const CJK_RX_THEME = /[一-鿿㐀-䶿豈-﫿　-〿＀-￯぀-ヿ가-힯⺀-⿟]/g;
+function dw(str: string): number { const c = str.replace(/\x1b\[[0-9;]*m/g, ''); return c.length + (c.match(CJK_RX_THEME) || []).length; }
+
+export function welcomeScreen(provider: string, model: string, projectName?: string, onboardingSteps?: string[]): string {
   const tw = termWidth(); const ow = Math.min(tw - 4, 76);
   const poweredPlain = `  Powered by ${provider} / ${model}`;
   const powered = C.dim('  Powered by ') + C.accent(provider) + C.dim(' / ') + C.primary(model);
-  const wm = [
+  const wm: string[] = [
     '', '  ' + C.primary('╭') + C.primary('═'.repeat(ow)) + C.primary('╮'),
     '  ' + C.primary('║') + '  ' + ' '.repeat(ow - 4) + '  ' + C.primary('║'),
     '  ' + C.primary('║') + '  ' + C.accentBold('   i C l o s e r') + C.primaryBold('   Agent Shell') + ' '.repeat(Math.max(0, ow - 41)) + C.primary('║'),
     '  ' + C.primary('║') + '  ' + C.dim('  Terminal AI Engineering Assistant') + ' '.repeat(Math.max(0, ow - 39)) + C.primary('║'),
     '  ' + C.primary('║') + '  ' + powered + ' '.repeat(Math.max(0, ow - 4 - poweredPlain.length)) + '  ' + C.primary('║'),
-    '  ' + C.primary('║') + '  ' + ' '.repeat(ow - 4) + '  ' + C.primary('║'),
-    '  ' + C.primary('║') + '  ' + C.primary('━'.repeat(ow - 4)) + '  ' + C.primary('║'),
-    '  ' + C.primary('║') + '  ' + ' '.repeat(ow - 4) + '  ' + C.primary('║'),
-    '  ' + C.primary('║') + '  ' + C.bright('  Session') + ' '.repeat(ow - 14) + C.primary('║'),
-    '  ' + C.primary('║') + '  ' + C.dim('  Provider') + '     ' + C.accent(provider.padEnd(16)) + C.dim('Model') + '  ' + C.primary(model) + ' '.repeat(Math.max(0, ow - 53 - provider.length - model.length)) + C.primary('║'),
-    '  ' + C.primary('║') + '  ' + C.dim('  Platform') + '     ' + C.bright(process.platform) + '  ' + C.dim('Node') + '   ' + C.bright(process.version) + ' '.repeat(Math.max(0, ow - 56)) + C.primary('║'),
-    '  ' + C.primary('║') + '  ' + C.dim('  Time') + '         ' + C.bright(new Date().toLocaleString('zh-CN', { hour12: false })) + ' '.repeat(Math.max(0, ow - 36)) + C.primary('║'),
   ];
   if (projectName) wm.push('  ' + C.primary('║') + '  ' + C.dim('  Project') + '      ' + C.accent(projectName) + ' '.repeat(Math.max(0, ow - 22 - projectName.length)) + C.primary('║'));
+  wm.push('  ' + C.primary('║') + '  ' + ' '.repeat(ow - 4) + '  ' + C.primary('║'));
+  if (onboardingSteps && onboardingSteps.length > 0) {
+    wm.push('  ' + C.primary('║') + '  ' + C.primary('━'.repeat(ow - 4)) + '  ' + C.primary('║'));
+    wm.push('  ' + C.primary('║') + '  ' + ' '.repeat(ow - 4) + '  ' + C.primary('║'));
+    for (const step of onboardingSteps) {
+      const pad = Math.max(0, ow - 4 - dw(step));
+      wm.push('  ' + C.primary('║') + '  ' + step + ' '.repeat(pad) + '  ' + C.primary('║'));
+    }
+  }
   wm.push(
     '  ' + C.primary('║') + '  ' + ' '.repeat(ow - 4) + '  ' + C.primary('║'),
-    '  ' + C.primary('║') + '  ' + C.primary('━'.repeat(ow - 4)) + '  ' + C.primary('║'),
-    '  ' + C.primary('║') + '  ' + ' '.repeat(ow - 4) + '  ' + C.primary('║'),
-    '  ' + C.primary('║') + '  ' + C.dim('  Chat with AI  |  ') + C.accent('/help') + C.dim(' commands') + '  |  ' + C.accent('/exit') + C.dim(' quit') + '  |  ' + C.accent('Ctrl+C') + C.dim(' interrupt') + ' '.repeat(Math.max(0, ow - 89)) + C.primary('║'),
+    '  ' + C.primary('║') + '  ' + C.dim('  /help 命令  |  Ctrl+C 中断  |  直接输入需求开始') + ' '.repeat(Math.max(0, ow - 4 - dw('  /help 命令  |  Ctrl+C 中断  |  直接输入需求开始'))) + C.primary('║'),
     '  ' + C.primary('║') + '  ' + ' '.repeat(ow - 4) + '  ' + C.primary('║'),
     '  ' + C.primary('╰') + C.primary('═'.repeat(ow)) + C.primary('╯'),
   );
@@ -109,6 +112,7 @@ export function commandHelp(): string {
   for (const [cmd, desc] of cmds) {
     out += '  ' + C.primary('│') + ' ' + C.accent(cmd.padEnd(14)) + ' ' + C.dim(desc) + ' '.repeat(Math.max(0, w - 18 - desc.length)) + ' ' + C.primary('│') + '\n';
   }
+  out += '  ' + C.primary('│') + ' ' + C.dim('快捷键: y=确认 n=拒绝 h=帮助 s=扫描 d=差异 c=清除 w=写入 q=退出') + ' '.repeat(Math.max(0, w - 42)) + ' ' + C.primary('│') + '\n';
   out += '  ' + C.primary('╰') + C.primary('─'.repeat(w)) + C.primary('╯');
   return out;
 }

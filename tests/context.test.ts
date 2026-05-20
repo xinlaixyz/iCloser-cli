@@ -4,6 +4,8 @@ import { tmpdir } from 'os';
 import { describe, expect, it } from 'vitest';
 import { assembleContextFromProject, summarizeContextDebug } from '../src/core/context.js';
 import { loadProjectMemory, saveProjectMemory } from '../src/core/memory.js';
+import { resetMemoryRuntime } from '../src/core/memory/integration.js';
+import { resetMemoryStore } from '../src/core/memory/store.js';
 import { loadProjectIndex } from '../src/core/scanner.js';
 import type { Task } from '../src/types.js';
 
@@ -69,6 +71,8 @@ describe('assembleContextFromProject', () => {
       expect(summary.topFiles.length).toBe(1);
       expect(summary.topFiles[0].tokens).toBeGreaterThan(0);
     } finally {
+      await resetMemoryRuntime();
+      resetMemoryStore();
       await rm(root, { recursive: true, force: true });
     }
   });
@@ -101,6 +105,8 @@ describe('assembleContextFromProject', () => {
       expect(context.relevantCode.length).toBeGreaterThan(0);
       expect(context.relevantCode[0].file.replace(/\\/g, '/')).toContain('src/service/user.ts');
     } finally {
+      await resetMemoryRuntime();
+      resetMemoryStore();
       await rm(root, { recursive: true, force: true });
     }
   });
@@ -184,6 +190,8 @@ describe('assembleContextFromProject', () => {
       expect(context.relevantMemory).toContain('流程模板：创建 docs/PRD.md 产品需求文档');
       expect(context.relevantMemory).not.toContain('未确认 onboarding 模板');
     } finally {
+      await resetMemoryRuntime();
+      resetMemoryStore();
       await rm(root, { recursive: true, force: true });
     }
   });

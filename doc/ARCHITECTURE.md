@@ -439,13 +439,13 @@ filterSandboxedFiles(files[], level, projectRoot) → { allowed[], blocked[] }
 - Task：`ic t "任务" --go` 自动创建 Agent（S13）
 - Report：任务报告包含 Agent 执行摘要（S15）
 
-### 3.10 Skill 管理系统 (`src/skill/manager.ts`)
+### 3.10 Skill 系统
 
-内置 5 个 Skill：`project-index`、`code-review`、`security-review`、`test-gen`、`api-doc`
+Skill 功能已整合到 Agent 系统和 Task 引擎中，不再作为独立模块存在。
 
-**Skill 组合链：** 按依赖拓扑排序，先解析依赖项再加载主体。
+内置能力通过 Agent 模板提供：Code Reviewer、Test Runner、Code Explorer、Task Executor、Orchestrator。
 
-**自动生成：** 检测 ≥ 3 次相似任务 → 提取触发词 + 公共文件 + 修改模式 → 提示用户确认。
+重复任务模式检测由 `src/core/memory.ts` 的长期记忆系统处理。
 
 ### 3.11 门禁检查器 (`src/gate/checker.ts`)
 

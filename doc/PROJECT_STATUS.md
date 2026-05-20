@@ -1,59 +1,189 @@
 # iCloser Agent Shell — 项目状态总览
 
-生成日期：2026-05-15 (更新)
-状态：✅ 核心完成 + 增强补全。428 测试 / 49 文件 / 0 失败。smoke:all 全通过。
+生成日期：2026-05-20 (用户/市场验收后)
+状态：✅ 112 测试文件 / 1640 passed / 2 skipped。`tsc --noEmit` 零错误。`npm run build` 通过。`npm run lint` 零错误 / 145 warnings。`npm test` 本机实测 71.85s 通过。Acceptance pipeline/codegen/rollback 均已纳入 Vitest。
 
-## 本批次更新 (2026-05-15)
+## 本批次更新 (2026-05-20)
 
-### 阶段1: 骨架接入
-- code-writer.ts 6 函数接入 CLI (`ic gen`/`ic code`/`executeTask`)
-- task-planner.ts 持久化 `.icloser/plans/`，支持 `list`/`load`/`accept`
-- intent-classifier: 新增 `plan`/`code_fix`/`code_complete` 3 类意图
-- 新增 `ic code new|fix|complete|refactor|scaffold` 命令
+### 阶段: PRD 对齐与质量门禁修复
+- 跨平台测试：`report-agent.test.ts` 从硬编码 `/tmp/test-project` 改为 `os.tmpdir()` + `mkdtemp()`，避免 Windows 权限/路径问题。
+- Memory Kernel：修复 `store.ts` 在 TS/Vitest ESM 路径下 `require('./sqlite-store.js')` 找不到模块的问题；`sqlite-store.ts` 延迟加载 `node:sqlite`，并在 SQLite 不可用时降级为 JSONL 情景日志 + `rules.json/tree.md` 语义记忆，保持 Node >=18 产品承诺。
+- Memory 生命周期：`resetMemoryRuntime()` 改为可等待 shutdown，`context.test.ts` 清理临时目录前显式释放 SQLite 句柄，修复 Windows `EBUSY`。
+- Vitest 配置：关闭 Vitest cache，避免写入 `node_modules/.vite/vitest/results.json` 触发权限问题；`deps.external` 迁移到 `server.deps.external`。
+- 测试性能：`cli-full-coverage.test.ts` 复用共享 fixture，覆盖率型 spawn 测试不再重复 `init + scan` 或跑完整 `t --go` 执行链；完整 `npm test` 本机实测 71.85s。
+- 输出洁净度：测试脚本通过 `node --no-warnings` 和 `NODE_OPTIONS=--no-warnings` 屏蔽 Node `node:sqlite` experimental warning；跨平台命令测试准备真实文件，消除 `FINDSTR` 噪音。
+- 验收口径：`scan` acceptance 不再依赖 stdout 非空，改为验证命令成功且生成 `.icloser/index.json`，更贴近 PRD 的“项目扫描与索引”产品目标。
+- Lint 噪音：低风险清理测试与 Memory 模块未使用 import/变量，warnings 从 139 降至 120。
+- 用户/市场验收：补充真实 CLI 用户路径验收与市场需求评估；发现并修复 coverage 阶段绕过项目脚本导致全量测试超时的问题。
+- 覆盖率门禁：`runCoverageStage()` 现在复用项目 `coverage/test:coverage` 脚本和调用方 timeout，不再在临时项目里强行 fallback 到 `npx c8 vitest`。
+- Codex / Claude Code 对标：新增 Agent 记忆文件能力，支持导入 `AGENTS.md`、`CLAUDE.md`、`.github/copilot-instructions.md`、`.cursor/rules` 到 Semantic Memory，并支持导出项目规则到 `AGENTS.md`。
+- 全局路径隔离：`saveGlobalConfig()` / `loadGlobalConfig()` 和旧全局 Memory 均改为运行时读取 `ICLOSER_HOME`，避免测试或便携安装误写真实用户目录；全局记忆在 `EPERM/EACCES` 时降级为不阻塞任务。
+- 代码生成安全：`generateWithVerifyLoop()` 写入 AI 生成文件前限制路径必须位于项目根目录内，并对写入失败给出诊断而不是崩溃。
+- 测试质量门禁：`detectEmptyTests()` 现在可识别 `it/test("x", () => {})`、`async () => {}` 和常见错误写法，降低空测试被误收的风险。
+- 架构重构验收：`Provider` 已抽出 `OpenAICompatibleProvider`，`task/memory` 命令已迁出 `index.ts`；代码生成路径统一通过 `parseAIOutput()` 协议解析。
+- 集成补漏：`ic t` 主链路已从同步 `generatePlan()` 改为 `generatePlanAsync()`，实际用户创建任务时会优先使用 AI 语义拆解，AI 不可用或返回异常时自动降级到关键词分解。
+- 关键能力评分：更新 `doc/CAPABILITY_ASSESSMENT.md`，按 AI 记忆、工具、代码、测试、架构、产品可用性重新评分，综合为 7.8/10。
+- 工具能力排期：新增 `doc/ARCHITECT_ACCEPTANCE_DEV2_TOOL_PLAN_2026-05-20.md`，明确程序员2补齐 DOCX/XLSX 工具、工具过程可视化、工具权限产品化和 smoke 验收脚本。
+- 产品定位澄清：PRD 与验收文档已明确 AgentCode 是“本地工程执行器 + Claude Code / Codex 替代品 + 长期记忆系统”，后续代码能力必须按 Claude Code 级闭环验收，Memory Kernel 必须承担跨会话长期项目记忆。
 
-### 阶段2: 记忆系统升级 (M1-M8)
-- M1: 对话状态机 (convPhase 切换)
-- M2: 记忆相关性过滤 (2 词重叠 + 预算限制)
-- M3: 任务边界标记 (conversationCheckpoint)
-- M4: 对话摘要压缩 (10-full/30-archive)
-- M5: taskHistory 阈值 100→50, memoryCandidates 清理
-- M6: 偏好自动提升 (approved preference → UserPreferences)
-- M7: 错误自动记录 (失败任务 → pitfall)
-- M8: 上下文优先级权重常量
+### 用户/市场验收发现 (2026-05-20)
+- 真实 CLI 路径通过：`--help`、`setup --mock --json`、`init`、`scan --json`、`doctor --json`、`provider list --json`、`mem status`、`plan create` 均可完成。
+- `init` 在非 git 项目里仍输出 `fatal: not a git repository`，会削弱新用户信任；应降级为安静检测或中文提示。
+- 全量测试通过但仍输出 Memory mock 初始化错误、git ignore 权限 warning；发布前应清理为 debug 级日志。
+- 市场侧关键缺口：要成为 Codex/Claude Code/Copilot coding agent 替代品，仍需补齐真实 Provider 代码交付黄金路径、PR/Issue 工作流、长任务可视追踪、权限/沙箱产品化、团队级审计与真实 agent 端到端案例。
+- 记忆侧新增入口：`ic mem manifests` 查看可识别记忆文件，`ic mem import [file...]` 导入项目指令，`ic mem export [file]` 生成可共享的 Agent 项目说明。
+- 真实记忆 CLI 验收通过：在临时项目中创建 `AGENTS.md` / `CLAUDE.md` 后，`ic mem manifests`、`ic mem import`、`ic mem recall`、`ic mem export AGENTS.generated.md` 均可完成。
 
-### 阶段3: DevOps + 工具意图
-- S1: 运行时检测增强 (Spring Boot/Quarkus/Plain Java 区分)
-- S2: Monorepo 2 层深度扫描
-- S4: URL 检测多模式 + extractAllUrls
-- TI2: 平台适配 20+ 命令映射
-- TI4: 危险命令检测增强
+### 当前验证命令
+```
+npx tsc --noEmit
+npm test
+npm run lint
+```
 
-### 阶段4: 代码智能
-- code-writer.ts: generateWithTests (C4), generateScaffold (C9)
-- ic code --with-tests 支持
-- ic code scaffold <type> <name>
+### 当前仍待处理
+- `src/index.ts`、`src/cli/repl.ts`、`src/core/ast-parser.ts` 仍是维护风险最高的巨石文件，应随模块拆分继续清理剩余 144 个 ESLint warnings；其中 `index.ts` 已迁出 task/memory 命令，但任务执行主流程仍需继续拆分。
+- PRD 中运行时 `>=18.0.0` 已通过 Memory Kernel 降级路径守住；后续文档应继续明确：SQLite 索引是 Node 24+ 增强能力，Node 18/20 使用 JSONL/rules 文件存储并保留基础 Recall。
+- Acceptance 测试已覆盖 pipeline/codegen/rollback，但 spawn 型验收仍占用约 50-55s，需要后续按 CI 分层拆成 quick/unit 与 acceptance jobs。
+- 程序员2下一轮聚焦工具能力：先补 `read_docx` / `read_xlsx`，再补工具调用过程展示与 `smoke:tools`，每项必须同步测试和文档。
 
-### 阶段5: 文档 AI
-- docs-generator.ts 已有 26 函数完全覆盖 D1-D12
-- ic docs 16 子命令全部就绪
+---
+
+生成日期：2026-05-16 (最终 — 5 项优化完成)
+状态：✅ 471 测试 / 0 失败 / 48 文件。tsc 零错误。lint 0 errors。Acceptance 9/9。Smoke 全通过。综合评分 8.2/10。
+
+## 本批次更新 (2026-05-16)
+
+### 阶段: Bug 修复 (P0 — 5 项)
+- context.ts:491 操作符优先级加括号（注释行过滤失效）
+- repl.ts:136 对话压缩窗口 off-by-one（消息丢失）
+- provider.ts:611 Claude 假流式 → 真流式 `client.messages.stream()`
+- code-writer.ts:132 静默错误吞没 → 返回空结果
+- provider.ts:824 OpenAI provider 缺上下文注入
+
+### 阶段: AI 执行智能 (P1 — 4 项)
+- **新模块** tool-strategy.ts: 14 意图 → 有序工具序列模板
+- tool-executor.ts: 搜索/命令结果压缩函数
+- tool-executor.ts: 3次空结果自适应策略切换
+- tool-executor.ts: Unix→Windows 命令自动转译+执行（35+ 命令）
+
+### 阶段: 代码生成质量 (P2 — 3 项)
+- code-writer.ts: scaffold 支持 StyleFingerprint 参数
+- code-writer.ts: generateWithVerifyLoop（编译+lint → 自动修复 × 3 轮）
+- index.ts: 代码变更任务展示影响面 + 风险警告
+
+### 阶段: 跨平台/启动 (P3 — 3 项)
+- detect.ts: detectSubprojects（depth-2 扫描 7 种构建文件）
+- detect.ts: checkDependencies（Java/Go/Python/Rust 依赖检查）
+- tool-executor.ts: mvnw.cmd / gradlew.bat 自动检测
+
+### 阶段: 测试补全 (P4 — 4 项)
+- **新文件** startup.test.ts (9 测试), cross-platform.test.ts (8 测试), tool-strategy.test.ts (11 测试)
+- live-acceptance.mjs: 1 场景 → 5 场景
+
+### 阶段: 强制闸门 (Gate — 3 项)
+- Gate-1: 代码输出后强制编译验证 + 2轮自动修复（code-writer.ts:enforceCodeQuality）
+- Gate-2: 记忆注入前真实性校验（文件存在 + 幻觉标记检测）
+- Gate-3: detectSubprojects 接入 scanProject, checkDependencies 接入 cmdStartProject
+
+### 阶段: 收尾清理 (Task 1-8 — 2026-05-16)
+- Task 1: 修复 18 个 TS 错误 → tsc --noEmit 零错误
+- Task 2: 修复 agent/manager.ts 运行时 bug（this.id → orchestration task）
+- Task 3: 编译闸门扩展到 ic gen new 路径
+- Task 4: 配置覆盖率报告（npm run test:coverage → 43.6%）
+- Task 5: 删除死代码（skill/manager.ts、style-verifier.ts、4 个未使用 memory 导出）
+- Task 6: 真实验收测试增强（5 场景，live-acceptance.mjs）
+- Task 7: 提取 startup.ts 模块（250 行从 repl.ts 分离）
+- Task 8: 验证 AST 9 语言支持（Go/Python tree-sitter 可用，正则回退就绪）
 
 ## 快速导航
 
 | 文档 | 内容 |
 |------|------|
-| `docs/DEVELOPER_GUIDE.md` | 开发者指南：架构/接入/约定 |
-| `docs/UI.md` | UI 设计文档 + 最终架构 |
-| `docs/PRD.md` | 产品需求文档 |
-| `docs/API.md` | CLI/REPL 命令 API |
-| `docs/TESTING.md` | 测试策略和文件清单 |
-| `doc/PROJECT_COMPLETION_ANALYSIS.md` | 完成度分析 |
+| `doc/CAPABILITY_ASSESSMENT.md` | **最新** 关键能力综合评分 (7.8/10)，覆盖 AI 记忆、工具、代码、测试、架构与产品可用性 |
 | `doc/ARCHITECTURE.md` | 架构设计 |
+| `doc/PROJECT_COMPLETION_ANALYSIS.md` | 完成度分析 |
+| `doc/STARTUP_GAP_ANALYSIS.md` | 启动能力差距 (S1-S5) |
+| `doc/TOOL_INTENT_GAP.md` | 工具意图差距 (TI1-TI5) |
+| `doc/QUALITY_FIX_PLAN.md` | 质量修复方案 |
+| `doc/INTENT_DEVIATION_ANALYSIS.md` | 需求偏离分析 |
+| `docs/DEVELOPER_GUIDE.md` | 开发者指南：架构/接入/约定 |
 
 ## 架构分层
 
 ```
 Human → CLI(index.ts + cli/*) → Core(core/*) → Agent(manager.ts) → AI(provider.ts) → LLM
+                              ↑
+                         三道强制闸门
+                    (编译验证 | 记忆校验 | 依赖检查)
 ```
+
+## 关键模块 (53 files)
+
+| 模块 | 行数 | 功能 | 评分 |
+|------|------|------|------|
+| context.ts | 1307 | 5维相关性评分 + 3层压缩 | 9/10 |
+| scanner.ts | 975 | 10阶段扫描 + 增量指纹 | 8/10 |
+| memory.ts | 985 | 4层TTL记忆 + 风险分类 | 8/10 |
+| provider.ts | 971 | 5 Provider 适配 | 8/10 |
+| detect.ts | 759 | 14语言检测 + monorepo | 8/10 |
+| code-writer.ts | 471 | 代码生成 + 编译闸门 | 7/10 |
+| tool-executor.ts | 424 | 6工具 + 平台适配 | 7/10 |
+| verifier.ts | 1005 | 6阶段验证 + AI修复 | 7/10 |
+| task-engine.ts | 497 | DAG调度 + 文件锁 | 7/10 |
+| repl.ts | 3047 | REPL + 对话状态机 | 7/10 |
+| index.ts | 4412 | CLI入口 (需拆分) | 6/10 |
+| ast-parser.ts | 2368 | 8语言解析 (5 tree-sitter + 3 regex) | 7/10 |
+
+## S20-S22 UI 完成清单
+
+```
+S20.1 输出消毒        ✅  stdout 全路径
+S20.2 等待动画        ✅  脉冲+计时+tokens
+S20.3 状态栏          ✅  4模式单行
+S20.4 Diff着色        ✅  红绿渲染
+S20.5 输入框          ✅  readline原生
+S20.6 错误指引        ✅  编译/lint/test
+S20.7 命令面板        ✅  /? /p
+S20.8 历史搜索        ✅  !query !N
+S20.9 Tab补全         ✅  文件路径
+S21.0 代码折叠+TLDR   ✅  >30行自动
+S21.1 编排树+面板精简 ✅  单行化
+S22.0 上下文仪表      ✅  实时百分比
+S22.1 简洁/详细       ✅  /brief /full
+```
+
+## 测试
+
+```
+47 files / 458 tests / 444 passed / 14 failed (spawn, 因预存TS构建错误)
+```
+
+## 已知问题
+
+### 阻塞级
+- [ ] 18 个预存 TS 错误导致 `tsc` 构建失败
+- [ ] `agent/manager.ts:288` — `this.id` 不存在，运行时 bug
+- [ ] spawn 测试因构建失败不可用（14 个）
+
+### 重要级
+- [x] `ast-parser.ts` 已确认支持 8 语言（5 tree-sitter + 3 正则回退）
+- [ ] `index.ts` 4412 行 + `repl.ts` 3047 行，单体巨石
+- [ ] 死代码：`skill/manager.ts`、`style-verifier.ts`、4 个 memory 导出
+- [ ] 编译闸门仅 `executeTask` 路径生效
+
+### 后续任务（按优先级）
+
+| # | 任务 | 验收标准 | 估时 |
+|---|------|----------|------|
+| 1 | 修复 18 个预存 TS 错误 | `tsc --noEmit` 零错误 | 4h |
+| 2 | 修复 agent/manager.ts 运行时 bug | `this.id` 消除 | 1h |
+| 3 | 编译闸门扩展到 ic gen/code | 所有代码入口有验证 | 3h |
+| 4 | 配置覆盖率报告 | `npm run test:coverage` 可用 | 1h |
+| 5 | 删除死代码 | 无未使用导出 | 2h |
+| 6 | 真实验收测试 | 5 场景对接真实 AI | 8h |
+| 7 | index.ts/repl.ts 拆分 | 每文件 < 1000 行 | 8h |
+| 8 | AST 扩展到 Go/Python | 3 语言解析可用 | 12h |
 
 ## 关键模块 (49 files)
 

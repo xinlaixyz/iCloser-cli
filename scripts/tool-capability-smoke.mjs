@@ -63,10 +63,11 @@ console.log('── 1. 工具定义 read_docx / read_xlsx ──');
   assert(names.includes('read_docx'), 'read_docx in buildToolDefinitions()', `defs: ${names.join(', ')}`);
   assert(names.includes('read_xlsx'), 'read_xlsx in buildToolDefinitions()', `defs: ${names.join(', ')}`);
 
-  // Both should be before get_project_overview in the list
+  // Document readers should be grouped together; exact placement among other
+  // tools is not part of the product contract.
   const idxDocx = names.indexOf('read_docx');
-  const idxOverview = names.indexOf('get_project_overview');
-  assert(idxDocx < idxOverview || idxOverview === -1, 'read_docx ordered before get_project_overview');
+  const idxXlsx = names.indexOf('read_xlsx');
+  assert(Math.abs(idxDocx - idxXlsx) === 1, 'read_docx / read_xlsx are grouped together');
 
   // Verify parameter schemas
   const docxDef = defs.find(d => d.name === 'read_docx');

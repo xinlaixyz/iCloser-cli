@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
+import { mkdtemp } from 'fs/promises';
+import * as os from 'os';
+import * as path from 'path';
 import { generateTaskReport, generatePRDescription } from '../src/report/generator.js';
 import type { Task, AgentExecutionRecord } from '../src/types.js';
+
+async function makeTempProject(): Promise<string> {
+  return mkdtemp(path.join(os.tmpdir(), 'icloser-report-agent-'));
+}
 
 function makeTask(overrides: Partial<Task> = {}): Task {
   return {
@@ -54,7 +61,7 @@ describe('Report Agent integration (S15)', { timeout: 15000 }, () => {
     const task = makeTask({
       agentExecutions: [makeAgentExec()],
     });
-    const report = await generateTaskReport('/tmp/test-project', task, {} as never);
+    const report = await generateTaskReport(await makeTempProject(), task, {} as never);
     expect(report).toContain('## Agent 执行');
     expect(report).toContain('agent-test-001');
     expect(report).toContain('测试 Agent');
@@ -71,7 +78,7 @@ describe('Report Agent integration (S15)', { timeout: 15000 }, () => {
         makeAgentExec({ agentId: 'agent-3', agentName: 'A3', status: 'failed', result: { success: false, output: '', artifacts: [], tokensUsed: 300, duration: 5000, error: 'timeout' } }),
       ],
     });
-    const report = await generateTaskReport('/tmp/test-project', task, {} as never);
+    const report = await generateTaskReport(await makeTempProject(), task, {} as never);
     expect(report).toContain('3 个');
     expect(report).toContain('2 / 1');
   });
@@ -80,7 +87,7 @@ describe('Report Agent integration (S15)', { timeout: 15000 }, () => {
     const task = makeTask({
       agentExecutions: [makeAgentExec({ result: { success: true, output: '简短输出', artifacts: ['f.ts'], tokensUsed: 100, duration: 1000 } })],
     });
-    const report = await generateTaskReport('/tmp/test-project', task, {} as never);
+    const report = await generateTaskReport(await makeTempProject(), task, {} as never);
     expect(report).toContain('简短输出');
   });
 
@@ -89,7 +96,7 @@ describe('Report Agent integration (S15)', { timeout: 15000 }, () => {
     const task = makeTask({
       agentExecutions: [makeAgentExec({ result: { success: true, output: longOutput, artifacts: [], tokensUsed: 100, duration: 1000 } })],
     });
-    const report = await generateTaskReport('/tmp/test-project', task, {} as never);
+    const report = await generateTaskReport(await makeTempProject(), task, {} as never);
     expect(report).toContain('截断');
   });
 
@@ -100,7 +107,7 @@ describe('Report Agent integration (S15)', { timeout: 15000 }, () => {
         result: { success: false, output: '', artifacts: [], tokensUsed: 0, duration: 5000, error: '连接超时' },
       })],
     });
-    const report = await generateTaskReport('/tmp/test-project', task, {} as never);
+    const report = await generateTaskReport(await makeTempProject(), task, {} as never);
     expect(report).toContain('连接超时');
   });
 
@@ -139,7 +146,7 @@ describe('Report Agent integration (S15)', { timeout: 15000 }, () => {
         tree,
       })],
     });
-    const report = await generateTaskReport('/tmp/test-project', task, {} as never);
+    const report = await generateTaskReport(await makeTempProject(), task, {} as never);
     expect(report).toContain('执行树');
     expect(report).toContain('编排 Agent');
     expect(report).toContain('子任务 1');
@@ -148,7 +155,7 @@ describe('Report Agent integration (S15)', { timeout: 15000 }, () => {
 
   it('no agent section when agentExecutions is empty', async () => {
     const task = makeTask({ agentExecutions: [] });
-    const report = await generateTaskReport('/tmp/test-project', task, {} as never);
+    const report = await generateTaskReport(await makeTempProject(), task, {} as never);
     expect(report).not.toContain('## Agent 执行');
   });
 
@@ -165,7 +172,7 @@ describe('Report Agent integration (S15)', { timeout: 15000 }, () => {
     const task = makeTask({
       agentExecutions: [makeAgentExec({ sandboxLevel: 'readonly' })],
     });
-    const report = await generateTaskReport('/tmp/test-project', task, {} as never);
+    const report = await generateTaskReport(await makeTempProject(), task, {} as never);
     expect(report).toContain('readonly');
   });
 
@@ -176,7 +183,7 @@ describe('Report Agent integration (S15)', { timeout: 15000 }, () => {
         makeAgentExec({ agentId: 'a2', result: { success: true, output: 'ok', artifacts: [], tokensUsed: 700, duration: 20000 } }),
       ],
     });
-    const report = await generateTaskReport('/tmp/test-project', task, {} as never);
+    const report = await generateTaskReport(await makeTempProject(), task, {} as never);
     expect(report).toContain('1,200'); // total tokens
     expect(report).toContain('30.0s'); // total duration
   });

@@ -1,10 +1,8 @@
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { describe, expect, it } from 'vitest';
 import { loadProjectIndex, saveProjectIndex, scanProject } from '../src/core/scanner.js';
-import { parseSourceText } from '../src/core/ast-parser.js';
 
 async function writeProjectFile(root: string, file: string, content: string) {
   const full = join(root, file);
@@ -109,11 +107,6 @@ describe('S10 cross-file call graph', () => {
       const cg = result.index.callGraph!;
 
       // Should have calculate → add edge across modules
-      const crossCall = cg.find(e =>
-        e.caller.includes('calculate') &&
-        e.callee.includes('add') &&
-        !e.callee.includes(e.caller.split('/')[0])
-      );
       // At minimum the call graph should have entries
       expect(cg.length).toBeGreaterThanOrEqual(0);
 

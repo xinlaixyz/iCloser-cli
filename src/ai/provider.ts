@@ -672,157 +672,45 @@ class ClaudeProvider implements AIProviderAdapter {
 }
 
 // ============================================================
-// DeepSeek Provider
+// OpenAICompatibleProvider — shared base for DeepSeek / OpenAI / Qwen
 // ============================================================
-class DeepSeekProvider implements AIProviderAdapter {
-  name = 'deepseek';
-  supportsStreaming = true;
-  supportsToolUse = true;
-  defaultModel = 'deepseek-v4-pro';
-  availableModels = ['deepseek-v4-pro', 'deepseek-v3', 'deepseek-r1'];
+/**
+ * Base class for all OpenAI-compatible providers (same SDK, same wire format).
+ * Subclasses only need to supply four tiny overrides:
+ *   resolveApiKey()   — picks the right env var
+ *   resolveBaseURL()  — provider-specific endpoint (undefined = OpenAI default)
+ *   providerEnvVars() — for meaningful error messages
+ *   and the usual metadata (name, models, …)
+ */
+abstract class OpenAICompatibleProvider implements AIProviderAdapter {
+  abstract name: string;
+  abstract supportsStreaming: boolean;
+  abstract supportsToolUse: boolean;
+  abstract defaultModel: string;
+  abstract availableModels: string[];
 
-  private config: AIConfig;
+  protected config: AIConfig;
+  constructor(config: AIConfig) { this.config = config; }
 
-  constructor(config: AIConfig) {
-    this.config = config;
+  protected abstract resolveApiKey(): string;
+  protected abstract resolveBaseURL(): string | undefined;
+  protected abstract providerEnvVars(): string[];
+
+  /** Build the full user-facing prompt string from context fields. */
+  protected buildUserContent(prompt: AIPrompt): string {
+    return (
+      prompt.task + '\n\n上下文：\n' +
+      prompt.context.relevantCode.map(c => `// ${c.file}\n${c.content}`).join('\n\n') +
+      (prompt.context.relevantMemory ? '\n\n## 项目记忆\n' + prompt.context.relevantMemory : '') +
+      (prompt.context.externalKnowledge ? '\n\n## 网络搜索结果\n' + prompt.context.externalKnowledge : '') +
+      (prompt.context.astHints ? '\n\n## 代码调用关系\n' + prompt.context.astHints : '')
+    );
   }
 
   async chat(prompt: AIPrompt, tools?: ToolDefinition[]): Promise<AIResponse> {
     try {
       const { default: OpenAI } = await import('openai');
-
-      const client = new OpenAI({
-        apiKey: this.config.apiKey || process.env.DEEPSEEK_API_KEY || '',
-        baseURL: this.config.baseUrl || 'https://api.deepseek.com/v1',
-      });
-
-      const messages: { role: 'system' | 'user' | 'assistant'; content: string }[] = [
-        { role: 'system', content: prompt.systemPrompt },
-        {
-          role: 'user',
-          content: prompt.task + '\n\n上下文：\n' +
-            prompt.context.relevantCode.map(c => `// ${c.file}\n${c.content}`).join('\n\n') +
-            (prompt.context.relevantMemory ? '\n\n## 项目记忆\n' + prompt.context.relevantMemory : '') +
-            (prompt.context.externalKnowledge ? '\n\n## 网络搜索结果\n' + prompt.context.externalKnowledge : '') +
-            (prompt.context.astHints ? '\n\n## 代码调用关系\n' + prompt.context.astHints : ''),
-        },
-      ];
-
-      const response = await client.chat.completions.create({
-        model: this.config.model,
-        max_tokens: this.config.maxTokens,
-        temperature: this.config.temperature,
-        messages,
-        tools: tools?.map(t => ({
-          type: 'function' as const,
-          function: {
-            name: t.name,
-            description: t.description,
-            parameters: t.parameters,
-          },
-        })),
-      });
-
-      const choice = response.choices[0];
-      const content = choice.message.content || '';
-
-      const toolCalls: ToolCall[] = (choice.message.tool_calls || []).map(tc => ({
-        name: tc.function.name,
-        arguments: JSON.parse(tc.function.arguments),
-      }));
-
-      return {
-        content,
-        toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
-        tokensUsed: response.usage?.total_tokens || 0,
-        model: response.model,
-      };
-    } catch (err) {
-      throw classifyError(err, 'deepseek', ['DEEPSEEK_API_KEY'], Boolean(this.config.apiKey));
-    }
-  }
-
-  async chatStream(prompt: AIPrompt, onChunk: StreamCallback, _tools?: ToolDefinition[]): Promise<AIResponse> {
-    try {
-      const { default: OpenAI } = await import('openai');
-
-      const client = new OpenAI({
-        apiKey: this.config.apiKey || process.env.DEEPSEEK_API_KEY || '',
-        baseURL: this.config.baseUrl || 'https://api.deepseek.com/v1',
-      });
-
-      const messages: { role: 'system' | 'user' | 'assistant'; content: string }[] = [
-        { role: 'system', content: prompt.systemPrompt },
-        { role: 'user', content: prompt.task + '\n\n上下文：\n' +
-          prompt.context.relevantCode.map(c => `// ${c.file}\n${c.content}`).join('\n\n') +
-          (prompt.context.relevantMemory ? '\n\n## 项目记忆\n' + prompt.context.relevantMemory : '') +
-          (prompt.context.externalKnowledge ? '\n\n## 网络搜索结果\n' + prompt.context.externalKnowledge : '') +
-          (prompt.context.astHints ? '\n\n## 代码调用关系\n' + prompt.context.astHints : '') },
-      ];
-
-      const stream = await client.chat.completions.create({
-        model: this.config.model,
-        max_tokens: this.config.maxTokens,
-        temperature: this.config.temperature,
-        messages,
-        stream: true,
-        ...(_tools && _tools.length > 0 ? {
-          tools: _tools.map(t => ({
-            type: 'function' as const,
-            function: { name: t.name, description: t.description, parameters: t.parameters },
-          })),
-        } : {}),
-      });
-
-      let fullContent = '';
-      let totalTokens = 0;
-
-      for await (const chunk of stream) {
-        const delta = chunk.choices[0]?.delta?.content;
-        if (delta) {
-          fullContent += delta;
-          onChunk(delta);
-        }
-        if (chunk.usage?.total_tokens) {
-          totalTokens = chunk.usage.total_tokens;
-        }
-      }
-
-      return {
-        content: fullContent,
-        tokensUsed: totalTokens,
-        model: this.config.model,
-      };
-    } catch (err) {
-      throw classifyError(err, 'deepseek', ['DEEPSEEK_API_KEY'], Boolean(this.config.apiKey));
-    }
-  }
-}
-
-// ============================================================
-// OpenAI Provider
-// ============================================================
-class OpenAIProvider implements AIProviderAdapter {
-  name = 'openai';
-  supportsStreaming = true;
-  supportsToolUse = true;
-  defaultModel = 'gpt-4o';
-  availableModels = ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'o1', 'o3'];
-
-  private config: AIConfig;
-
-  constructor(config: AIConfig) {
-    this.config = config;
-  }
-
-  async chat(prompt: AIPrompt, tools?: ToolDefinition[]): Promise<AIResponse> {
-    try {
-      const { default: OpenAI } = await import('openai');
-
-      const client = new OpenAI({
-        apiKey: this.config.apiKey || process.env.OPENAI_API_KEY || '',
-        baseURL: this.config.baseUrl,
-      });
+      const client = new OpenAI({ apiKey: this.resolveApiKey(), baseURL: this.resolveBaseURL() });
 
       const response = await client.chat.completions.create({
         model: this.config.model,
@@ -830,117 +718,7 @@ class OpenAIProvider implements AIProviderAdapter {
         temperature: this.config.temperature,
         messages: [
           { role: 'system', content: prompt.systemPrompt },
-          {
-            role: 'user',
-            content: prompt.task + '\n\n上下文：\n' +
-              prompt.context.relevantCode.map(c => `// ${c.file}\n${c.content}`).join('\n\n') +
-              (prompt.context.relevantMemory ? '\n\n## 项目记忆\n' + prompt.context.relevantMemory : '') +
-              (prompt.context.externalKnowledge ? '\n\n## 网络搜索结果\n' + prompt.context.externalKnowledge : '') +
-              (prompt.context.astHints ? '\n\n## 代码调用关系\n' + prompt.context.astHints : ''),
-          },
-        ],
-        tools: tools?.map(t => ({
-          type: 'function' as const,
-          function: {
-            name: t.name,
-            description: t.description,
-            parameters: t.parameters,
-          },
-        })),
-      });
-
-      const choice = response.choices[0];
-      const content = choice.message.content || '';
-
-      return {
-        content,
-        tokensUsed: response.usage?.total_tokens || 0,
-        model: response.model,
-      };
-    } catch (err) {
-      throw classifyError(err, 'openai', ['OPENAI_API_KEY'], Boolean(this.config.apiKey));
-    }
-  }
-
-  async chatStream(prompt: AIPrompt, onChunk: StreamCallback, _tools?: ToolDefinition[]): Promise<AIResponse> {
-    try {
-      const { default: OpenAI } = await import('openai');
-      const client = new OpenAI({
-        apiKey: this.config.apiKey || process.env.OPENAI_API_KEY || '',
-        baseURL: this.config.baseUrl,
-      });
-
-      const stream = await client.chat.completions.create({
-        model: this.config.model,
-        max_tokens: this.config.maxTokens,
-        temperature: this.config.temperature,
-        messages: [
-          { role: 'system', content: prompt.systemPrompt },
-          {
-            role: 'user',
-            content: prompt.task + '\n\n上下文：\n' + prompt.context.projectMeta +
-              (prompt.context.relevantMemory ? '\n\n## 项目记忆\n' + prompt.context.relevantMemory : '') +
-              (prompt.context.externalKnowledge ? '\n\n## 网络搜索结果\n' + prompt.context.externalKnowledge : '') +
-              (prompt.context.astHints ? '\n\n## 代码调用关系\n' + prompt.context.astHints : ''),
-          },
-        ],
-        stream: true,
-      });
-
-      let fullContent = '';
-      for await (const chunk of stream) {
-        const delta = chunk.choices[0]?.delta?.content;
-        if (delta) { fullContent += delta; onChunk(delta); }
-      }
-      return { content: fullContent, tokensUsed: 0, model: this.config.model };
-    } catch (streamErr) {
-      try {
-        return await this.chat(prompt, _tools);
-      } catch {
-        throw streamErr; // preserve original streaming error if both fail
-      }
-    }
-  }
-}
-
-// ============================================================
-// Qwen Provider
-// ============================================================
-class QwenProvider implements AIProviderAdapter {
-  name = 'qwen';
-  supportsStreaming = true;
-  supportsToolUse = true;
-  defaultModel = 'qwen-max';
-  availableModels = ['qwen-max', 'qwen-plus', 'qwen-turbo'];
-
-  private config: AIConfig;
-
-  constructor(config: AIConfig) {
-    this.config = config;
-  }
-
-  async chat(prompt: AIPrompt, tools?: ToolDefinition[]): Promise<AIResponse> {
-    try {
-      const { default: OpenAI } = await import('openai');
-
-      const client = new OpenAI({
-        apiKey: this.config.apiKey || process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY || '',
-        baseURL: this.config.baseUrl || 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-      });
-
-      const response = await client.chat.completions.create({
-        model: this.config.model,
-        max_tokens: this.config.maxTokens,
-        temperature: this.config.temperature,
-        messages: [
-          { role: 'system', content: prompt.systemPrompt },
-          {
-            role: 'user',
-            content: prompt.task + '\n\n上下文：\n' +
-              prompt.context.relevantCode.map(c => `// ${c.file}\n${c.content}`).join('\n\n') +
-              (prompt.context.relevantMemory ? '\n\n## 项目记忆\n' + prompt.context.relevantMemory : '') +
-              (prompt.context.astHints ? '\n\n## 代码调用关系\n' + prompt.context.astHints : ''),
-          },
+          { role: 'user', content: this.buildUserContent(prompt) },
         ],
         ...(tools?.length ? {
           tools: tools.map(t => ({
@@ -952,8 +730,7 @@ class QwenProvider implements AIProviderAdapter {
 
       const choice = response.choices[0];
       const content = choice.message.content || '';
-
-      // Extract tool calls from Qwen response (OpenAI-compatible format)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const toolCalls: ToolCall[] = (choice.message.tool_calls || []).map((tc: any) => ({
         name: tc.function?.name || '',
         arguments: JSON.parse(tc.function?.arguments || '{}'),
@@ -966,17 +743,14 @@ class QwenProvider implements AIProviderAdapter {
         model: response.model,
       };
     } catch (err) {
-      throw classifyError(err, 'qwen', ['QWEN_API_KEY', 'DASHSCOPE_API_KEY'], Boolean(this.config.apiKey));
+      throw classifyError(err, this.name as AIProvider, this.providerEnvVars(), Boolean(this.config.apiKey));
     }
   }
 
-  async chatStream(prompt: AIPrompt, onChunk: StreamCallback): Promise<AIResponse> {
+  async chatStream(prompt: AIPrompt, onChunk: StreamCallback, _tools?: ToolDefinition[]): Promise<AIResponse> {
     try {
       const { default: OpenAI } = await import('openai');
-      const client = new OpenAI({
-        apiKey: this.config.apiKey || process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY || '',
-        baseURL: this.config.baseUrl || 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-      });
+      const client = new OpenAI({ apiKey: this.resolveApiKey(), baseURL: this.resolveBaseURL() });
 
       const stream = await client.chat.completions.create({
         model: this.config.model,
@@ -984,24 +758,64 @@ class QwenProvider implements AIProviderAdapter {
         temperature: this.config.temperature,
         messages: [
           { role: 'system', content: prompt.systemPrompt },
-          {
-            role: 'user',
-            content: prompt.task + '\n\n上下文：\n' + prompt.context.projectMeta +
-              (prompt.context.relevantMemory ? '\n\n## 项目记忆\n' + prompt.context.relevantMemory : '') +
-              (prompt.context.astHints ? '\n\n## 代码调用关系\n' + prompt.context.astHints : ''),
-          },
+          { role: 'user', content: this.buildUserContent(prompt) },
         ],
         stream: true,
       });
 
       let fullContent = '';
+      let totalTokens = 0;
       for await (const chunk of stream) {
         const delta = chunk.choices[0]?.delta?.content;
         if (delta) { fullContent += delta; onChunk(delta); }
+        if (chunk.usage?.total_tokens) totalTokens = chunk.usage.total_tokens;
       }
-      return { content: fullContent, tokensUsed: 0, model: this.config.model };
-    } catch (qwenStreamErr) {
-      try { return await this.chat(prompt); } catch { throw qwenStreamErr; }
+      return { content: fullContent, tokensUsed: totalTokens, model: this.config.model };
+    } catch (streamErr) {
+      // Fall back to non-streaming if stream setup fails
+      try { return await this.chat(prompt, _tools); } catch { throw streamErr; }
     }
   }
+}
+
+// ============================================================
+// DeepSeek Provider
+// ============================================================
+class DeepSeekProvider extends OpenAICompatibleProvider {
+  name = 'deepseek';
+  supportsStreaming = true;
+  supportsToolUse = true;
+  defaultModel = 'deepseek-v4-pro';
+  availableModels = ['deepseek-v4-pro', 'deepseek-v3', 'deepseek-r1'];
+  protected resolveApiKey() { return this.config.apiKey || process.env.DEEPSEEK_API_KEY || ''; }
+  protected resolveBaseURL() { return this.config.baseUrl || 'https://api.deepseek.com/v1'; }
+  protected providerEnvVars() { return ['DEEPSEEK_API_KEY']; }
+}
+
+// ============================================================
+// OpenAI Provider
+// ============================================================
+class OpenAIProvider extends OpenAICompatibleProvider {
+  name = 'openai';
+  supportsStreaming = true;
+  supportsToolUse = true;
+  defaultModel = 'gpt-4o';
+  availableModels = ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'o1', 'o3'];
+  protected resolveApiKey() { return this.config.apiKey || process.env.OPENAI_API_KEY || ''; }
+  protected resolveBaseURL() { return this.config.baseUrl; }
+  protected providerEnvVars() { return ['OPENAI_API_KEY']; }
+}
+
+// ============================================================
+// Qwen Provider
+// ============================================================
+class QwenProvider extends OpenAICompatibleProvider {
+  name = 'qwen';
+  supportsStreaming = true;
+  supportsToolUse = true;
+  defaultModel = 'qwen-max';
+  availableModels = ['qwen-max', 'qwen-plus', 'qwen-turbo'];
+  protected resolveApiKey() { return this.config.apiKey || process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY || ''; }
+  protected resolveBaseURL() { return this.config.baseUrl || 'https://dashscope.aliyuncs.com/compatible-mode/v1'; }
+  protected providerEnvVars() { return ['QWEN_API_KEY', 'DASHSCOPE_API_KEY']; }
 }

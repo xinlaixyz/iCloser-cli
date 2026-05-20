@@ -15,7 +15,7 @@ function ic(args: string[], cwd?: string, env?: NodeJS.ProcessEnv): { stdout: st
     cwd: cwd || process.cwd(),
     encoding: 'utf-8',
     timeout: 30000,
-    env: env ? { ...process.env, ...env } : process.env,
+    env: { ...process.env, NODE_NO_WARNINGS: '1', ...(env || {}) },
   });
   return { stdout: r.stdout, stderr: r.stderr, status: r.status };
 }
@@ -31,10 +31,10 @@ beforeAll(async () => {
   await writeFile(join(tmpDir, 'index.ts'), 'export const x = 1;\n');
   // Init + mock task
   const initOut = ic(['init', '--force'], tmpDir);
-  if (initOut.status !== 0) console.error('init failed:', initOut.stderr);
+  if (initOut.status !== 0 && initOut.stderr.trim()) console.error('init failed:', initOut.stderr);
   ic(['config', 'provider', 'mock'], tmpDir);
   const taskOut = ic(['t', 'verify JSON gate output', '--go'], tmpDir);
-  if (taskOut.status !== 0) console.error('task failed:', taskOut.stderr);
+  if (taskOut.status !== 0 && taskOut.stderr.trim()) console.error('task failed:', taskOut.stderr);
 });
 
 describe('JSON contract spawn tests', () => {

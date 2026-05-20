@@ -21,7 +21,7 @@
 - 语言选择：TypeScript (Node.js >= 18, ES2022)
 - 框架：无框架，vanilla 方案
 - 构建系统：npm (tsc 编译)
-- 测试框架：vitest (65 个测试文件, 644 测试, 0 失败)
+- 测试框架：vitest (112 个测试文件, 1640 passed / 2 skipped, 0 失败)
 - 运行时兼容：Windows / macOS / Linux
 - AI Provider：支持 Claude、DeepSeek、OpenAI、Qwen 及离线 mock
 

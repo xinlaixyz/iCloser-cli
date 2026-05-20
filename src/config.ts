@@ -4,11 +4,17 @@ import { fileExists, readJson, writeJson, ensureDir } from './utils/fs.js';
 import type { ICloserConfig, ProjectIdentity, AIProvider, VerifyStage } from './types.js';
 
 const CONFIG_FILENAME = 'icloser.json';
-const GLOBAL_CONFIG_DIR = process.env.ICLOSER_HOME || path.join(
-  process.env.HOME || process.env.USERPROFILE || '~',
-  '.icloser'
-);
-const GLOBAL_CONFIG_PATH = path.join(GLOBAL_CONFIG_DIR, 'config.json');
+
+function getGlobalConfigDir(): string {
+  return process.env.ICLOSER_HOME || path.join(
+    process.env.HOME || process.env.USERPROFILE || '~',
+    '.icloser'
+  );
+}
+
+function getGlobalConfigPath(): string {
+  return path.join(getGlobalConfigDir(), 'config.json');
+}
 
 export function defaultConfig(rootPath: string, identity: ProjectIdentity): ICloserConfig {
   const isFrontend = ['react', 'vue', 'nextjs', 'nuxt', 'svelte', 'angular'].includes(identity.framework);
@@ -81,9 +87,10 @@ export async function loadConfig(rootPath: string): Promise<ICloserConfig | null
       const defaults = defaultConfig(projectRoot, identity);
       const config = { ...defaults, ...raw } as ICloserConfig;
       // Merge with global config for AI settings: only inherit apiKey, never override project choices
-      if (await fileExists(GLOBAL_CONFIG_PATH)) {
+      const globalConfigPath = getGlobalConfigPath();
+      if (await fileExists(globalConfigPath)) {
         try {
-          const globalConfig = await readJson(GLOBAL_CONFIG_PATH);
+          const globalConfig = await readJson(globalConfigPath);
           if (globalConfig.ai && !config.ai.apiKey) {
             const globalAI = globalConfig.ai as Partial<ICloserConfig['ai']>;
             if (globalAI.apiKey) {
@@ -107,18 +114,21 @@ export async function saveConfig(config: ICloserConfig): Promise<void> {
 }
 
 export async function saveGlobalConfig(key: string, value: unknown): Promise<void> {
-  await ensureDir(GLOBAL_CONFIG_DIR);
+  const globalConfigDir = getGlobalConfigDir();
+  const globalConfigPath = getGlobalConfigPath();
+  await ensureDir(globalConfigDir);
   let config: Record<string, unknown> = {};
-  if (await fileExists(GLOBAL_CONFIG_PATH)) {
-    config = await readJson(GLOBAL_CONFIG_PATH);
+  if (await fileExists(globalConfigPath)) {
+    config = await readJson(globalConfigPath);
   }
   config[key] = value;
-  await writeJson(GLOBAL_CONFIG_PATH, config);
+  await writeJson(globalConfigPath, config);
 }
 
 export async function loadGlobalConfig(): Promise<Record<string, unknown>> {
-  if (await fileExists(GLOBAL_CONFIG_PATH)) {
-    return readJson(GLOBAL_CONFIG_PATH);
+  const globalConfigPath = getGlobalConfigPath();
+  if (await fileExists(globalConfigPath)) {
+    return readJson(globalConfigPath);
   }
   return {};
 }

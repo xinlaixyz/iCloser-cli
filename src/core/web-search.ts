@@ -12,6 +12,7 @@ export interface WebSearchOptions {
   maxResults?: number;     // default 5
   language?: string;       // not used by DDG but reserved
   timeout?: number;        // default 5000ms
+  rootPath?: string;       // project root for disk cache persistence
 }
 
 // Tiered cache: L1 (short TTL) + L2 (long TTL) + disk (survives restart)
@@ -110,8 +111,8 @@ export async function searchWeb(query: string, options: WebSearchOptions = {}): 
   }
 
   cacheMisses++;
-  // Lazy-load disk cache on first search
-  if (!_diskCacheLoaded) await loadDiskCache();
+  // Lazy-load disk cache on first search (keyed by rootPath)
+  if (!_diskCacheLoaded) await loadDiskCache(options.rootPath);
 
   let results: WebSearchResult[] = [];
 
@@ -152,7 +153,7 @@ export async function searchWeb(query: string, options: WebSearchOptions = {}): 
   if (results.length > 0) {
     l1Cache.set(cacheKey, { results, expiresAt: Date.now() + L1_TTL_MS });
     l2Cache.set(cacheKey, { results, expiresAt: Date.now() + L2_TTL_MS });
-    saveDiskCache().catch(() => {});
+    saveDiskCache(options.rootPath).catch(() => {});
 
     if (l1Cache.size > MAX_CACHE_SIZE) {
       const oldest = [...l1Cache.entries()].sort((a, b) => a[1].expiresAt - b[1].expiresAt)[0];

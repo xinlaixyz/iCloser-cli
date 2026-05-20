@@ -87,14 +87,16 @@ export function isAnalysisOnlyTask(desc: string): boolean {
 // ── C5: Shared gen/code command handlers (eliminates ~100 lines of duplication in index.ts) ──
 
 export async function runGenNew(
-  rootPath: string, desc: string, config: any, provider: any, isMock: boolean, _withTests = false,
+  rootPath: string, desc: string, config: any, provider: any, isMock: boolean, options?: { withTests?: boolean; verify?: boolean },
 ): Promise<{ file: string; content: string }[]> {
-  const { success } = await import('../cli/output.js');
+  const withTests = options?.withTests ?? false;
+  const verify = options?.verify ?? false;
   let styleConstraint = '';
   let codePatterns = '';
+  let index: any = null;
   if (!isMock) {
     try {
-      const index = await (await import('./scanner.js')).loadProjectIndex(rootPath);
+      index = await (await import('./scanner.js')).loadProjectIndex(rootPath);
       if (index?.styleFingerprint) {
         const { buildStyleConstraints } = await import('./code-writer.js');
         styleConstraint = buildStyleConstraints(index.styleFingerprint);
@@ -105,6 +107,14 @@ export async function runGenNew(
       }
     } catch { /* best-effort */ }
   }
+
+  // T4: Verify mode — generate + compile/lint + fix loop up to 3 rounds
+  if (verify && !isMock && index) {
+    const { generateWithVerifyLoop } = await import('./code-writer.js');
+    const result = await generateWithVerifyLoop(desc, rootPath, index, provider);
+    return result.source.map((c: { file: string; content: string }) => ({ file: c.file, content: c.content }));
+  }
+
   const ctxPkg = {
     projectMeta: codePatterns ? `现有代码模式:\n${codePatterns.slice(0, 2000)}` : '',
     relevantCode: [], relevantMemory: styleConstraint, totalTokens: 0, budgetUsed: 0,
