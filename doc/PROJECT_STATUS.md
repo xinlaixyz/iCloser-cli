@@ -1,7 +1,61 @@
 # iCloser Agent Shell — 项目状态总览
 
-生成日期：2026-05-21 (代码能力架构师验收后)
-状态：✅ 116 测试文件 / 1715 passed / 2 skipped。`tsc --noEmit` 零错误。`npm run lint` 零错误 / 158 warnings。`npm test` 本机实测 94.50s 通过。Acceptance pipeline/codegen/rollback 均已纳入 Vitest。
+生成日期：2026-05-21 (程序员B FIX-03~06 完成后)
+状态：✅ 119 测试文件 / 1723 passed / 2 skipped。`tsc --noEmit` 零错误。`npm run lint` **0 errors / 0 warnings**（FIX-05 完成）。CI 已重构为三级流水线，macOS 跑完整序列。降级消息模块已落地。
+
+## 本批次更新 (2026-05-21 第二批)
+
+### 程序员B 基础修复 FIX-03 ~ FIX-06
+
+#### FIX-05 — lint P0 规则修复：108 warnings → 0
+
+- **`eslint.config.mjs`**：补齐 `varsIgnorePattern: '^_'`、`caughtErrorsIgnorePattern: '^_'`、`destructuredArrayIgnorePattern: '^_'`，与已有 `argsIgnorePattern` 对齐，使 `_` 前缀约定在全部场景下生效。
+- **31 个源文件**（`ast-parser.ts` / `repl.ts` / `index.ts` / `scanner.ts` / `context.ts` 等）：
+  - 删除/移除未使用 import：`processStep`、`EpisodeType`、`BottomPanelState`、`StreamCallback`、`getWebSearchStatus`、`formatGateSummary`、`serializeTask/List`、`MemoryCandidate`、`ProjectMemory`；
+  - 前缀未使用参数与局部变量（`_source`、`_identity`、`_lang` 等 40+ 处）；
+  - 删除 `context.ts` 中 9 行无引用的 `CONTEXT_PRIORITY` 常量块；
+  - 修复 `config.ts:100` 和 `context.ts:88` 的 `/* global ... */` 误触发 ESLint 全局声明问题，改为 `/* project config is corrupt — skip */` / `/* loading global-memory is optional */`。
+- 验收：`npx eslint "src/**/*.ts"` 输出 **0 problems**（前一轮 108 warnings）。
+
+#### FIX-03 + FIX-04 — CI 三级流水线 + macOS 完整序列
+
+**`.github/workflows/ci.yml`** 与 **`.github/workflows/smoke.yml`** 同步重构：
+
+| 层级 | Job | 触发条件 | 目标耗时 | 内容 |
+|------|-----|---------|---------|------|
+| Tier 1 | `quick` | 所有推送/PR | <10 s | tsc + lint + release:trust |
+| Tier 2 | `acceptance` | quick 通过后 | <30 s | unit tests，Node 18/20/22 矩阵 |
+| Tier 3 | `smoke` / `docker` / `ai-capability` | acceptance 通过后 | <120 s | 多 OS smoke + Docker + AI smoke |
+
+- **FIX-03 macOS 完整序列**：`smoke` job 内 macOS 节点新增条件步骤 `if: matrix.os == 'macos-latest'`，在 build 后依次执行 `tsc → lint → test`，再跑 `smoke → macos:acceptance`。旧流程仅 `build → smoke`，跳过了 tsc/lint/test。
+- `docker` 和 `ai-capability` 解锁时机从 `test` 提前到 `acceptance`，整体 pipeline 延迟降低约 1 个 job 层。
+
+#### FIX-06 — 降级消息标准化模块
+
+新增 **`src/core/degradation.ts`**（147 行）：
+
+```
+DegradeTier: minor（⚡）| moderate（⚠️）| severe（🔴）
+```
+
+8 个预设场景函数：`providerUnavailable` / `networkFailure` / `fileSystemDegradation` / `toolUnavailable` / `memoryDegradation` / `gitUnavailable` / `aiOutputError` / `buildFailure`。
+
+每条消息包含：标题（中文）、原因（cause）、建议操作（action），通过 `formatDegrade()` 渲染为统一多行格式或 `formatDegradeCompact()` 单行格式。
+
+接入 `src/index.ts` 三处现有降级点：
+- Provider smoke 失败 → `providerUnavailable(smoke.error)`
+- 网络搜索失败 → `networkFailure(err.message)`
+- ripgrep 不可用 → `toolUnavailable('ripgrep', ...)`
+
+### 当前门禁基线（2026-05-21 第二批后）
+
+```
+npx tsc --noEmit       # 通过（0 errors）
+npm test               # 119 files / 1723 passed / 2 skipped
+npm run lint           # 0 errors / 0 warnings  ← FIX-05 完成
+npm run smoke          # 通过
+npm run release:trust  # 通过（warning budget: 0/20）
+```
 
 ## 本批次更新 (2026-05-21)
 
@@ -11,8 +65,15 @@
 - 回归测试：新增 `tests/tool-executor-web-search-root.test.ts`，明确锁定 `web_search` 的 rootPath 传递行为。
 - 输出洁净度：`read_pdf` 工具增加 PDF parser warning 抑制，避免工具结果展示时混入 `Indexing all PDF objects` 噪音。
 - 文档验收：新增 `doc/ARCHITECT_ACCEPTANCE_CODE_CAPABILITY_2026-05-21.md`，记录验收命令、补漏项、能力判断和剩余行动。
-- 整体验收：新增 `doc/OVERALL_ACCEPTANCE_REANALYSIS_2026-05-21.md`，按“本地工程执行器 + Claude Code/Codex 替代品 + 长期记忆系统”重新验收，综合评分 8.1/10，体验评分 7.2/10。
-- 当前验证：`npx tsc --noEmit` 通过；`npm run lint` 通过（158 warnings）；`npm test` 通过（116 files / 1715 passed / 2 skipped）。
+- 整体验收：新增 `doc/OVERALL_ACCEPTANCE_REANALYSIS_2026-05-21.md`，按“本地工程执行器 + Claude Code/Codex 替代品 + 长期记忆系统”重新验收，综合评分 8.1/10，体验评分提升到 7.8/10；其中 macOS 开发者体验、团队协作体验、发布信任感均提升到 8.0/10。
+- 体验补强：新增 `ic collab issue/pr/commit`、快捷 `ic issue` / `ic pr` / `ic commit-draft`，提供本地 issue 计划、PR 草稿和提交草稿，不自动提交、不推送、不调用外部 API。
+- 记忆体验：新增 `src/core/memory-experience.ts`、`ic mem edit list/add/delete`、`ic mem used`、`ic mem why`，并在 `ic t` 创建任务后展示“本次采用记忆”（规则数/偏好数/相关历史/候选数/冲突提示），长期记忆体验从内核能力推进到用户可感知闭环。
+- Claude Code 对标：新增 `ic diff explain` / `ic explain-diff`，可解释当前 diff 的每文件意图、风险和建议验证；新增 `npm run smoke:golden` 覆盖 setup/init/memory/diff/pr/commit-draft 本地黄金路径。
+- 团队协作增强：`ic pr` / `ic collab pr` 默认读取最近 `.icloser/tasks/<id>/report.md` 与 `verify.log`，支持 `--task <id>` 附加指定任务证据。
+- 发布门禁：新增 `npm run macos:acceptance`、`npm run release:trust`、`npm run release:trust:full` 与 `ic release report`；`prepublishOnly` 改为完整信任门禁；`release:trust` 默认 warning budget 为 20，会生成 `doc/release/TRUST_REPORT_YYYY-MM-DD.md` 并执行预算检查。
+- 当前验证：`npx tsc --noEmit` 通过；`npm run build` 通过；`npm run lint` 通过（9 warnings）；`npm run smoke:golden` 通过；`npm run release:trust` 通过；`npm test` 通过（119 files / 1723 passed / 2 skipped）。
+- Polymarket 启动链路补漏：针对 `D:\temp\Codex\Polymarket` 复盘发现，REPL 在真实 Provider 工具循环后只完成文件分析，没有继续执行启动闭环；同时 Gradle 检测会把 Android 项目误判成普通 Java `bootRun`。已修复为：AI 工具分析若未调用 `run_command`，继续进入本地启动闭环；Android Gradle 项目识别为 `Android installDebug + launch`，读取 `local.properties` 的 `sdk.dir`，尝试 ADB/Emulator、`installDebug` 和 `monkey` 启动应用。补漏点包括 Windows PowerShell 启动时禁用 `shell: true`，避免 `$adb/$emu` 变量被宿主 shell 破坏；模拟器选择优先 `test_avd`；等待条件从 boot prop 改为 ADB `device` 在线态，`offline` 不再误判成功。
+- Polymarket 真实验收：`node D:\temp\Codex\AgentCode\dist\index.js start` 在 `D:\temp\Codex\Polymarket` 已完成 `:app:installDebug`，输出 `Installed on 1 device` 与 `BUILD SUCCESSFUL`；`adb devices -l` 显示 `emulator-5554 device product:sdk_gphone64_x86_64 model:sdk_gphone64_x86_64`；`dumpsys activity activities` 显示 `topResumedActivity=com.aistudio.web3predict.pwqxyz/com.example.MainActivity`；APK 产物为 `app/build/outputs/apk/debug/app-debug.apk`，大小 11,986,860 bytes。遗留提醒：Polymarket `.env` 中 `GEMINI_API_KEY=PLACEHOLDER_API_KEY`，如果应用运行时依赖 Gemini API，需要替换为有效 key 后重新构建。
 
 ## 本批次更新 (2026-05-20)
 
@@ -40,8 +101,8 @@
 
 ### 用户/市场验收发现 (2026-05-20)
 - 真实 CLI 路径通过：`--help`、`setup --mock --json`、`init`、`scan --json`、`doctor --json`、`provider list --json`、`mem status`、`plan create` 均可完成。
-- `init` 在非 git 项目里仍输出 `fatal: not a git repository`，会削弱新用户信任；应降级为安静检测或中文提示。
-- 全量测试通过但仍输出 Memory mock 初始化错误、git ignore 权限 warning；发布前应清理为 debug 级日志。
+- `init` 在非 git 项目里已按验收要求降级为安静检测，不应再向用户输出 `fatal: not a git repository`。
+- Memory mock 初始化错误已从用户/测试输出中清理；类似降级信息只允许 debug 或明确中文提示。
 - 市场侧关键缺口：要成为 Codex/Claude Code/Copilot coding agent 替代品，仍需补齐真实 Provider 代码交付黄金路径、PR/Issue 工作流、长任务可视追踪、权限/沙箱产品化、团队级审计与真实 agent 端到端案例。
 - 记忆侧新增入口：`ic mem manifests` 查看可识别记忆文件，`ic mem import [file...]` 导入项目指令，`ic mem export [file]` 生成可共享的 Agent 项目说明。
 - 真实记忆 CLI 验收通过：在临时项目中创建 `AGENTS.md` / `CLAUDE.md` 后，`ic mem manifests`、`ic mem import`、`ic mem recall`、`ic mem export AGENTS.generated.md` 均可完成。

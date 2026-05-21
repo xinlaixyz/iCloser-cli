@@ -91,15 +91,22 @@ npm run smoke:keep
 ICLOSER_KEEP_PROJECT_SMOKE=1 npm run smoke:project
 ```
 
-CI 与分支策略：
-- `.github/workflows/smoke.yml` 在 PR 和 push 到 `main`/`master` 时运行。
-- **PR 合并门槛：必须 `npm run smoke` 通过。** CI 绿灯是合并的必要条件。
-- CI 使用 Node 22、`npm ci`、`npm run smoke`。
-- 所有 S1 代码进入主分支前必须本地通过 `npm run smoke`。
-- `npm run smoke` 内建 build + test，mock provider 完成最小任务闭环，无需 API Key。
-- `npm run smoke:project` 会创建一个临时 TypeScript 项目，验证 `ic doctor --strict --json`、任务写入、项目 build/lint/test、gate/report。
-- `npm run smoke:all` 串行执行 build、test、first-run、REPL、release、real-project 全套验收，适合阶段交接前使用。
-- CI 中可额外加入 `ic doctor --strict --json` 作为快速就绪门禁（未 init 或缺失索引时 exit 1），比完整 smoke 更轻量。
+CI 三级流水线（FIX-03/FIX-04，2026-05-21 重构）：
+
+| 层级 | Job | 目标 | 触发 |
+|------|-----|------|------|
+| Tier 1 | `quick` | tsc + lint + release:trust，<10 s | 所有推送/PR |
+| Tier 2 | `acceptance` | unit tests，Node 18/20/22，<30 s | quick 通过后 |
+| Tier 3 | `smoke` / `docker` / `ai-capability` | 多 OS smoke + Docker + AI，<120 s | acceptance 通过后 |
+
+**macOS 完整序列（FIX-03）**：`smoke` job 中 `macos-latest` 节点在 build 之后依次执行 `tsc → lint → test → smoke → macos:acceptance`，完整覆盖平台兼容性。
+
+**PR 合并门槛**：Tier 1 `quick` 必须通过。主干推送额外要求 Tier 2 `acceptance` 通过。
+
+- 所有代码进入主分支前必须本地通过 `npm run smoke`（无需 API Key）。
+- `npm run smoke:project` 创建临时 TypeScript 项目，验证 doctor/写文件/build/lint/test/gate/report。
+- `npm run smoke:all` 串行执行完整验收链，适合阶段交接前使用。
+- `ic doctor --strict --json` 可作为轻量就绪门禁（exit 1 表示未 init 或缺失索引）。
 
 ### S2 下一阶段研发计划
 
@@ -158,6 +165,7 @@ AgentCode/
 │   │   ├── verifier.ts       # 验证引擎
 │   │   ├── context.ts        # 上下文压缩管理器
 │   │   ├── memory.ts         # 双层级记忆系统
+│   │   ├── degradation.ts    # ★ 降级消息标准化（FIX-06）
 │   │   └── security.ts       # 安全执行层
 │   │
 │   ├── agent/

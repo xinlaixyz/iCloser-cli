@@ -1,5 +1,35 @@
 # 质量修复方案 — 开发逻辑/记忆/代码能力
 
+## 2026-05-21 执行记录 — 程序员B FIX-03~06 收尾
+
+本轮聚焦发布质量最后一公里：lint 全清零、CI 重构为三级流水线、macOS 补齐完整验证序列、降级消息统一中文分级格式。
+
+### 已完成
+
+| FIX | 问题 | 修复 | 验证 |
+|-----|------|------|------|
+| FIX-05 | `npm run lint` 残留 108 warnings | `eslint.config.mjs` 补 `varsIgnorePattern/caughtErrorsIgnorePattern/destructuredArrayIgnorePattern: '^_'`；31 源文件删除未用 import、前缀未用参数/局部变量；修复 `/* global */` 误触 ESLint 全局声明 | `eslint "src/**/*.ts"` → **0 problems** |
+| FIX-03 | macOS CI 只跑 `build→smoke`，跳过 tsc/lint/test | `ci.yml` + `smoke.yml` smoke job 内为 `macos-latest` 新增条件步骤：build 后依次执行 tsc → lint → test → smoke → macos:acceptance | 工作流文件 YAML 验证通过 |
+| FIX-04 | CI 无分层，quick 与 full 混跑 | 重构为三层：Tier 1 `quick`(tsc+lint) → Tier 2 `acceptance`(unit tests, Node 18/20/22) → Tier 3 `smoke`+`docker`+`ai-capability` | pipeline 依赖链正确，docker/ai gate 提前到 acceptance 解锁 |
+| FIX-06 | 降级消息格式不统一，英文/中文混用 | 新增 `src/core/degradation.ts`：3 个严重级别、8 个场景函数、`formatDegrade/formatDegradeCompact/warnDegrade`；接入 index.ts 3 处 | tsc 通过，lint 0 warnings，格式统一 |
+
+### 当前门禁基线
+
+```
+npx tsc --noEmit       # 通过（0 errors）
+npm test               # 119 files / 1723 passed / 2 skipped（2026-05-21）
+npm run lint           # 0 errors / 0 warnings  ← FIX-05 完成后达到
+npm run release:trust  # warning budget 0/20，通过
+```
+
+### 后续建议
+
+- `src/index.ts`（4400+ 行）、`src/cli/repl.ts`（3300+ 行）仍是最大维护风险，需持续按模块边界拆分；lint 清零消除了最大噪声，拆分窗口已到。
+- 降级模块 `degradation.ts` 中的三个已接入点是起点，后续遇到 `warn('...')` 的降级场景应逐步迁移到 `formatDegrade()`，统一用户感知。
+- CI Tier 2 acceptance 目前含 Node 18/20/22 矩阵，如 CI 时间预算紧张，可将 18/20 改为 weekly 调度，只保留 22 在 PR 路径。
+
+---
+
 ## 2026-05-20 执行记录 — PRD 口径质量门禁闭环
 
 本轮以 `docs/PRD.md` 为准，优先修复会直接影响“跨平台兼容、Memory Kernel 自动激活、CI/CD 质量门禁”的问题。
@@ -25,7 +55,7 @@
 ```
 npx tsc --noEmit       # 通过
 npm test               # 116 files / 1715 passed / 2 skipped (2026-05-21)
-npm run lint           # 0 errors / 158 warnings (2026-05-21)
+npm run lint           # 0 errors / 9 warnings (2026-05-21)
 ```
 
 ### 后续建议

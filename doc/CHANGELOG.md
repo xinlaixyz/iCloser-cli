@@ -1,5 +1,49 @@
 # Changelog
 
+## 2026-05-21 — 程序员B FIX-03~06：质量门禁收尾
+
+### FIX-05：lint P0 全清零（108 warnings → 0）
+
+- `eslint.config.mjs`：新增 `varsIgnorePattern`、`caughtErrorsIgnorePattern`、`destructuredArrayIgnorePattern: '^_'`，使下划线前缀约定在变量、catch 块、数组解构三类场景均生效。
+- 31 个源文件机械修复：删除未使用 import（`processStep` / `EpisodeType` / `BottomPanelState` / `StreamCallback` / `getWebSearchStatus` / `formatGateSummary` / `serializeTask` / `serializeTaskList` / `MemoryCandidate` / `ProjectMemory`），前缀未使用参数与局部变量（`_source` × 12 / `_identity` × 4 / `_lang` × 2 等，共 40+ 处）。
+- 删除 `context.ts` 9 行无引用 `CONTEXT_PRIORITY` 常量块。
+- 修复 `config.ts:100` 与 `context.ts:88` 的 `/* global ... */` 注释误触发 ESLint 全局声明警告（改写措辞回避 `global` 前缀）。
+- 结果：`npx eslint "src/**/*.ts"` **0 problems**；`tsc --noEmit` 保持 0 errors。
+
+### FIX-03：macOS CI 完整验证序列
+
+- 旧流程：`npm ci → build → smoke`（跳过 tsc / lint / test）。
+- 新流程：`npm ci → build → tsc → lint → test → smoke → macos:acceptance`。
+- 通过 `if: matrix.os == 'macos-latest'` 条件步骤实现，对 ubuntu / windows 无侵入。
+- 同步更新 `ci.yml` 与 `smoke.yml`（PR-only）。
+
+### FIX-04：CI 三级流水线
+
+```
+Tier 1  quick       tsc + lint                      <10 s  ubuntu
+Tier 2  acceptance  unit tests, Node 18/20/22        <30 s  ubuntu (矩阵)
+Tier 3  smoke       多 OS + docker + AI capability   <120 s 并行
+```
+
+- `docker` 与 `ai-capability` 从原来等 `test` 提前到等 `acceptance`，减少约一个 job 层延迟。
+- 每一层 `timeout-minutes` 均写入，防止挂起吃 CI 配额。
+
+### FIX-06：降级消息标准化模块
+
+新文件 `src/core/degradation.ts`（147 行）：
+
+```
+DegradeTier: minor ⚡ | moderate ⚠️ | severe 🔴
+场景函数: providerUnavailable / networkFailure / fileSystemDegradation /
+          toolUnavailable / memoryDegradation / gitUnavailable /
+          aiOutputError / buildFailure
+格式器:   formatDegrade (多行) / formatDegradeCompact (单行) / warnDegrade / degrade
+```
+
+接入 `src/index.ts` 三处现存降级点：Provider smoke 失败 / 网络搜索错误 / ripgrep 不可用。
+
+---
+
 ## 2026-05-15 — Round 4: 100% Completion Sprint (dev3)
 
 ### 10 modules from 70-95% → 100%
