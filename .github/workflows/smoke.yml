@@ -9,13 +9,13 @@ env:
   NODE_VERSION: '22'
 
 jobs:
-  # ============================================================
-  # PR Check Gate — runs first, catches basic issues fast
-  # ============================================================
-  gate:
-    name: PR Check Gate
+  # ════════════════════════════════════════════════════════════
+  # Tier 1 — Quick Gate (<10s): lint + typecheck
+  # ════════════════════════════════════════════════════════════
+  quick:
+    name: Quick Gate (tsc + lint)
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
 
     steps:
       - name: Checkout
@@ -36,15 +36,41 @@ jobs:
       - name: Lint check
         run: npm run lint
 
+      - name: Release trust budget
+        run: npm run release:trust -- --no-report
+
+  # ════════════════════════════════════════════════════════════
+  # Tier 2 — Acceptance (<30s): unit tests
+  # ════════════════════════════════════════════════════════════
+  acceptance:
+    name: Acceptance Tests
+    needs: quick
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
       - name: Unit tests
         run: npm test
 
-  # ============================================================
-  # Multi-platform Smoke Tests
-  # ============================================================
+  # ════════════════════════════════════════════════════════════
+  # Tier 3 — Full (<120s): multi-OS smoke
+  # FIX-03: macOS runs complete sequence: tsc→lint→test→smoke
+  # ════════════════════════════════════════════════════════════
   smoke:
     name: Smoke (${{ matrix.os }})
-    needs: gate
+    needs: acceptance
     strategy:
       fail-fast: false
       matrix:
@@ -55,7 +81,7 @@ jobs:
         node-version:
           - '22'
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
@@ -72,6 +98,19 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      # FIX-03: macOS runs the full developer acceptance sequence
+      - name: TypeScript check (macOS)
+        if: matrix.os == 'macos-latest'
+        run: npx tsc --noEmit
+
+      - name: Lint (macOS)
+        if: matrix.os == 'macos-latest'
+        run: npm run lint
+
+      - name: Unit tests (macOS)
+        if: matrix.os == 'macos-latest'
+        run: npm test
 
       - name: Release smoke
         run: npm run smoke

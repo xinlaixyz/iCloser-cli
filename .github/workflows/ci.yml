@@ -15,10 +15,11 @@ env:
 
 jobs:
   # ════════════════════════════════════════════════════════════
-  # Fast gate — lint + typecheck, catches basic issues in <2min
+  # Tier 1 — Quick Gate (<10s execution): lint + typecheck
+  # Immediate feedback on push; no blockers past this point.
   # ════════════════════════════════════════════════════════════
-  gate:
-    name: Gate (lint + tsc)
+  quick:
+    name: Quick (tsc + lint)
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
@@ -38,12 +39,16 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      - name: Release trust budget
+        run: npm run release:trust -- --no-report
+
   # ════════════════════════════════════════════════════════════
-  # Test matrix — unit tests across Node versions
+  # Tier 2 — Acceptance (<30s execution): unit tests
+  # Validates logic correctness across Node LTS versions.
   # ════════════════════════════════════════════════════════════
-  test:
-    name: Test (Node ${{ matrix.node }})
-    needs: gate
+  acceptance:
+    name: Tests (Node ${{ matrix.node }})
+    needs: quick
     strategy:
       fail-fast: false
       matrix:
@@ -69,17 +74,18 @@ jobs:
         run: npm run test:coverage -- --reporter=text-summary
 
   # ════════════════════════════════════════════════════════════
-  # Multi-platform smoke — build + smoke on all 3 OSes
+  # Tier 3 — Full (<120s execution): multi-OS smoke
+  # FIX-03: macOS runs complete sequence: tsc→lint→test→smoke
   # ════════════════════════════════════════════════════════════
   smoke:
     name: Smoke (${{ matrix.os }})
-    needs: gate
+    needs: acceptance
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     steps:
       - uses: actions/checkout@v4
@@ -94,7 +100,20 @@ jobs:
       - name: Build
         run: npm run build
 
-      - name: Release smoke
+      # FIX-03: macOS-specific full sequence (tsc → lint → test)
+      - name: TypeScript check (macOS)
+        if: matrix.os == 'macos-latest'
+        run: npx tsc --noEmit
+
+      - name: Lint (macOS)
+        if: matrix.os == 'macos-latest'
+        run: npm run lint
+
+      - name: Unit tests (macOS)
+        if: matrix.os == 'macos-latest'
+        run: npm test
+
+      - name: Smoke
         run: npm run smoke
 
   # ════════════════════════════════════════════════════════════
@@ -102,7 +121,7 @@ jobs:
   # ════════════════════════════════════════════════════════════
   docker:
     name: Docker build
-    needs: test
+    needs: acceptance
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -120,7 +139,7 @@ jobs:
   # ════════════════════════════════════════════════════════════
   ai-capability:
     name: AI Capability Gate
-    needs: test
+    needs: acceptance
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
