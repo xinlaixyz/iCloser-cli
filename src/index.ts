@@ -24,6 +24,8 @@ import { registerTaskCommands, statusLabel, printTaskPlan } from './commands/tas
 import { registerMemoryCommands } from './commands/memory.js';
 import { registerCollaborationCommands } from './commands/collaboration.js';
 import { registerDiffCommands } from './commands/diff.js';
+import { shouldUseWindowsShell } from './cli/system-runner.js';
+import { providerUnavailable, networkFailure, toolUnavailable, formatDegrade } from './core/degradation.js';
 
 const program = new Command();
 program.name('ic').description('iCloser Agent Shell — AI 工程执行 CLI').version('0.1.0');
@@ -108,7 +110,7 @@ program.command('setup')
             }
             console.log();
           } else {
-            warn('Provider 尚不可用：' + (smoke.error || '连接失败'));
+            console.warn(formatDegrade(providerUnavailable(smoke.error || undefined)));
           }
         }
       }
@@ -1093,19 +1095,19 @@ program.command('start')
       const { spawn, spawnSync } = await import('child_process');
       if (startInfo.needsInstall) {
         progress(`安装依赖 ${startInfo.command} install...`);
-        const install = spawnSync(startInfo.command, ['install'], { cwd, stdio: 'inherit', shell: process.platform === 'win32', windowsHide: true });
+        const install = spawnSync(startInfo.command, ['install'], { cwd, stdio: 'inherit', shell: shouldUseWindowsShell(startInfo.command), windowsHide: true });
         if ((install.status ?? 1) !== 0) fail('依赖安装失败，项目未启动');
       }
 
       progress(`启动 ${startInfo.label}...`);
       if (startInfo.background === false) {
-        const child = spawnSync(startInfo.command, startInfo.args, { cwd, stdio: 'inherit', shell: process.platform === 'win32', windowsHide: true });
+        const child = spawnSync(startInfo.command, startInfo.args, { cwd, stdio: 'inherit', shell: shouldUseWindowsShell(startInfo.command), windowsHide: true });
         if ((child.status ?? 1) !== 0) fail(`启动命令失败：${startInfo.label}`);
         success(`已完成 ${startInfo.label}`);
         return;
       }
 
-      const child = spawn(startInfo.command, startInfo.args, { cwd, stdio: 'inherit', shell: process.platform === 'win32', detached: true, windowsHide: true });
+      const child = spawn(startInfo.command, startInfo.args, { cwd, stdio: 'inherit', shell: shouldUseWindowsShell(startInfo.command), detached: true, windowsHide: true });
       // Persist PID metadata so `ic stop` can kill the exact process with validation
       if (child.pid) {
         const { writeFile: fsPid, mkdir: fsMkdir } = await import('fs/promises');
@@ -1197,7 +1199,7 @@ program.command('search')
           }
           if (results.length === 0) info('未找到结果');
         }
-      } catch (err) { fail(`网络搜索失败: ${(err as Error).message}`); }
+      } catch (err) { console.warn(formatDegrade(networkFailure((err as Error).message))); }
       return;
     }
     // Local code search
@@ -1217,7 +1219,7 @@ program.command('search')
         if (lines.length === 0) info('无匹配');
         console.log();
       }
-    } catch { info('搜索不可用（需要安装 ripgrep）'); }
+    } catch { console.warn(formatDegrade(toolUnavailable('ripgrep', '搜索不可用，需要安装 ripgrep'))); }
   });
 
 program.command('web')
