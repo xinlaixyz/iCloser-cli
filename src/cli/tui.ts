@@ -1,6 +1,6 @@
 // Terminal UI engine — multi-pane layout with keyboard navigation
 import chalk from 'chalk';
-import { C, I, B, termWidth, thinDivider } from './theme.js';
+import { C, I, termWidth } from './theme.js';
 
 // ============================================================
 // Bottom Panel (S20.3)
@@ -57,10 +57,6 @@ export function renderBottomPanel(panel: BottomPanelState): string {
 
   out += `  ${C.dim('╰')}${C.dim('─'.repeat(w))}${C.dim('╯')}`;
   return out;
-}
-
-function stripAnsiLen(str: string): number {
-  return str.replace(/\x1b\[[0-9;]*m/g, '').length;
 }
 
 const CJK_RX = /[一-鿿㐀-䶿豈-﫿　-〿＀-￯぀-ヿ가-힯⺀-⿟]/g;
@@ -169,7 +165,7 @@ export class TuiScreen {
     const tw = termWidth();
 
     // Move to options area and clear previous
-    const optLines = this.options.length + 3; // divider + options + hint + divider
+    const _optLines = this.options.length + 3; // divider + options + hint + divider
     process.stdout.write('\x1b[0J'); // Clear from cursor to end of screen
 
     let out = '';

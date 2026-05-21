@@ -8,7 +8,7 @@ import type { AIProviderAdapter } from '../ai/provider.js';
 export async function readCodePatterns(
   rootPath: string,
   index: ProjectIndex,
-  targetModule?: string,
+  _targetModule?: string,
 ): Promise<string> {
   const parts: string[] = [];
   const { readFile } = await import('../utils/fs.js');
@@ -348,7 +348,7 @@ export async function reviewDiff(
   return parseCodeReviewResponse(resp.content || '', '(diff)', diff);
 }
 
-function parseCodeReviewResponse(raw: string, filePath: string, content: string): CodeReview {
+function parseCodeReviewResponse(raw: string, _filePath: string, _content: string): CodeReview {
   const defaultReview: CodeReview = {
     summary: '审查完成',
     overallScore: 7,
@@ -732,7 +732,7 @@ export async function runCompileCheck(
       if (!hasTsConfig) return { passed: true, errors: '' };
 
       const np = process.platform === 'win32' ? 'npx.cmd' : 'npx';
-      const result = execFileSync(np, ['tsc', '--noEmit'], {
+      const _result = execFileSync(np, ['tsc', '--noEmit'], {
         cwd: rootPath,
         timeout: 30000,
         encoding: 'utf-8',

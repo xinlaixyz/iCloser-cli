@@ -855,7 +855,7 @@ export function cleanupStaleMemory(memory: ProjectMemory): number {
   return before - memory.memoryCandidates.length;
 }
 
-async function recordSkillUsage(skillName: string, success: boolean): Promise<void> {
+async function _recordSkillUsage(skillName: string, success: boolean): Promise<void> {
   const globalMem = await loadGlobalMemory();
   const existing = globalMem.skillHistory.find(s => s.skillName === skillName);
 
@@ -875,13 +875,13 @@ async function recordSkillUsage(skillName: string, success: boolean): Promise<vo
   await saveGlobalMemory(globalMem);
 }
 
-async function updateUserPreferences(prefs: Partial<UserPreferences>): Promise<void> {
+async function _updateUserPreferences(prefs: Partial<UserPreferences>): Promise<void> {
   const globalMem = await loadGlobalMemory();
   Object.assign(globalMem.preferences, prefs);
   await saveGlobalMemory(globalMem);
 }
 
-async function getRelevantGlobalMemory(
+async function _getRelevantGlobalMemory(
   identity: ProjectIdentity,
   taskDescription: string
 ): Promise<string> {

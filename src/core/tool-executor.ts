@@ -1,6 +1,6 @@
 // Tool Executor — bridges AI tool calls to local capabilities
 import { readFile, fileExists } from '../utils/fs.js';
-import { searchWeb, isWebSearchAvailable, getWebSearchStatus } from './web-search.js';
+import { searchWeb, isWebSearchAvailable } from './web-search.js';
 import type { ToolDefinition } from '../ai/provider.js';
 import { buildToolCapabilitySnapshot } from './tool-registry.js';
 
@@ -191,12 +191,12 @@ function compressCommandOutput(output: string): string {
 async function suppressPdfParserNoise<T>(fn: () => Promise<T>): Promise<T> {
   const isPdfNoise = (s: string) => /Indexing all PDF|pdfjs-dist/i.test(s);
   const origWarn = console.warn.bind(console);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   
   const origStderrWrite = (process.stderr as any).write.bind(process.stderr);
   console.warn = (...args: unknown[]) => {
     if (!isPdfNoise(args.map(a => String(a)).join(' '))) origWarn(...args);
   };
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   
   (process.stderr as any).write = (chunk: unknown, ...rest: unknown[]): boolean => {
     const s = typeof chunk === 'string' ? chunk : Buffer.isBuffer(chunk) ? chunk.toString() : String(chunk);
     if (isPdfNoise(s)) return true;
@@ -206,7 +206,7 @@ async function suppressPdfParserNoise<T>(fn: () => Promise<T>): Promise<T> {
     return await fn();
   } finally {
     console.warn = origWarn;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     (process.stderr as any).write = origStderrWrite;
   }
 }

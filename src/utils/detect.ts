@@ -366,8 +366,8 @@ function detectDatabase(
 // ============================================================
 function detectBuildSystem(
   files: string[],
-  language: LanguageType,
-  packageJson: Record<string, unknown> | null
+  _language: LanguageType,
+  _packageJson: Record<string, unknown> | null
 ): BuildSystem {
   if (files.includes('pnpm-lock.yaml')) return 'pnpm';
   if (files.includes('yarn.lock')) return 'yarn';
@@ -441,7 +441,7 @@ function detectDeploymentType(files: string[], language: LanguageType): ProjectI
 function detectRuntime(
   language: LanguageType,
   packageJson: Record<string, unknown> | null,
-  goMod: string | null,
+  _goMod: string | null,
   _pyproject: string | null
 ): string {
   if (language === 'typescript' || language === 'javascript') {

@@ -231,7 +231,7 @@ export class RecallEngine {
     }));
   }
 
-  private async emotionRecall(query: RecallQuery): Promise<RecallResult[]> {
+  private async emotionRecall(_query: RecallQuery): Promise<RecallResult[]> {
     // High-importance episodes only
     const episodes = this.episodic.important(0.6, 15);
     const ranked = this.salience.rank(episodes);

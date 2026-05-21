@@ -132,7 +132,7 @@ export function filesToDiff(files: { path: string; content: string; previousCont
   // Generate a simple unified diff from file contents
   const parts: string[] = [];
   for (const f of files) {
-    const oldLines = (f.previousContent || '').split('\n');
+    const _oldLines = (f.previousContent || '').split('\n');
     const newLines = f.content.split('\n');
     parts.push(`diff --git a/${f.path} b/${f.path}`);
     parts.push(`--- a/${f.path}`);

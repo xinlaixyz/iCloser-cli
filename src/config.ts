@@ -97,7 +97,7 @@ export async function loadConfig(rootPath: string): Promise<ICloserConfig | null
               config.ai.apiKey = globalAI.apiKey;
             }
           }
-        } catch { /* global config corrupt — skip */ }
+        } catch { /* project config is corrupt — skip */ }
       }
       return config;
     } catch { return null; } // corrupted project config

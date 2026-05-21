@@ -19,15 +19,11 @@ import { recordUserInputEvent } from '../core/memory.js';
 import {
   C, I, B,
   welcomeScreen, statusBar, commandHelp,
-  drawWideBox, processStep,
+  drawWideBox,
   notification, thinDivider, termWidth,
 } from './theme.js';
-import type { BottomPanelState } from './tui.js';
-import type { AIConfig, AIProvider, AIPrompt, ContextPackage, ProjectIdentity, ProjectIndex, Task } from '../types.js';
-import type { StreamCallback } from '../ai/provider.js';
+import type { AIConfig, AIProvider, AIPrompt, ContextPackage, ProjectIdentity, ProjectIndex } from '../types.js';
 import {
-  createStartProjectOperation,
-  detectPackageManager,
   renderSystemOperationApproval,
   type SystemOperation,
 } from './system-approval.js';
@@ -167,7 +163,7 @@ let _promptCount = 0; // show /help hint on first few prompts
 let waitingStartTime = 0;
 let streamTokenCount = 0;
 let waitingActivity = '分析中';
-let bottomOptions: { label: string; desc: string; action: string }[] = [];
+let _bottomOptions: { label: string; desc: string; action: string }[] = [];
 let mutedInput = false;
 let pendingExitSince = 0;
 let shuttingDown = false;
@@ -208,7 +204,7 @@ const SLASH_COMMANDS = [
   '/brief', '/full', '/p', '/orchestrate', '/docs', '/export', '/theme',
 ];
 
-function box(content: string, title: string): string { return drawWideBox(content, { title }); }
+function _box(content: string, title: string): string { return drawWideBox(content, { title }); }
 
 function printStatusLine(): void {
   const ctxTokens = Math.round(state.conversation.reduce((s, m) => s + m.content.length / 2, 0));
@@ -240,7 +236,7 @@ function printStatusLine(): void {
 
 function printBottomBlock(): void { printStatusLine(); }
 
-async function executePanelAction(action: string): Promise<void> {
+async function _executePanelAction(action: string): Promise<void> {
   switch (action) {
     case 'help': console.log(commandHelp()); break;
     case 'scan': await cmdScan(); break;
@@ -289,8 +285,8 @@ export async function startRepl(): Promise<void> {
       await getMemoryRuntime(process.cwd());
       memoryActive = isMemoryActive();
       if (memoryActive && !resumed) {
-        const { memdbg } = await import('../core/memory/debug.js');
-        const status = (await import('../core/memory/integration.js'));
+        const { memdbg: _memdbg } = await import('../core/memory/debug.js');
+        const _status = (await import('../core/memory/integration.js'));
 
         // Delayed: show the hint after welcome screen renders
         setTimeout(() => {
@@ -990,6 +986,13 @@ async function handleChatWithTools(input: string, prompt: import('../types.js').
   compressConversation();
   streamState = 'idle';
 
+  const didRunCommand = result.toolCalls.some(call => call.name === 'run_command');
+  if (isStartProjectIntent(input) && !didRunCommand && !pendingSystemOperation) {
+    console.log(`  ${C.warn('!')} AI 已完成启动分析，但尚未执行启动命令，继续进入本地启动闭环。\n`);
+    printLoopStatus('take-action', '准备执行系统命令');
+    await cmdStartProject();
+  }
+
   // Process any pending inputs
   const buffered = pendingInputStream.splice(0);
   for (const buf of buffered) {
@@ -1029,24 +1032,6 @@ async function handleChat(input: string): Promise<void> {
     await cmdPrintLastWrittenFiles();
     return;
   }
-  if (isStopProjectIntent(input)) {
-    await cmdStopProject();
-    return;
-  }
-  if (isRestartProjectIntent(input)) {
-    await cmdRestartProject();
-    return;
-  }
-  if (isStartProjectIntent(input) || (isDoItIntent(input) && hasRecentStartProjectIntent())) {
-    printLoopStatus('collect-context', '识别启动需求');
-    printLoopStatus('take-action', '准备执行系统命令');
-    await cmdStartProject();
-    return;
-  }
-  if (isRunningStatusIntent(input)) {
-    cmdRunningStatus();
-    return;
-  }
   if (isLikelyApiKey(input) || looksLikeApiKeyCommand(input)) {
     await handleDirectApiKeyInput(input);
     return;
@@ -1054,11 +1039,6 @@ async function handleChat(input: string): Promise<void> {
   if (isApiKeyHelpIntent(input)) {
     const provider = state._pendingKeyProvider || (state.aiConfig.provider === 'mock' ? 'deepseek' : state.aiConfig.provider);
     printProviderKeyHelp(provider);
-    return;
-  }
-  if (isCodeIntelIntent(input)) {
-    const q = extractCodeIntelQuery(input);
-    await cmdIntel(q);
     return;
   }
   const autopilotRoute = routeAutopilotIntent(input);
@@ -1069,12 +1049,12 @@ async function handleChat(input: string): Promise<void> {
   }
   state.aiConfig.apiKey = resolveApiKeyForProvider(state.aiConfig.provider);
   // AI intent detection — classify user intent before processing
-  let userIntent = '';
+  let _userIntent = '';
   try {
     const { classifyIntentRegex } = await import('../core/intent-classifier.js');
     const intent = classifyIntentRegex(input);
     if (intent && intent.confidence >= 0.8) {
-      userIntent = intent.category;
+      _userIntent = intent.category;
       const intentLabel = intent.category === 'code_change' ? '🔧 代码修改' :
         intent.category === 'analysis' ? '🔍 项目分析' :
         intent.category === 'security_review' ? '🛡️ 安全检查' :
@@ -1114,6 +1094,15 @@ async function handleChat(input: string): Promise<void> {
     const prompt: AIPrompt = { systemPrompt: await buildSystemPrompt(false), context: richContext, task: input, history };
     printToolDegradationNotice();
     const provider = createProvider(state.aiConfig);
+    const naturalLocalFallback = getNaturalLanguageLocalFallback(input, {
+      provider: state.aiConfig.provider,
+      supportsToolUse: provider.supportsToolUse,
+      hasRecentStartIntent: _hasRecentStartProjectIntent(),
+    });
+    if (naturalLocalFallback) {
+      await executeNaturalLanguageLocalFallback(naturalLocalFallback, input);
+      return;
+    }
     // Auto tool access — AI autonomously decides whether to call tools
     if (provider.supportsToolUse && state.aiConfig.provider !== 'mock') {
       await handleChatWithTools(input, prompt, provider);
@@ -1205,7 +1194,7 @@ async function handleChat(input: string): Promise<void> {
       process.stdout.write(`  ${C.dim('└')} ${C.dim(codeBlockLines + ' 行')}\n\n`);
     }
     // Clear progress line and show final status
-    const tokens = response.tokensUsed > 0 ? response.tokensUsed : streamTokenCount;
+    const _tokens = response.tokensUsed > 0 ? response.tokensUsed : streamTokenCount;
     const meta = lineCount > 5 ? `  ${C.dim(`${lineCount} 行 · ${(elapsed/1000).toFixed(1)}s`)}` : '';
     process.stdout.write(`\r\x1b[K  ${C.success('✓')} ${meta}\n`);
     stopWaitingPhase(); streamState = 'idle'; streamLineBuf = '';
@@ -1626,14 +1615,14 @@ function isWrittenFilesQuestion(input: string): boolean {
 // S2: Scan subdirectories (depth 2) for project indicators — see src/cli/startup.ts
 async function scanForSubProjects(
   cwd: string, fsp: any, path: any
-): Promise<{ type: string; command: string; args: string[]; label: string; needsInstall: boolean; cwd: string; dir: string }[]> {
+): Promise<{ type: string; command: string; args: string[]; label: string; needsInstall: boolean; cwd: string; dir: string; background?: boolean }[]> {
   const { scanForSubProjects: scan } = await import('./startup.js');
   return scan(cwd, fsp, path);
 }
 
 async function detectProjectStartInfo(
   dir: string, fsp: any, path: any
-): Promise<{ type: string; command: string; args: string[]; label: string; needsInstall: boolean } | null> {
+): Promise<{ type: string; command: string; args: string[]; label: string; needsInstall: boolean; background?: boolean } | null> {
   const { detectProjectStartInfo: detect } = await import('./startup.js');
   return detect(dir, fsp, path);
 }
@@ -1652,8 +1641,53 @@ function isDoItIntent(input: string): boolean {
   return /^(你来处理|直接处理|帮我处理|你执行|直接执行|开始吧|处理吧|搞定它|来吧)[。！!？?]*$/i.test(input.trim());
 }
 
-function hasRecentStartProjectIntent(): boolean {
+function _hasRecentStartProjectIntent(): boolean {
   return state.conversation.slice(-4).some(message => message.role === 'user' && isStartProjectIntent(message.content));
+}
+
+export type NaturalLanguageLocalFallback =
+  | 'start-project'
+  | 'stop-project'
+  | 'restart-project'
+  | 'running-status'
+  | 'code-intel';
+
+export function getNaturalLanguageLocalFallback(
+  input: string,
+  ai: { provider: AIProvider | 'mock'; supportsToolUse: boolean; hasRecentStartIntent?: boolean },
+): NaturalLanguageLocalFallback | null {
+  const canUseAiTools = ai.supportsToolUse && ai.provider !== 'mock';
+  if (canUseAiTools) return null;
+  if (isStopProjectIntent(input)) return 'stop-project';
+  if (isRestartProjectIntent(input)) return 'restart-project';
+  if (isStartProjectIntent(input) || (isDoItIntent(input) && ai.hasRecentStartIntent)) return 'start-project';
+  if (isRunningStatusIntent(input)) return 'running-status';
+  if (isCodeIntelIntent(input)) return 'code-intel';
+  return null;
+}
+
+async function executeNaturalLanguageLocalFallback(fallback: NaturalLanguageLocalFallback, input: string): Promise<void> {
+  if (fallback === 'stop-project') {
+    await cmdStopProject();
+    return;
+  }
+  if (fallback === 'restart-project') {
+    await cmdRestartProject();
+    return;
+  }
+  if (fallback === 'start-project') {
+    printLoopStatus('collect-context', '识别启动需求');
+    printLoopStatus('take-action', '准备执行系统命令');
+    await cmdStartProject();
+    return;
+  }
+  if (fallback === 'running-status') {
+    cmdRunningStatus();
+    return;
+  }
+  if (fallback === 'code-intel') {
+    await cmdIntel(extractCodeIntelQuery(input));
+  }
 }
 
 function isStopProjectIntent(input: string): boolean {
@@ -1789,7 +1823,7 @@ async function cmdScan(): Promise<void> {
 
 async function cmdVerify(): Promise<void> {
   process.stdout.write(`  ${C.primary('◇')} 验证中 `);
-  try { const { execFileSync } = await import('child_process'); const cwd = process.cwd(); const lang = state.context.language; const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm'; let cmd = npmCmd; let args = ['run', 'build']; if (lang === 'go') { cmd = 'go'; args = ['vet', './...']; } try { const out = execFileSync(cmd, args, { cwd, timeout: 60000, encoding: 'utf-8', stdio: 'pipe' }); process.stdout.write('\r\x1b[K'); console.log(`  ${I.ok} 验证通过\n`); } catch (err) { process.stdout.write('\r\x1b[K'); const e = err as { stdout?: string; stderr?: string }; const errOut = (e.stderr || e.stdout || '').split('\n').slice(0, 3).join('\n'); console.log(`  ${I.err} 验证失败${errOut ? '\n  ' + C.dim(errOut) : ''}\n`); } } catch { process.stdout.write('\r\x1b[K'); console.log(`  ${I.err} 无法运行  ${C.dim('建议: 检查构建工具是否安装')}\n`); }
+  try { const { execFileSync } = await import('child_process'); const cwd = process.cwd(); const lang = state.context.language; const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm'; let cmd = npmCmd; let args = ['run', 'build']; if (lang === 'go') { cmd = 'go'; args = ['vet', './...']; } try { const _out = execFileSync(cmd, args, { cwd, timeout: 60000, encoding: 'utf-8', stdio: 'pipe' }); process.stdout.write('\r\x1b[K'); console.log(`  ${I.ok} 验证通过\n`); } catch (err) { process.stdout.write('\r\x1b[K'); const e = err as { stdout?: string; stderr?: string }; const errOut = (e.stderr || e.stdout || '').split('\n').slice(0, 3).join('\n'); console.log(`  ${I.err} 验证失败${errOut ? '\n  ' + C.dim(errOut) : ''}\n`); } } catch { process.stdout.write('\r\x1b[K'); console.log(`  ${I.err} 无法运行  ${C.dim('建议: 检查构建工具是否安装')}\n`); }
 }
 
 async function cmdStopProject(): Promise<void> {
@@ -1838,7 +1872,7 @@ async function cmdRestartProject(): Promise<void> {
 function cmdRunningStatus(): void {
   const cwd = process.cwd();
   const running = startedProcesses.filter(proc => isProcessRunning(proc));
-  const mine = running.filter(proc => proc.cwd === cwd);
+  const _mine = running.filter(proc => proc.cwd === cwd);
 
   if (running.length === 0) {
     console.log(drawWideBox(`当前没有任何运行中的项目或服务。\n工作目录 ${C.accent(cwd)}\n\n输入 ${C.accent('启动项目')} 启动开发服务。`, { title: '运行状态' }) + '\n');
@@ -1929,7 +1963,7 @@ async function cmdStartProject(): Promise<void> {
 
       const steps = projects.flatMap(p => [
         ...(p.needsInstall ? [{ label: `${p.dir}: install`, command: p.command, args: ['install'], display: `${p.command} install`, cwd: p.cwd }] : []),
-        { label: `${p.dir}: ${p.label}`, command: p.command, args: p.args, display: `${p.label}`, background: true, cwd: p.cwd },
+        { label: `${p.dir}: ${p.label}`, command: p.command, args: p.args, display: `${p.label}`, background: p.background ?? true, cwd: p.cwd },
       ]);
 
       pendingSystemOperation = {
@@ -2010,7 +2044,7 @@ async function cmdStartProject(): Promise<void> {
     }
 
     // Single project or no sub-projects found — check root
-    let startInfo: { type: string; command: string; args: string[]; label: string; needsInstall: boolean; cwd: string } | null = null;
+    let startInfo: { type: string; command: string; args: string[]; label: string; needsInstall: boolean; cwd: string; background?: boolean } | null = null;
     if (projects.length === 1) {
       startInfo = projects[0];
     } else {
@@ -2027,7 +2061,7 @@ async function cmdStartProject(): Promise<void> {
           printLoopStatus('take-action', 'AI 启动分析');
           const ai = createProvider(state.aiConfig);
           const readme = await fsp.readFile(path.join(cwd, 'README.md'), 'utf-8').catch(() => '');
-          const devDoc = await fsp.readFile(path.join(cwd, 'DEVELOPMENT.md'), 'utf-8').catch(() => '');
+          const _devDoc = await fsp.readFile(path.join(cwd, 'DEVELOPMENT.md'), 'utf-8').catch(() => '');
           const dirList = (await fsp.readdir(cwd, { withFileTypes: true }))
             .filter(e => !e.name.startsWith('.') && !e.name.startsWith('node_'))
             .map(e => `${e.isDirectory() ? 'd' : 'f'} ${e.name}`).slice(0, 20).join(', ');
@@ -2090,7 +2124,7 @@ async function cmdStartProject(): Promise<void> {
     const installStep = startInfo.needsInstall
       ? [{ label: '安装依赖', command: startInfo.command, args: ['install'], display: `${startInfo.command} install` }]
       : [];
-    const runStep = [{ label: startInfo.label, command: startInfo.command, args: startInfo.args, display: startInfo.label, background: true }];
+    const runStep = [{ label: startInfo.label, command: startInfo.command, args: startInfo.args, display: startInfo.label, background: startInfo.background ?? true }];
 
     pendingSystemOperation = {
       title: '启动项目',
@@ -2155,7 +2189,7 @@ async function cmdStartProject(): Promise<void> {
   }
 }
 
-function printSystemOperationConfirm(operation: SystemOperation): void {
+function _printSystemOperationConfirm(operation: SystemOperation): void {
   activeChoicePanel = {
     title: '系统权限确认',
     options: [
@@ -2192,7 +2226,7 @@ async function executeStartProjectOperation(operation: SystemOperation): Promise
   }
 }
 
-async function pathExists(filePath: string): Promise<boolean> {
+async function _pathExists(filePath: string): Promise<boolean> {
   try {
     const fsp = await import('fs/promises');
     await fsp.stat(filePath);
@@ -2259,7 +2293,7 @@ async function doWriteFiles(targets: PendingFile[]): Promise<void> {
   if (failed > 0) console.log(`  ${I.err} ${failed} 个文件写入失败，未从待写入列表移除\n`);
 }
 
-function printFileConfirm(): void {
+function _printFileConfirm(): void {
   const fileOptions = state.pendingFiles.map((pf, index) => ({
     id: index + 1,
     label: `写入 ${pf.path}`,
@@ -2697,7 +2731,7 @@ function printFooter(_hasFiles: boolean): void {
   // S20 panel handles file confirmation — old inline system disabled
 }
 
-function stripAnsiLen(str: string): number { if (!str) return 0; return str.replace(/\x1b\[[0-9;]*m/g, '').length; }
+function _stripAnsiLen(str: string): number { if (!str) return 0; return str.replace(/\x1b\[[0-9;]*m/g, '').length; }
 
 // Terminal display width — CJK/fullwidth chars count as 2 columns
 const CJK_RX = /[一-鿿㐀-䶿豈-﫿　-〿＀-￯぀-ヿ가-힯⺀-⿟]/g;
@@ -2710,8 +2744,8 @@ function displayWidth(str: string): number {
 
 // S20.2 Waiting UX — three-phase feedback
 const WAIT_PULSE = ['◉', '◔', '◑', '◕'];
-const WAIT_BAR = '█';
-const WAIT_BAR_EMPTY = '░';
+const _WAIT_BAR = '█';
+const _WAIT_BAR_EMPTY = '░';
 
 function startWaitingPhase(): void {
   waitingStartTime = Date.now();
@@ -2743,7 +2777,7 @@ function stopWaitingPhase(): void {
   // Status line printed by stream handler or startStreamingPhase — no duplicate here
 }
 
-function startSpinner(): void { startWaitingPhase(); }
+function _startSpinner(): void { startWaitingPhase(); }
 function stopSpinner(): void { stopWaitingPhase(); }
 
 export async function replCompleter(line: string): Promise<[string[], string]> {
@@ -3333,7 +3367,7 @@ async function cmdIntel(query: string): Promise<void> {
     } else {
       console.log(`  ${C.dim('代码智能未找到匹配: ' + q)}\n  ${C.muted('试试 /intel <函数名> 或 <文件名>')}\n`);
     }
-  } catch (err) {
+  } catch (_err) {
     console.log(`  ${C.dim('代码智能不可用')}\n`);
   }
 }
@@ -3445,12 +3479,6 @@ async function cmdDocsSlash(args: string): Promise<void> {
     }
   } catch (err) { console.log(`  ${I.err} ${(err as Error).message}\n`); }
 }
-
-
-
-
-
-
 
 
 

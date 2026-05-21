@@ -118,7 +118,7 @@ export async function fetchMultiple(
 
 function extractPage(html: string, url: string, maxLength: number): FetchedPage {
   const title = extractTitle(html);
-  const metaDesc = extractMeta(html, 'description');
+  const _metaDesc = extractMeta(html, 'description');
   const publishedAt = extractMeta(html, 'article:published_time') ||
                       extractMeta(html, 'date') ||
                       undefined;

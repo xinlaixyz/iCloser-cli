@@ -1,7 +1,6 @@
 // CLI output formatting with colors and spinners
 import chalk from 'chalk';
 import ora, { Ora } from 'ora';
-import { C } from './theme.js';
 import { buildToolCapabilitySnapshot } from '../core/tool-registry.js';
 
 // ============================================================

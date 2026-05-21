@@ -297,7 +297,7 @@ export class AgentManager {
       }
     } catch { /* file locks are best-effort */ }
 
-    const startResults = await Promise.all(children.map(c => this.start(c.id, c.name)));
+    const _startResults = await Promise.all(children.map(c => this.start(c.id, c.name)));
 
     // Wait for all children
     await Promise.all(children.map(c => this.waitForAgent(c.id, 120000)));

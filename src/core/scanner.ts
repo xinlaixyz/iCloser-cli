@@ -264,10 +264,10 @@ function getSourceFilePatterns(_language: string): string[] {
   return ALL_SOURCE_PATTERNS;
 }
 
-function isTestFile(filePath: string): boolean {
+function _isTestFile(filePath: string): boolean {
   return TEST_PATTERNS.some(p => p.test(filePath));
 }
-function isGeneratedFile(filePath: string): boolean {
+function _isGeneratedFile(filePath: string): boolean {
   return GENERATED_PATTERNS.some(p => p.test(filePath));
 }
 
@@ -363,7 +363,7 @@ function getWorkerPool(): WorkerPool {
 }
 
 // Batch regex extraction using worker threads, falls back to main thread
-async function batchExtractWithWorkers<T>(
+async function _batchExtractWithWorkers<T>(
   tasks: Array<{ type: string; file: string; relativeFile: string; content: string }>
 ): Promise<(T | null)[]> {
   const pool = getWorkerPool();
@@ -616,7 +616,7 @@ async function extractApiEndpoints(
 // ============================================================
 async function extractDbSchema(
   rootPath: string,
-  identity: ProjectIdentity
+  _identity: ProjectIdentity
 ): Promise<DbSchemaInfo> {
   const schema: DbSchemaInfo = { tables: [], migrations: [] };
 
@@ -649,7 +649,7 @@ async function extractDbSchema(
 // ============================================================
 async function extractDependencies(
   rootPath: string,
-  identity: ProjectIdentity
+  _identity: ProjectIdentity
 ): Promise<DependencyInfo[]> {
   const deps: DependencyInfo[] = [];
 
@@ -713,7 +713,7 @@ async function extractStyleFingerprint(
   rootPath: string,
   files: string[]
 ): Promise<StyleFingerprint> {
-  let camelCount = 0, pascalCount = 0, snakeCount = 0, kebabCount = 0;
+  let camelCount = 0, pascalCount = 0, snakeCount = 0, _kebabCount = 0;
   let spaceIndent = 0, tabIndent = 0;
   let singleQuote = 0, doubleQuote = 0;
   let semicolons = 0, noSemicolons = 0;
@@ -747,7 +747,7 @@ async function extractStyleFingerprint(
           if (name.includes('_')) snakeCount++;
           else if (/^[a-z]/.test(name) && /[A-Z]/.test(name)) camelCount++;
           else if (/^[A-Z]/.test(name)) pascalCount++;
-          else if (name.includes('-')) kebabCount++;
+          else if (name.includes('-')) _kebabCount++;
         }
         samples++;
       }
@@ -950,7 +950,7 @@ function mergeModules(
 function detectArchitecturePattern(
   rootPath: string,
   modules: ModuleInfo[],
-  identity: ProjectIdentity
+  _identity: ProjectIdentity
 ): string {
   const moduleNames = modules.map(m => m.name.toLowerCase());
 

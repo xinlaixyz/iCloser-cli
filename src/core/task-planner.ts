@@ -1,5 +1,4 @@
 // Task Planner — structured dev workflow: analyze → plan → decompose → confirm → execute → test → accept
-import type { ProjectIndex } from '../types.js';
 
 export interface PlanTask {
   id: string;

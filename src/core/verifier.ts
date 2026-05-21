@@ -587,8 +587,8 @@ function normalizeScriptCommand(
   runner: string,
   scriptName: string,
   scriptContent: string,
-  identity: ProjectIdentity,
-  stage: VerifyStage
+  _identity: ProjectIdentity,
+  _stage: VerifyStage
 ): ResolvedCommand {
   const lower = scriptContent.toLowerCase();
   const extraArgs: string[] = [];
@@ -973,7 +973,7 @@ function parseTestOutput(
   return { total: 0, passed: 0 };
 }
 
-async function collectCoverage(rootPath: string, identity: ProjectIdentity): Promise<import('../types.js').CoverageResult | undefined> {
+async function collectCoverage(rootPath: string, _identity: ProjectIdentity): Promise<import('../types.js').CoverageResult | undefined> {
   const path = await import('path');
   const fsp = await import('fs/promises');
 

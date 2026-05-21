@@ -272,7 +272,7 @@ export async function analyzeStartupPlan(
         context: { projectMeta: '', relevantCode: [], relevantMemory: '', totalTokens: 0, budgetUsed: 0 },
         history: '',
       }).then(res => res.content).catch(() => null),
-      new Promise<null>(resolve => { const t = setTimeout(() => resolve(null), AI_TIMEOUT_MS); }),
+      new Promise<null>(resolve => { const _t = setTimeout(() => resolve(null), AI_TIMEOUT_MS); }),
     ]);
   } catch {
     return null;

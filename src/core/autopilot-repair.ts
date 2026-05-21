@@ -188,7 +188,7 @@ async function applyTestRepair(rootPath: string, plan: AutopilotRepairPlan): Pro
   return receipts;
 }
 
-function fixBrokenImport(content: string, file: string, evidence: string, _command: string): { content: string; message: string } {
+function fixBrokenImport(content: string, file: string, _evidence: string, _command: string): { content: string; message: string } {
   const importRegex = /^(import\s+(?:\*\s+as\s+\w+\s+from\s+)?['"])([^'"]+)(['"])/gm;
   const requireRegex = /(require\s*\(\s*['"])([^'"]+)(['"]\s*\))/g;
   let match: RegExpExecArray | null;

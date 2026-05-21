@@ -89,7 +89,7 @@ export function isAnalysisOnlyTask(desc: string): boolean {
 export async function runGenNew(
   rootPath: string, desc: string, config: any, provider: any, isMock: boolean, options?: { withTests?: boolean; verify?: boolean },
 ): Promise<{ file: string; content: string }[]> {
-  const withTests = options?.withTests ?? false;
+  const _withTests = options?.withTests ?? false;
   const verify = options?.verify ?? false;
   let styleConstraint = '';
   let codePatterns = '';

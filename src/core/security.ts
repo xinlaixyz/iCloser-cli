@@ -1,6 +1,6 @@
 // Security Layer — execution modes, sensitive file protection, dangerous command interception
 import * as path from 'path';
-import { ensureDir, fileExists, readFile, writeFile } from '../utils/fs.js';
+import { ensureDir, fileExists, readFile } from '../utils/fs.js';
 import type { GateCheck, ICloserConfig, SecurityIssue, SecurityRuleDefinition, Task } from '../types.js';
 
 export type ExecutionMode = 'preview' | 'execute' | 'privileged';

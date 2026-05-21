@@ -27,12 +27,12 @@ export async function readPdfFile(filePath: string): Promise<DocReadResult> {
     // first load AND on subsequent parse calls.
     const isPdfNoise = (s: string) => /Indexing all PDF|pdfjs-dist/i.test(s);
     const origWarn = console.warn.bind(console);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     const origStderrWrite = (process.stderr as any).write.bind(process.stderr);
     console.warn = (...args: unknown[]) => {
       if (!isPdfNoise(args.map(a => String(a)).join(' '))) origWarn(...args);
     };
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     (process.stderr as any).write = (chunk: unknown, ...rest: unknown[]): boolean => {
       const s = typeof chunk === 'string' ? chunk : Buffer.isBuffer(chunk) ? chunk.toString() : String(chunk);
       if (isPdfNoise(s)) return true;
@@ -45,7 +45,7 @@ export async function readPdfFile(filePath: string): Promise<DocReadResult> {
       data = await pdfParse(buf, { verbosityLevel: 0 });
     } finally {
       console.warn = origWarn;
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+       
       (process.stderr as any).write = origStderrWrite;
     }
     return {
@@ -58,7 +58,7 @@ export async function readPdfFile(filePath: string): Promise<DocReadResult> {
         length: data.text.length,
       },
     };
-  } catch (e: any) {
+  } catch (_e: any) {
     // pdf-parse not available — fall back to basic extraction
     return extractPdfTextFallback(filePath);
   }

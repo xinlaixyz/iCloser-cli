@@ -1,6 +1,6 @@
 // Document Generator — detect, generate, quality-check project documentation
 import * as path from 'path';
-import type { DocTemplate, DocType, DocGenerationResult, DocsContext } from '../types.js';
+import type { DocTemplate, DocType, DocsContext } from '../types.js';
 import type { ProjectIndex } from '../types.js';
 
 // ============================================================
@@ -23,7 +23,7 @@ export const DOC_TEMPLATES: DocTemplate[] = [
 // ============================================================
 export async function detectDocGaps(
   rootPath: string,
-  index: ProjectIndex,
+  _index: ProjectIndex,
 ): Promise<{ existing: DocType[]; missing: DocType[] }> {
   const existing: DocType[] = [];
   const fs = await import('fs/promises');
@@ -48,7 +48,7 @@ export async function assembleDocsContext(
   index: ProjectIndex,
 ): Promise<DocsContext> {
   const allFiles = index.modules.flatMap(m => m.files.map(f => f.replace(/\\/g, '/')));
-  const allPaths = allFiles.join(' ').toLowerCase();
+  const _allPaths = allFiles.join(' ').toLowerCase();
 
   // Features: extract from README + code patterns
   const features: string[] = [];
@@ -128,7 +128,7 @@ export function buildDocGenerationPrompt(
   docType: DocType,
   context: DocsContext,
 ): { system: string; task: string } {
-  const template = DOC_TEMPLATES.find(t => t.type === docType)!;
+  const _template = DOC_TEMPLATES.find(t => t.type === docType)!;
 
   const sharedContext = [
     `项目名称: ${context.projectName}`,

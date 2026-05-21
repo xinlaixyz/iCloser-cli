@@ -1,7 +1,7 @@
 // Consolidation Engine — PRD §4.4: compress episodes → extract semantic rules
 // Triggers: every N tasks, manual, session end
 // Process: group episodes by task → summarize each → detect patterns → create rules
-import type { Episode, EpisodeType } from './episodic.js';
+import type { Episode } from './episodic.js';
 import type { SemanticRule } from './semantic.js';
 import type { EpisodicMemory } from './episodic.js';
 import type { SemanticMemory } from './semantic.js';
@@ -127,7 +127,7 @@ export class ConsolidationEngine {
   }
 
   private summarizeTaskGroup(taskId: string, episodes: Episode[]): string {
-    const types = episodes.map(e => e.type);
+    const _types = episodes.map(e => e.type);
     const errors = episodes.filter(e => e.type === 'error_occurred');
     const changes = episodes.filter(e => e.type === 'file_changed');
     const completed = episodes.some(e => e.type === 'task_completed');
@@ -241,7 +241,7 @@ export class ConsolidationEngine {
     return rules;
   }
 
-  private inferDomain(pattern: string, episodes: Episode[]): string {
+  private inferDomain(pattern: string, _episodes: Episode[]): string {
     const lower = pattern.toLowerCase();
     if (/ios|swift|uikit|swiftui|xcode/.test(lower)) return 'iOS';
     if (/android|kotlin|java|gradle/.test(lower)) return 'Android';

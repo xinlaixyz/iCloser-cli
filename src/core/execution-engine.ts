@@ -222,7 +222,7 @@ async function executeStep(
 }
 
 /** Update the infoGathered tracking after each step */
-function updateGatheredInfo(state: ExecutionState, step: PlanStep, result: StepResult): void {
+function updateGatheredInfo(state: ExecutionState, step: PlanStep, _result: StepResult): void {
   if (step.tool === 'read_file') {
     state.infoGathered.filesRead.add(step.args.path as string);
   }

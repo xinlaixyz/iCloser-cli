@@ -11,7 +11,7 @@ import { isGitRepo, getDiff } from '../utils/git.js';
 import { formatGateSummary } from '../cli/format.js';
 import { jsonEnvelope, serializeTask, serializeTaskList } from '../cli/json.js';
 import {
-  success, fail, warn, info, section, detail, printError, ICONS,
+  success, warn, info, section, detail, printError, ICONS,
 } from '../cli/output.js';
 import { loadConfig } from '../config.js';
 import type { Task } from '../types.js';
@@ -328,9 +328,19 @@ export function registerTaskCommands(program: Command): void {
     .alias('diff')
     .description('查看代码 diff')
     .argument('[task-id]', '任务 ID（不指定则显示工作区 diff）')
-    .action(async (taskId?: string) => {
+    .option('--staged', '与 explain 搭配：只解释 staged diff')
+    .option('--json', '与 explain 搭配：JSON 格式输出')
+    .action(async (taskId?: string, options?: { staged?: boolean; json?: boolean }) => {
       const rootPath = process.cwd();
       try {
+        if (taskId === 'explain') {
+          const { buildDiffExplanation, printDiffExplanation } = await import('./diff.js');
+          const { jsonEnvelope } = await import('../cli/json.js');
+          const explanation = buildDiffExplanation(rootPath, { staged: options?.staged });
+          if (options?.json) console.log(JSON.stringify(jsonEnvelope('diff-explain', explanation), null, 2));
+          else printDiffExplanation(explanation);
+          return;
+        }
         const { parseDiff, renderDiff } = await import('../cli/diff-renderer.js');
         if (taskId) {
           const diffPath = path.join(rootPath, '.icloser', 'tasks', taskId, 'diff.patch');

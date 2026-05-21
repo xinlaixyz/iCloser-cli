@@ -236,7 +236,7 @@ function collectUsesAndBuildEdges(
         const decl = symbol.valueDeclaration || symbol.declarations?.[0];
         if (decl && ts.isSourceFile(decl) === false) {
           const declFile = decl.getSourceFile().fileName;
-          const declLine = ts.getLineAndCharacterOfPosition(decl.getSourceFile(), decl.getStart()).line + 1;
+          const _declLine = ts.getLineAndCharacterOfPosition(decl.getSourceFile(), decl.getStart()).line + 1;
           const symbolName = symbol.getName();
 
           // Find the matching definition
@@ -322,7 +322,7 @@ function buildCrossFileFlow(
       const calleeFile = use.calleeFile; // exact file from type checker, if available
 
       // Find callee definition across files (prefer exact file match from type checker)
-      for (const [key, def] of defMap) {
+      for (const [_key, def] of defMap) {
         const nameMatches = def.name === calleeName;
         const crossFile = def.file !== edge.def.file;
         const exactFile = calleeFile ? def.file === calleeFile : true; // if type checker gave file, require match

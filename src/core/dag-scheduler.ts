@@ -46,7 +46,6 @@ export function detectCycle(tasks: PlanTask[]): number[][] | null {
   const { adj } = buildDAG(tasks);
   const WHITE = 0, GRAY = 1, BLACK = 2;
   const color = new Map<number, number>();
-  const parent = new Map<number, number>();
 
   for (const t of tasks) color.set(t.seq, WHITE);
 

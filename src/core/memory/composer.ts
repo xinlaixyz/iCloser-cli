@@ -47,7 +47,7 @@ export class ContextComposer {
   }
 
   /** Compose recall results into injection-ready context */
-  compose(recallResults: RecallResult[], taskDescription: string): ComposedContext {
+  compose(recallResults: RecallResult[], _taskDescription: string): ComposedContext {
     // Step 1: Convert recall results to ComposedItems with categories
     let items = recallResults.map(r => this.toComposedItem(r));
 

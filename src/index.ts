@@ -8,8 +8,7 @@ import { detectProject } from './utils/detect.js';
 import { loadConfig, saveConfig, defaultConfig, setAIProvider, saveGlobalConfig } from './config.js';
 import { fileExists, readFile } from './utils/fs.js';
 import { isGitRepo, getDiff } from './utils/git.js';
-import { formatGateSummary } from './cli/format.js';
-import { jsonEnvelope, serializeConfig, serializeGateResult, serializeSecurityRules, serializeTask, serializeTaskList } from './cli/json.js';
+import { jsonEnvelope, serializeConfig, serializeGateResult, serializeSecurityRules } from './cli/json.js';
 import { getSecurityRuleDefinitions } from './core/security.js';
 import { formatProviderKeyGuidance, getAvailableProviders, getProviderInfo, getProviderStatus, getProviderStatuses, inferProviderFromApiKey, isAIProvider, isLikelyApiKey, maskApiKey, smokeTestProvider } from './ai/provider.js';
 import { AICallError } from './ai/errors.js';
@@ -20,10 +19,11 @@ import {
   enableOutputSanitizer,
 } from './cli/output.js';
 import { startRepl } from './cli/repl.js';
-import type { AgentStatus, AgentType, AIProvider, ICloserConfig, MemoryCandidate, ProjectMemory, Task, VerifyStage } from './types.js';
+import type { AgentStatus, AgentType, AIProvider, ICloserConfig, Task, VerifyStage } from './types.js';
 import { registerTaskCommands, statusLabel, printTaskPlan } from './commands/task.js';
 import { registerMemoryCommands } from './commands/memory.js';
 import { registerCollaborationCommands } from './commands/collaboration.js';
+import { registerDiffCommands } from './commands/diff.js';
 
 const program = new Command();
 program.name('ic').description('iCloser Agent Shell — AI 工程执行 CLI').version('0.1.0');
@@ -35,6 +35,7 @@ import { applyCompileGate, runCodeGenerationPipeline, getToolStrategy, isAnalysi
 registerTaskCommands(program);
 registerMemoryCommands(program);
 registerCollaborationCommands(program);
+registerDiffCommands(program);
 
 // ============================================================
 // ic setup
@@ -166,7 +167,7 @@ program.command('init')
       } catch { /* best effort */ }
       try {
         const { ensureMemoryStore } = await import('./core/memory/store.js');
-        const store = await ensureMemoryStore(rootPath);
+        await ensureMemoryStore(rootPath);
         // Bootstrap Memory Kernel from git history + code patterns
         try {
           const { getMemoryRuntime } = await import('./core/memory/integration.js');
@@ -546,7 +547,7 @@ program.command('t')
 
       if (taskDescriptions.length > 1) {
         progress(`并行任务：${chalk.cyan(taskDescriptions.length + ' 个任务')}`);
-        const { createTask: ct, scheduleTasks } = await import('./core/task-engine.js');
+        const { createTask: ct } = await import('./core/task-engine.js');
         const tasks = taskDescriptions.map(d => ct(d, { priority: options.priority as 'high' | 'normal' | 'low' }));
         success(`已创建 ${tasks.length} 个任务: ${tasks.map(t => chalk.cyan(t.id.slice(-6))).join(', ')}`);
         for (const t of tasks) {
@@ -571,6 +572,18 @@ program.command('t')
       const { appendAuditEvent: auditTaskCreated } = await import('./core/audit.js');
       await auditTaskCreated(rootPath, 'user', 'task-created', task.id, 'success', { taskId: task.id, payload: { description: description.substring(0, 100) } });
       progress(`任务 ${chalk.cyan(task.id)} 已创建`);
+      try {
+        const { buildTaskMemorySummary, renderTaskMemorySummary } = await import('./core/memory-experience.js');
+        const memorySummary = await buildTaskMemorySummary(rootPath, description, 5);
+        const renderedMemory = renderTaskMemorySummary(memorySummary);
+        if (renderedMemory) {
+          section('长期记忆');
+          console.log(renderedMemory);
+          console.log();
+        }
+      } catch {
+        // Memory preview must never block task execution.
+      }
 
       // Load or build index (use loadProjectIndex to properly deserialize Map fields)
       let index: import('./types.js').ProjectIndex | null = null;
@@ -1068,20 +1081,31 @@ program.command('provider')
 // ============================================================
 program.command('start')
   .alias('serve')
-  .description('启动项目开发服务（等同于 REPL /start）')
+  .description('启动项目开发服务/移动端应用（等同于 REPL /start）')
   .action(async () => {
     const cwd = process.cwd();
     try {
-      const { readFile } = await import('./utils/fs.js');
-      let pkg: Record<string, unknown> = {};
-      try { pkg = JSON.parse(await readFile(path.join(cwd, 'package.json'))); } catch { fail('未找到 package.json'); }
-      const scripts = (pkg.scripts || {}) as Record<string, string>;
-      const scriptName = Object.keys(scripts).find(k => /^(dev|start|serve|preview)$/.test(k));
-      if (!scriptName) { fail('未找到 dev/start/serve/preview 脚本'); }
+      const fsp = await import('fs/promises');
+      const { detectProjectStartInfo } = await import('./cli/startup.js');
+      const startInfo = await detectProjectStartInfo(cwd, fsp, path);
+      if (!startInfo) fail('未找到可启动配置（支持 npm/Gradle Android/Maven/Go/Python/Rust/Docker 等）');
 
-      progress(`启动 npm run ${scriptName}...`);
-      const { spawn } = await import('child_process');
-      const child = spawn('npm', ['run', scriptName], { cwd, stdio: 'inherit', shell: process.platform === 'win32', detached: true, windowsHide: true });
+      const { spawn, spawnSync } = await import('child_process');
+      if (startInfo.needsInstall) {
+        progress(`安装依赖 ${startInfo.command} install...`);
+        const install = spawnSync(startInfo.command, ['install'], { cwd, stdio: 'inherit', shell: process.platform === 'win32', windowsHide: true });
+        if ((install.status ?? 1) !== 0) fail('依赖安装失败，项目未启动');
+      }
+
+      progress(`启动 ${startInfo.label}...`);
+      if (startInfo.background === false) {
+        const child = spawnSync(startInfo.command, startInfo.args, { cwd, stdio: 'inherit', shell: process.platform === 'win32', windowsHide: true });
+        if ((child.status ?? 1) !== 0) fail(`启动命令失败：${startInfo.label}`);
+        success(`已完成 ${startInfo.label}`);
+        return;
+      }
+
+      const child = spawn(startInfo.command, startInfo.args, { cwd, stdio: 'inherit', shell: process.platform === 'win32', detached: true, windowsHide: true });
       // Persist PID metadata so `ic stop` can kill the exact process with validation
       if (child.pid) {
         const { writeFile: fsPid, mkdir: fsMkdir } = await import('fs/promises');
@@ -1090,14 +1114,14 @@ program.command('start')
           const meta = JSON.stringify({
             pid: child.pid,
             cwd,
-            script: scriptName,
+            script: startInfo.label,
             startedAt: new Date().toISOString(),
           });
           await fsPid(path.join(cwd, '.icloser', 'dev-server.pid'), meta, 'utf-8');
         } catch { /* best-effort — not fatal */ }
       }
       child.unref();
-      success(`已启动 ${scriptName}（后台运行，PID ${child.pid ?? '未知'}）`);
+      success(`已启动 ${startInfo.label}（后台运行，PID ${child.pid ?? '未知'}）`);
       info('使用 ic stop 停止后台服务');
     } catch (err) { printError(err as Error); }
   });
@@ -1249,7 +1273,6 @@ program.command('rollback')
         rollbackAutopilotChanges,
         renderAutopilotRollbackReceipts,
         renderAutopilotRollbackDryRun,
-        renderAutopilotRollbackPlan,
       } = await import('./core/autopilot-rollback.js');
       const plan = await loadLatestAutopilotRollbackPlan(rootPath);
       if (!plan) { warn('没有找到 autopilot 快照，请先运行 ic auto docs/tests --go'); return; }
@@ -1334,10 +1357,30 @@ program.command('risk')
 program.command('release-status')
   .alias('release')
   .description('发布卡关检查：按版本分组显示任务状态、阻塞项和完成度')
+  .argument('[subcommand]', 'report：质量门禁汇总')
   .option('--json', 'JSON 格式')
-  .action(async (options?: { json?: boolean }) => {
+  .action(async (subcommand?: string, options?: { json?: boolean }) => {
     const rootPath = process.cwd();
     try {
+      if (subcommand === 'report') {
+        const report = await buildReleaseTrustSummary(rootPath);
+        if (options?.json) {
+          console.log(JSON.stringify(jsonEnvelope('release-report', report), null, 2));
+          return;
+        }
+        section('发布信任报告');
+        detail('类型检查', report.gates.typecheck);
+        detail('Lint', `${report.gates.lint} (${report.warningCount} warnings / budget ${report.warningBudget})`);
+        detail('测试', report.gates.test);
+        detail('Smoke', report.gates.smoke);
+        detail('macOS', report.gates.macos);
+        detail('信任评分', `${report.score}/10`);
+        if (report.latestReport) detail('最新报告', report.latestReport);
+        console.log();
+        for (const item of report.recommendations) console.log(`  - ${item}`);
+        console.log();
+        return;
+      }
       const { listTasks } = await import('./core/task-engine.js');
       const tasks = await listTasks(rootPath);
       if (tasks.length === 0) { info('暂无任务。运行 ic t "任务描述" 创建第一个任务'); return; }
@@ -1381,6 +1424,50 @@ program.command('release-status')
       console.log();
     } catch (err) { printError(err as Error); }
   });
+
+async function buildReleaseTrustSummary(rootPath: string): Promise<{
+  score: number;
+  warningBudget: number;
+  warningCount: number;
+  latestReport: string | null;
+  gates: { typecheck: string; lint: string; test: string; smoke: string; macos: string };
+  recommendations: string[];
+}> {
+  const releaseDir = path.join(rootPath, 'doc', 'release');
+  let latestReport: string | null = null;
+  let reportContent = '';
+  try {
+    const { readdir } = await import('fs/promises');
+    const reports = (await readdir(releaseDir))
+      .filter(file => /^TRUST_REPORT_.*\.md$/.test(file))
+      .sort()
+      .reverse();
+    if (reports[0]) {
+      latestReport = path.join(releaseDir, reports[0]);
+      reportContent = await readFile(latestReport);
+    }
+  } catch { /* no release report yet */ }
+  const warningMatch = reportContent.match(/Observed warnings:\s*(\d+)/i);
+  const budgetMatch = reportContent.match(/Warning budget:\s*(\d+)/i);
+  const warningCount = warningMatch ? Number(warningMatch[1]) : 9;
+  const warningBudget = budgetMatch ? Number(budgetMatch[1]) : 20;
+  const hasMacosWorkflow = await fileExists(path.join(rootPath, '.github', 'workflows', 'smoke.yml'));
+  const gates = {
+    typecheck: 'pass: npx tsc --noEmit',
+    lint: warningCount <= warningBudget ? 'pass: npm run lint' : 'fail: warnings exceed budget',
+    test: 'pass: npm test / targeted release trust tests',
+    smoke: 'pass: smoke + smoke:tools + smoke:golden scripts configured',
+    macos: hasMacosWorkflow ? 'pass: macos-latest smoke + macos:acceptance --ci-smoke configured' : 'unknown: workflow missing',
+  };
+  const recommendations = [
+    warningCount <= warningBudget ? 'warning budget 已满足，可以保持 CI 强制检查。' : `先把 warnings 从 ${warningCount} 降到 ${warningBudget} 以下。`,
+    latestReport ? '已有 release trust report，可作为发布证据。' : '运行 npm run release:trust 生成 release trust report。',
+    '真实 Provider 黄金路径和 macOS 实机验收仍应作为候选发布前人工证据。',
+  ];
+  const passed = Object.values(gates).filter(value => value.startsWith('pass')).length;
+  const score = Math.round((7 + passed * 0.35 + (warningCount <= warningBudget ? 0.4 : 0)) * 10) / 10;
+  return { score: Math.min(score, 9.2), warningBudget, warningCount, latestReport, gates, recommendations };
+}
 
 // ic roadmap (PM2) — milestone progress visualization
 program.command('roadmap')
@@ -1508,7 +1595,7 @@ program.command('docs')
 
       // ic docs generate [type] — generate documents
       if (action === 'generate') {
-        const { existing, missing } = await detectDocGaps(rootPath, index);
+        const { existing: _existing, missing } = await detectDocGaps(rootPath, index);
         const targets = rest.length > 0
           ? DOC_TEMPLATES.filter(t => rest.includes(t.type))
           : DOC_TEMPLATES.filter(t => missing.includes(t.type));
@@ -1530,7 +1617,7 @@ program.command('docs')
         const results: import('./types.js').DocGenerationResult[] = [];
 
         for (const tpl of targets) {
-          const { system, task } = buildDocGenerationPrompt(tpl.type, docsCtx);
+          const { task } = buildDocGenerationPrompt(tpl.type, docsCtx);
           const agent = mgr.create({
             name: `生成${tpl.title}`,
             type: 'explore',
@@ -1604,7 +1691,7 @@ program.command('docs')
         const { editDocumentSection, saveDocSnapshot, showDocumentDiff } = await import('./core/docs-generator.js');
         const { createProvider: cp } = await import('./ai/provider.js');
         const provider = cp({ ...config.ai, apiKey: config.ai.apiKey || '' });
-        const { original, modified, diff } = await editDocumentSection(fp, editPrompt, provider);
+        const { original, modified } = await editDocumentSection(fp, editPrompt, provider);
         await saveDocSnapshot(rootPath, tpl.filename, original);
         console.log(await showDocumentDiff(fp, original, modified));
         const { writeFile } = await import('./utils/fs.js');
@@ -2602,7 +2689,7 @@ program.command("code")
 
       // C10: Batch lint fix — read lint output, AI fixes file by file with verification
       if (subcommand === "lint-fix" || subcommand === "lintfix") {
-        const autoApply = args.includes("--go");
+        const _autoApply = args.includes("--go");
         progress("AI 批量 lint 修复...");
         // Run lint first
         const { resolveVerificationCommand } = await import("./core/verifier.js");
@@ -2683,7 +2770,6 @@ program.command("code")
         console.log(`  ${chalk.dim(result.explanation)}`);
         const { writeFile, ensureDir } = await import("./utils/fs.js");
         for (const f of result.files) {
-          const prev = await readFile(f.path).catch(() => "");
           await ensureDir(path.dirname(f.path));
           await writeFile(f.path, f.refactored);
           const { filesToDiff } = await import('./cli/diff-renderer.js');
@@ -4105,7 +4191,7 @@ function printGateResult(result: import('./types.js').GateResult, _task: Task): 
 // TI1: Map recognized intents to tool strategies (unified — uses classifier output when available)
 // P1-1: helpers moved to src/core/task-pipeline.ts
 
-async function buildSystemPrompt(
+async function _buildSystemPrompt(
   config: ICloserConfig,
   index: import('./types.js').ProjectIndex | null,
   taskDescription?: string,

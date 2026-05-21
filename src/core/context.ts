@@ -45,16 +45,6 @@ const DEFAULT_OPTIONS: ContextOptions = {
   bufferReserve: 0.1,             // 10% reserved for AI response + tool calls
 };
 
-// M8: Context component priority weights (higher = more token budget)
-const CONTEXT_PRIORITY: Record<string, number> = {
-  current_task: 100,       // highest priority
-  recent_conversation: 90,
-  project_code: 80,
-  relevant_memory: 50,
-  task_history: 40,
-  global_memory: 20,       // lowest — only when relevant
-};
-
 // ============================================================
 // Main context assembly
 // ============================================================
@@ -85,7 +75,7 @@ export async function assembleContext(
     if (globalHints) {
       relevantMemory = relevantMemory ? relevantMemory + '\n\n' + globalHints : globalHints;
     }
-  } catch { /* global memory is optional */ }
+  } catch { /* loading global-memory is optional */ }
 
   // 3.5. Memory Kernel Recall — inject relevant project memories
   try {
@@ -648,7 +638,7 @@ async function collectProjectMetrics(index: ProjectIndex): Promise<string> {
 async function checkEngineeringHealth(index: ProjectIndex): Promise<string> {
   const parts: string[] = [];
   const allFiles = index.modules.flatMap(m => m.files.map(f => f.replace(/\\/g, '/')));
-  const allPaths = allFiles.join(' ').toLowerCase();
+  const _allPaths = allFiles.join(' ').toLowerCase();
 
   // CI/CD
   const hasCI = allFiles.some(f => f.includes('.github/workflows') || f.includes('.gitlab-ci') || f.includes('Jenkinsfile'));

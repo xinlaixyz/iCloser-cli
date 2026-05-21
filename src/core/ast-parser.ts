@@ -252,7 +252,7 @@ function extractExports(node: import('tree-sitter').SyntaxNode, source: string):
   return exports;
 }
 
-function extractImports(node: import('tree-sitter').SyntaxNode, source: string): AstImport[] {
+function extractImports(node: import('tree-sitter').SyntaxNode, _source: string): AstImport[] {
   const imports: AstImport[] = [];
 
   function walk(n: import('tree-sitter').SyntaxNode) {
@@ -542,7 +542,7 @@ function extractDataFlowTs(node: import('tree-sitter').SyntaxNode, source: strin
       const isCallArg = n.parent?.type === 'arguments';
       const isReturnExpr = n.parent?.type === 'return_statement';
 
-      for (const [key, def] of defs) {
+      for (const [_key, def] of defs) {
         // Match: same name, within same file (cross-function or module-level)
         if (def.name === idName) {
           const isCrossFunction = def.functionName !== currentFunction && def.functionName !== '<module>' && currentFunction !== '<module>';
@@ -575,9 +575,9 @@ function extractDataFlowTs(node: import('tree-sitter').SyntaxNode, source: strin
 
       // Track this.property reads
       if (n.parent?.type === 'member_expression' && n.parent.childForFieldName('object')?.text === 'this' && n.parent.childForFieldName('property') === n) {
-        const key = `this.${idName}@${n.startPosition.row + 1}`;
+        const _key = `this.${idName}@${n.startPosition.row + 1}`;
         // Find if this.prop was defined
-        for (const [defKey, def] of defs) {
+        for (const [_defKey, def] of defs) {
           if (def.name === `this.${idName}`) {
             let edge = edges.find(e => e.def.name === def.name && e.def.line === def.line);
             if (!edge) { edge = { def: { ...def }, uses: [] }; edges.push(edge); }
@@ -832,7 +832,7 @@ function extractGoExports(node: TreeSitterSyntaxNode, source: string): AstExport
   return exports;
 }
 
-function extractGoImports(node: TreeSitterSyntaxNode, source: string): AstImport[] {
+function extractGoImports(node: TreeSitterSyntaxNode, _source: string): AstImport[] {
   const imports: AstImport[] = [];
 
   function walk(n: TreeSitterSyntaxNode) {
@@ -896,7 +896,7 @@ function extractGoFunctions(node: TreeSitterSyntaxNode, source: string): AstFunc
   return funcs;
 }
 
-function extractGoInterfaces(node: TreeSitterSyntaxNode, source: string): AstInterface[] {
+function extractGoInterfaces(node: TreeSitterSyntaxNode, _source: string): AstInterface[] {
   const interfaces: AstInterface[] = [];
 
   function walk(n: TreeSitterSyntaxNode) {
@@ -949,7 +949,7 @@ function extractGoCallGraph(node: TreeSitterSyntaxNode, source: string): AstCall
 }
 
 // T11: Go variable definition → usage data flow
-function extractGoDataFlow(node: TreeSitterSyntaxNode, source: string): import('../types.js').DataFlowEdge[] | undefined {
+function extractGoDataFlow(node: TreeSitterSyntaxNode, _source: string): import('../types.js').DataFlowEdge[] | undefined {
   const edges: import('../types.js').DataFlowEdge[] = [];
   function walk(n: TreeSitterSyntaxNode, currFn?: string) {
     if (n.type === 'function_declaration' || n.type === 'method_declaration') {
@@ -987,7 +987,7 @@ function goNodeName(node: TreeSitterSyntaxNode): string | null {
   return null;
 }
 
-function goSignature(node: TreeSitterSyntaxNode, source: string, kind: string): string {
+function goSignature(node: TreeSitterSyntaxNode, source: string, _kind: string): string {
   const text = source.substring(node.startIndex, node.endIndex).split('\n')[0].trim();
   return text.length > 100 ? text.substring(0, 100) + '…' : text;
 }
@@ -1018,7 +1018,7 @@ function goExtractReturnType(node: TreeSitterSyntaxNode, source: string): string
   return source.substring(result.startIndex, result.endIndex).trim();
 }
 
-function goCalleeName(node: TreeSitterSyntaxNode, source: string): string | null {
+function goCalleeName(node: TreeSitterSyntaxNode, _source: string): string | null {
   const fn = node.childForFieldName ? node.childForFieldName('function') : null;
   if (!fn) return null;
   if (fn.type === 'identifier') return fn.text;
@@ -1136,7 +1136,7 @@ function parseGoRegex(source: string): ParsedFile {
     // type Name struct { ... }
     m = line.match(/^type\s+(\w+)\s+struct\s*\{/);
     if (m) {
-      const name = m[1]; const isExported = /^[A-Z]/.test(name);
+      const name = m[1]; const _isExported = /^[A-Z]/.test(name);
       exports.push({ name, kind: 'class', signature: `type ${name} struct`, isDefault: false, line: lineNum });
       continue;
     }
@@ -1333,7 +1333,7 @@ function extractPythonExports(node: TreeSitterSyntaxNode, source: string): AstEx
       }
     }
 
-    const nextTopLevel = isTopLevel && (n.type === 'module' || n.parent?.type === 'module' || n.parent === null);
+    const _nextTopLevel = isTopLevel && (n.type === 'module' || n.parent?.type === 'module' || n.parent === null);
     for (let i = 0; i < n.childCount; i++) {
       const child = n.child(i)!;
       // Only recurse one level from module
@@ -1351,7 +1351,7 @@ function extractPythonExports(node: TreeSitterSyntaxNode, source: string): AstEx
   return exports;
 }
 
-function extractPythonImports(node: TreeSitterSyntaxNode, source: string): AstImport[] {
+function extractPythonImports(node: TreeSitterSyntaxNode, _source: string): AstImport[] {
   const imports: AstImport[] = [];
 
   function walk(n: TreeSitterSyntaxNode) {
@@ -1466,7 +1466,7 @@ function pySignature(node: TreeSitterSyntaxNode, source: string): string {
 }
 
 // T11: Python variable definition → usage data flow
-function extractPythonDataFlow(node: TreeSitterSyntaxNode, source: string): import('../types.js').DataFlowEdge[] | undefined {
+function extractPythonDataFlow(node: TreeSitterSyntaxNode, _source: string): import('../types.js').DataFlowEdge[] | undefined {
   const edges: import('../types.js').DataFlowEdge[] = [];
   function walk(n: TreeSitterSyntaxNode, currFn?: string) {
     if (n.type === 'function_definition') { const fnName = pyNodeName(n) || '<anonymous>'; for (const c of n.namedChildren) walk(c, fnName); return; }
@@ -1556,7 +1556,7 @@ function extractJavaExports(node: TreeSitterSyntaxNode, source: string): AstExpo
   return exports;
 }
 
-function extractJavaImports(node: TreeSitterSyntaxNode, source: string): AstImport[] {
+function extractJavaImports(node: TreeSitterSyntaxNode, _source: string): AstImport[] {
   const imports: AstImport[] = [];
   function walk(n: TreeSitterSyntaxNode) {
     if (n.type === 'import_declaration') {
@@ -1631,7 +1631,7 @@ function extractJavaClasses(node: TreeSitterSyntaxNode, source: string): AstClas
   return classes;
 }
 
-function extractJavaInterfaces(node: TreeSitterSyntaxNode, source: string): AstInterface[] {
+function extractJavaInterfaces(node: TreeSitterSyntaxNode, _source: string): AstInterface[] {
   const interfaces: AstInterface[] = [];
   function walk(n: TreeSitterSyntaxNode) {
     if (n.type === 'interface_declaration') {
@@ -1715,7 +1715,7 @@ function javaExtractExtends(node: TreeSitterSyntaxNode, source: string): string 
   return null;
 }
 
-function javaExtractImplementsNames(node: TreeSitterSyntaxNode, source: string): string[] {
+function javaExtractImplementsNames(node: TreeSitterSyntaxNode, _source: string): string[] {
   const impls: string[] = [];
   const supInterfaces = node.childForFieldName ? node.childForFieldName('interfaces') : null;
   // tree-sitter-java uses 'super_interfaces' field name
@@ -1835,7 +1835,7 @@ function extractKtClasses(node: TreeSitterSyntaxNode, source: string): AstClass[
   return classes;
 }
 
-function extractKtInterfaces(node: TreeSitterSyntaxNode, source: string): AstInterface[] {
+function extractKtInterfaces(node: TreeSitterSyntaxNode, _source: string): AstInterface[] {
   const interfaces: AstInterface[] = [];
   function walk(n: TreeSitterSyntaxNode) {
     if (n.type === 'interface_declaration') {
@@ -2217,7 +2217,7 @@ function parseObjcRegex(source: string): ParsedFile {
   return { filePath: '<inline>', exports, imports, functions: funcs, classes, interfaces, callGraph };
 }
 
-function objcExtractParams(line: string, source: string, lineIdx: number, lines: string[]): string[] {
+function objcExtractParams(line: string, _source: string, _lineIdx: number, _lines: string[]): string[] {
   const params: string[] = [];
   const colonParts = line.split(':');
   for (let j = 1; j < colonParts.length; j++) {
@@ -2272,7 +2272,7 @@ function parseSqlRegex(source: string): ParsedFile {
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim();
     const lineNum = i + 1;
-    const upper = line.toUpperCase();
+    const _upper = line.toUpperCase();
 
     // CREATE TABLE name
     let m = line.match(/^CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?`?(\w+)`?/i);
@@ -2304,7 +2304,7 @@ const KT_EXTS = new Set(['.kt', '.kts']);
 const SWIFT_EXTS = new Set(['.swift']);
 const OBJC_EXTS = new Set(['.m', '.mm', '.h']);
 const SQL_EXTS = new Set(['.sql', '.mysql', '.psql']);
-const TS_EXTS = new Set(['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs']);
+const _TS_EXTS = new Set(['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs']);
 const C_EXTS = new Set(['.c']);
 const CPP_EXTS = new Set(['.cpp', '.cc', '.cxx', '.c++', '.hpp', '.hh', '.hxx']);
 const RUST_EXTS = new Set(['.rs']);
@@ -2372,7 +2372,7 @@ export function analyzeCrossFileDataFlow(
   const results: { def: VariableDef; propagatedTo: { file: string; functionName: string; paramName: string; line: number; callChain: string[] }[] }[] = [];
 
   // Build map: functionName → file → ParsedFile
-  const fileMap = new Map(parsedFiles.map(f => [f.filePath, f]));
+  const _fileMap = new Map(parsedFiles.map(f => [f.filePath, f]));
 
   // Build reverse call graph: callee → [callers]
   const calledBy = new Map<string, { caller: string; callerFile: string; line: number }[]>();
@@ -2555,10 +2555,10 @@ function parseRustSourceFile(filePath: string): ParsedFile {
 }
 
 // Generic tree-sitter AST extraction for C-family / Rust
-function extractGenericAst(root: any, filePath: string, content: string, functionNodeTypes: string[], lang: string): ParsedFile {
+function extractGenericAst(root: any, filePath: string, content: string, functionNodeTypes: string[], _lang: string): ParsedFile {
   const fns: AstFunction[] = []; const classes: AstClass[] = []; const exports: AstExport[] = [];
   const callGraph: AstCallEdge[] = []; const dataFlow: DataFlowEdge[] = [];
-  const lines = content.split('\n');
+  const _lines = content.split('\n');
   const getLine = (node: any) => node.startPosition?.row + 1 || 1;
 
   function walk(node: any) {
@@ -2607,7 +2607,7 @@ function parseCRegex(source: string): ParsedFile { return parseClikeRegex(source
 function parseCppRegex(source: string): ParsedFile { return parseClikeRegex(source, 'cpp'); }
 function parseRustRegex(source: string): ParsedFile { return parseRustRegexInner(source); }
 
-function parseClikeRegex(source: string, lang: string): ParsedFile {
+function parseClikeRegex(source: string, _lang: string): ParsedFile {
   const fns: AstFunction[] = []; const exports: AstExport[] = [];
   const fnPattern = /(?:^|\n)\s*([\w\s*]+)\s+(\w+)\s*\(([^)]*)\)\s*\{?/g;
   let m: RegExpExecArray | null;
@@ -2636,7 +2636,7 @@ function parseRustRegexInner(source: string): ParsedFile {
 
 // ── T11: Basic data flow for Go and Python (extract variable defs + function calls) ──
 
-function extractVarDefs(source: string, fnNames: string[]): DataFlowEdge[] | undefined {
+function extractVarDefs(source: string, _fnNames: string[]): DataFlowEdge[] | undefined {
   const edges: DataFlowEdge[] = [];
   const defRe = /(?:^|\n)\s*(?:let|const|var)\s+(\w+)\s*[:=]\s*(.+)/g;
   let m: RegExpExecArray | null;
