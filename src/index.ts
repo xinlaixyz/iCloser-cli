@@ -3069,7 +3069,66 @@ program.command('skill')
         return;
       }
 
-      info('用法: ic skill [list|add <name> <触发词>|remove <name>]');
+      // ic skill describe <name> — show full skill details (T3-2a)
+      if ((subcommand === 'describe' || subcommand === 'desc' || subcommand === 'show') && args.length > 0) {
+        const skills = listSkills();
+        const name = args[0];
+        const skill = skills.find(s => s.name === name);
+        if (!skill) {
+          fail(`技能 ${chalk.cyan(name)} 不存在，运行 ic skill list 查看可用技能`);
+          return;
+        }
+        const builtin = ['code-review','test-gen','api-doc','security-review','refactor-guide'].includes(skill.name);
+        console.log(`\n  ${chalk.bold.cyan(skill.name)}  ${builtin ? chalk.dim('[内置]') : chalk.cyan('[自定义]')}`);
+        console.log(`  ${chalk.dim('描述')}   ${skill.description}`);
+        console.log(`  ${chalk.dim('类别')}   ${skill.category}`);
+        console.log(`  ${chalk.dim('触发词')} ${skill.triggers.join('、')}`);
+        console.log(`  ${chalk.dim('工具')}   ${skill.tools?.join('、') || '通用'}`);
+        console.log(`\n  ${chalk.dim('系统提示词：')}`);
+        (skill.systemPrompt || '').split('\n').forEach(line => console.log(`    ${chalk.dim(line)}`));
+        console.log();
+        return;
+      }
+
+      // ic skill install <url> — install skill from remote JSON (ADV community skill, T3-2a)
+      if (subcommand === 'install' && args.length > 0) {
+        const urlOrPath = args[0];
+        try {
+          let json: string;
+          if (urlOrPath.startsWith('http://') || urlOrPath.startsWith('https://')) {
+            const { execFileSync: exec } = await import('child_process');
+            try {
+              json = exec('curl', ['-sL', '--max-time', '10', urlOrPath], { encoding: 'utf-8' });
+            } catch {
+              fail(`无法从 ${urlOrPath} 下载技能定义，请检查网络和 URL`);
+              return;
+            }
+          } else {
+            const { readFileSync } = await import('fs');
+            json = readFileSync(urlOrPath, 'utf-8');
+          }
+          const def = JSON.parse(json);
+          if (!def.name || !def.triggers || !def.systemPrompt) {
+            fail('技能 JSON 格式无效，必须包含 name、triggers、systemPrompt 字段');
+            return;
+          }
+          registerSkill({
+            name: def.name,
+            description: def.description || def.name,
+            triggers: Array.isArray(def.triggers) ? def.triggers : [def.triggers],
+            systemPrompt: def.systemPrompt,
+            tools: def.tools,
+            category: def.category || 'custom',
+          });
+          await saveSkillsToFile(rootPath);
+          success(`技能 ${chalk.cyan(def.name)} 已从 ${urlOrPath} 安装`);
+        } catch (err) {
+          fail(`安装失败: ${(err as Error).message}`);
+        }
+        return;
+      }
+
+      info('用法: ic skill [list|describe <name>|add <name> <触发词>|remove <name>|install <url>]');
     } catch (err) { printError(err as Error); }
   });
 
