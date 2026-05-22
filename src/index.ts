@@ -24,6 +24,8 @@ import { registerTaskCommands, statusLabel, printTaskPlan } from './commands/tas
 import { registerMemoryCommands } from './commands/memory.js';
 import { registerCollaborationCommands } from './commands/collaboration.js';
 import { registerDiffCommands } from './commands/diff.js';
+import { registerImpactCommand } from './commands/impact.js';
+import { registerAndroidCommands } from './commands/android.js';
 import { shouldUseWindowsShell } from './cli/system-runner.js';
 import { providerUnavailable, networkFailure, toolUnavailable, formatDegrade } from './core/degradation.js';
 
@@ -38,6 +40,8 @@ registerTaskCommands(program);
 registerMemoryCommands(program);
 registerCollaborationCommands(program);
 registerDiffCommands(program);
+registerImpactCommand(program);
+registerAndroidCommands(program);
 
 // ============================================================
 // ic setup
@@ -109,6 +113,10 @@ program.command('setup')
               console.log(`  ${chalk.dim(line)}`);
             }
             console.log();
+          } else if (status.keySource === 'env') {
+            warn(`${aiConfig.provider} 连接失败（已检测到环境变量），可能是 Key 与 Provider 不匹配或网络受限。`);
+            info(`试试 ${chalk.cyan('ic provider doctor')} 检测所有 Provider，或 ${chalk.cyan('ic provider test --provider deepseek')} 切换测试。`);
+            if (smoke.error) detail('详情', smoke.error.slice(0, 200));
           } else {
             console.warn(formatDegrade(providerUnavailable(smoke.error || undefined)));
           }
@@ -142,7 +150,7 @@ program.command('init')
     const rootPath = process.cwd();
     const { jsonEnvelope } = await import('./cli/json.js');
     try {
-      progress('正在分析项目...');
+      if (!options.json) progress('正在分析项目...');
       const existing = await loadConfig(rootPath);
       if (existing && !options.force) {
         if (options.json) { console.log(JSON.stringify(jsonEnvelope('init', { initialized: true, identity: existing.project.identity }))); return; }
@@ -157,8 +165,8 @@ program.command('init')
       // Build index
       try {
         const { scanProject, saveProjectIndex } = await import('./core/scanner.js');
-        const result = await scanProject({ rootPath, deep: true, includeTests: true, maxFileSize: 500 * 1024 });
-        info(`索引完成：${result.fileCount} 文件，${result.moduleCount} 模块，${result.apiCount} 接口`);
+        const result = await scanProject({ rootPath, deep: true, includeTests: true, maxFileSize: 500 * 1024, quiet: !!options.json });
+        if (!options.json) info(`索引完成：${result.fileCount} 文件，${result.moduleCount} 模块，${result.apiCount} 接口`);
         await saveProjectIndex(rootPath, result.index);
       } catch { /* best effort */ }
 
@@ -177,12 +185,12 @@ program.command('init')
           const { bootstrapMemoryKernel } = await import('./core/memory/bootstrap.js');
           const result = await bootstrapMemoryKernel(rootPath, runtime);
           if (result.episodesCreated > 0 || result.rulesCreated > 0) {
-            info(`Memory Kernel: ${result.episodesCreated} 历史事件, ${result.rulesCreated} 规则`);
+            if (!options.json) info(`Memory Kernel: ${result.episodesCreated} 历史事件, ${result.rulesCreated} 规则`);
           }
         } catch { /* bootstrap is optional */ }
       } catch { /* memory kernel optional */ }
 
-      success('项目初始化完成\n');
+      if (!options.json) success('项目初始化完成\n');
       if (options.json) {
         console.log(JSON.stringify(jsonEnvelope('init', { initialized: true, identity: config.project.identity, name: config.project.name })));
       } else {
@@ -959,14 +967,26 @@ program.command('provider')
   .argument('[args...]', 'list / use <name> [model] / models [name] / doctor / env [name] / test')
   .option('--json', 'JSON 格式输出')
   .action(async (args: string[] = [], options?: { json?: boolean }) => {
-    const [subcommand, value, model] = args;
+    const jsonMode = Boolean(options?.json || args.includes('--json'));
+    const cleanArgs = args.filter(arg => arg !== '--json');
+    const [subcommand, value, model] = cleanArgs;
     const rootPath = process.cwd();
     try {
       const config = await loadConfig(rootPath);
-      if (!config) { fail('项目未初始化，请先运行 ic init'); }
+      if (!config) {
+        if (jsonMode) {
+          console.log(JSON.stringify(jsonEnvelope('provider-error', {
+            error: 'project-not-initialized',
+            message: '项目未初始化，请先运行 ic init',
+          }), null, 2));
+          process.exitCode = 1;
+          return;
+        }
+        fail('项目未初始化，请先运行 ic init');
+      }
 
       if (!subcommand || subcommand === 'list' || subcommand === 'ls') {
-        printProviderList(config, options?.json);
+        printProviderList(config, jsonMode);
         return;
       }
 
@@ -997,7 +1017,7 @@ program.command('provider')
           fail(`未知 Provider: ${chalk.cyan(value)}`);
           return;
         }
-        printProviderModels(provider, config, options?.json);
+        printProviderModels(provider, config, jsonMode);
         return;
       }
 
@@ -1034,7 +1054,7 @@ program.command('provider')
           maxTokens: config.ai.maxTokens,
           temperature: config.ai.temperature,
         });
-        if (options?.json) {
+        if (jsonMode) {
           const result = await smokeTestProvider(config.ai);
           console.log(JSON.stringify(jsonEnvelope('provider-key', {
             provider,
@@ -1052,12 +1072,12 @@ program.command('provider')
       }
 
       if (subcommand === 'doctor') {
-        printProviderDoctor(config, options?.json);
+        printProviderDoctor(config, jsonMode);
         return;
       }
 
       if (subcommand === 'test') {
-        await printProviderTest(config, options?.json);
+        await printProviderTest(config, jsonMode);
         return;
       }
 
@@ -1072,6 +1092,63 @@ program.command('provider')
       }
 
       warn('未知 provider 子命令。可用：list / use / models / model / doctor / env / test');
+    } catch (err) { printError(err as Error); }
+  });
+
+// ============================================================
+// ic orchestrate — deterministic tool orchestration
+// ============================================================
+program.command('orchestrate')
+  .alias('orch')
+  .description('把自然语言任务拆成工具计划，并按观察/恢复循环执行')
+  .argument('<task...>', '任务描述，例如：启动项目 / 修复测试失败 / 发布检查')
+  .option('--execute', '允许执行真实命令；默认命令只 dry-run')
+  .option('--json', 'JSON 格式输出')
+  .option('--max-steps <n>', '最多执行步骤数', '12')
+  .action(async (parts: string[], options?: { execute?: boolean; json?: boolean; maxSteps?: string }) => {
+    const task = parts.join(' ').trim();
+    const rootPath = process.cwd();
+    try {
+      const { runToolOrchestrator } = await import('./core/tool-orchestrator.js');
+      const maxSteps = parseInt(options?.maxSteps || '12', 10) || 12;
+      if (!options?.json) {
+        section('Tool Orchestrator');
+        detail('任务', chalk.cyan(task));
+        detail('模式', options?.execute ? chalk.yellow('execute') : chalk.green('dry-run'));
+        console.log();
+      }
+      const result = await runToolOrchestrator({
+        rootPath,
+        task,
+        executeCommands: Boolean(options?.execute),
+        maxSteps,
+        onProgress: options?.json ? undefined : (event) => {
+          if (event.phase === 'plan') {
+            info(event.message);
+          } else if (event.phase === 'step_start' && event.step) {
+            console.log(`  ${chalk.cyan('→')} ${event.step.id} ${event.step.title} ${chalk.dim(event.step.tool)}`);
+          } else if (event.phase === 'step_result' && event.step) {
+            const icon = event.step.status === 'success' ? chalk.green('✓') : chalk.red('✗');
+            console.log(`  ${icon} ${event.step.id} ${chalk.dim(event.step.result || '')}`);
+          } else if (event.phase === 'recover' && event.step) {
+            warn(`追加恢复步骤：${event.step.title}`);
+          }
+        },
+      });
+      if (options?.json) {
+        console.log(JSON.stringify(jsonEnvelope('tool-orchestration', result), null, 2));
+        if (!result.success) process.exitCode = 1;
+        return;
+      }
+      console.log();
+      section('编排结果');
+      console.log(result.summary);
+      if (result.memory.decisions.length > 0) {
+        console.log();
+        detail('恢复决策', result.memory.decisions.slice(0, 3).join(' / '));
+      }
+      console.log();
+      if (!result.success) process.exitCode = 1;
     } catch (err) { printError(err as Error); }
   });
 
@@ -1205,7 +1282,7 @@ program.command('search')
     // Local code search
     try {
       const { execFileSync } = await import('child_process');
-      const out = execFileSync('rg', ['--no-heading', '-n', pattern, '--type-not', 'binary', '-g', '!node_modules', '-g', '!.git', '-g', '!dist', '.'], { cwd: process.cwd(), encoding: 'utf-8', timeout: 10000 });
+      const out = execFileSync('rg', ['--no-heading', '-n', pattern, '-g', '!node_modules', '-g', '!.git', '-g', '!dist', '.'], { cwd: process.cwd(), encoding: 'utf-8', timeout: 10000 });
       const lines = out.trim().split('\n').slice(0, 20);
       if (options?.json) {
         const parsed = lines.map(l => { const [f, ln, ...rest] = l.split(':'); return { file: f, line: parseInt(ln) || 0, content: rest.join(':').trim().substring(0, 200) }; });
@@ -1219,7 +1296,41 @@ program.command('search')
         if (lines.length === 0) info('无匹配');
         console.log();
       }
-    } catch { console.warn(formatDegrade(toolUnavailable('ripgrep', '搜索不可用，需要安装 ripgrep'))); }
+    } catch {
+      // JS fallback when rg is unavailable (e.g. not in PATH on this OS)
+      const { readdirSync, readFileSync } = await import('fs');
+      const { join: pJoin } = await import('path');
+      const skip = new Set(['node_modules', '.git', 'dist', '.icloser', 'out', '.cache', 'coverage']);
+      const hits: Array<{ file: string; line: number; content: string }> = [];
+      const walk = (dir: string, depth: number) => {
+        if (depth > 6 || hits.length >= 20) return;
+        try {
+          for (const entry of readdirSync(dir, { withFileTypes: true })) {
+            if (skip.has(entry.name)) continue;
+            const full = pJoin(dir, entry.name);
+            if (entry.isDirectory()) { walk(full, depth + 1); continue; }
+            if (!/\.(ts|js|tsx|jsx|json|md|py|go|rs|java|kt|c|cpp|h)$/.test(entry.name)) continue;
+            try {
+              const text = readFileSync(full, 'utf-8');
+              text.split('\n').forEach((l, i) => {
+                if (hits.length < 20 && l.includes(pattern))
+                  hits.push({ file: full.replace(process.cwd(), '.').replace(/\\/g, '/'), line: i + 1, content: l.trim().substring(0, 200) });
+              });
+            } catch { /* skip unreadable files */ }
+          }
+        } catch { /* skip unreadable dirs */ }
+      };
+      walk(process.cwd(), 0);
+      if (options?.json) {
+        console.log(JSON.stringify(jsonEnvelope('search', { pattern, count: hits.length, matches: hits }), null, 2));
+      } else {
+        section(`代码搜索: ${chalk.cyan(pattern)}`);
+        for (const h of hits) console.log(`  ${chalk.cyan(h.file)}:${chalk.yellow(String(h.line))} ${chalk.dim(h.content.substring(0, 100))}`);
+        if (hits.length === 0) info('无匹配');
+        console.log();
+      }
+      if (hits.length === 0) process.stderr.write(formatDegrade(toolUnavailable('ripgrep', '搜索不可用，需要安装 ripgrep')) + '\n');
+    }
   });
 
 program.command('web')

@@ -63,55 +63,165 @@ export const I = {
 const CJK_RX_THEME = /[一-鿿㐀-䶿豈-﫿　-〿＀-￯぀-ヿ가-힯⺀-⿟]/g;
 function dw(str: string): number { const c = str.replace(/\x1b\[[0-9;]*m/g, ''); return c.length + (c.match(CJK_RX_THEME) || []).length; }
 
-export function welcomeScreen(provider: string, model: string, projectName?: string, onboardingSteps?: string[]): string {
-  const tw = termWidth(); const ow = Math.min(tw - 4, 76);
-  const poweredPlain = `  Powered by ${provider} / ${model}`;
-  const powered = C.dim('  Powered by ') + C.accent(provider) + C.dim(' / ') + C.primary(model);
-  const wm: string[] = [
-    '', '  ' + C.primary('╭') + C.primary('═'.repeat(ow)) + C.primary('╮'),
-    '  ' + C.primary('║') + '  ' + ' '.repeat(ow - 4) + '  ' + C.primary('║'),
-    '  ' + C.primary('║') + '  ' + C.accentBold('   i C l o s e r') + C.primaryBold('   Agent Shell') + ' '.repeat(Math.max(0, ow - 41)) + C.primary('║'),
-    '  ' + C.primary('║') + '  ' + C.dim('  Terminal AI Engineering Assistant') + ' '.repeat(Math.max(0, ow - 39)) + C.primary('║'),
-    '  ' + C.primary('║') + '  ' + powered + ' '.repeat(Math.max(0, ow - 4 - poweredPlain.length)) + '  ' + C.primary('║'),
+function padAnsi(str: string, width: number): string {
+  return str + ' '.repeat(Math.max(0, width - dw(str)));
+}
+
+function fitAnsi(str: string, width: number): string {
+  const clean = str.replace(/\x1b\[[0-9;]*m/g, '');
+  if (dw(clean) <= width) return str;
+  const clipped = clean.slice(0, Math.max(0, width - 1));
+  return clipped + '…';
+}
+
+function frameLine(innerWidth: number, content = ''): string {
+  const fitted = fitAnsi(content, innerWidth);
+  return '  ' + C.dim('║') + padAnsi(fitted, innerWidth) + C.dim('║');
+}
+
+function kv(label: string, value: string, color: (s: string) => string = C.bright): string {
+  return C.dim(label.padEnd(10)) + color(value);
+}
+
+function kvPair(
+  leftLabel: string,
+  leftValue: string,
+  rightLabel: string,
+  rightValue: string,
+  width: number,
+  leftColor: (s: string) => string = C.bright,
+  rightColor: (s: string) => string = C.bright,
+): string {
+  const gap = 4;
+  const col = Math.floor((width - gap) / 2);
+  const left = kv(leftLabel, fitAnsi(leftValue, Math.max(8, col - 11)), leftColor);
+  const right = kv(rightLabel, fitAnsi(rightValue, Math.max(8, col - 11)), rightColor);
+  return padAnsi(left, col) + ' '.repeat(gap) + right;
+}
+
+function normalizeQuickStep(step: string): string {
+  return step.replace(/^\s*(?:\d+[\s.)、-]+)+/, '').trim();
+}
+
+function _pixelLogoLines(): string[] {
+  return [
+    "           \u001b[38;2;82;179;241m⣀\u001b[0m\u001b[38;2;220;238;252m⣀\u001b[0m\u001b[38;2;220;238;252m⣤\u001b[0m\u001b[38;2;220;238;252m⣀\u001b[0m\u001b[38;2;220;238;252m⡴\u001b[0m\u001b[38;2;220;238;252m⢶\u001b[0m\u001b[38;2;186;232;255m⣆\u001b[0m\u001b[38;2;186;232;255m⡠\u001b[0m\u001b[38;2;186;232;255m⣤\u001b[0m\u001b[38;2;186;232;255m⣴\u001b[0m\u001b[38;2;186;232;255m⣄\u001b[0m\u001b[38;2;186;232;255m⣄\u001b[0m\u001b[0m",
+    "      \u001b[38;2;174;234;249m⢀\u001b[0m\u001b[38;2;220;238;252m⢤\u001b[0m\u001b[38;2;220;238;252m⡴\u001b[0m\u001b[38;2;220;238;252m⢾\u001b[0m\u001b[38;2;186;232;255m⣿\u001b[0m\u001b[38;2;220;238;252m⠿\u001b[0m\u001b[38;2;186;232;255m⣷\u001b[0m\u001b[38;2;186;232;255m⣴\u001b[0m\u001b[38;2;186;232;255m⣿\u001b[0m\u001b[38;2;186;232;255m⣾\u001b[0m\u001b[38;2;186;232;255m⡿\u001b[0m\u001b[38;2;186;232;255m⠾\u001b[0m\u001b[38;2;186;232;255m⡾\u001b[0m\u001b[38;2;186;232;255m⢿\u001b[0m\u001b[38;2;186;232;255m⢿\u001b[0m\u001b[38;2;186;232;255m⣿\u001b[0m\u001b[38;2;186;232;255m⣿\u001b[0m\u001b[38;2;186;232;255m⡷\u001b[0m   \u001b[38;2;174;234;249m⣠\u001b[0m\u001b[38;2;82;179;241m⠦\u001b[0m\u001b[38;2;220;238;252m⢿\u001b[0m\u001b[38;2;132;204;243m⡖\u001b[0m\u001b[38;2;174;234;249m⢿\u001b[0m\u001b[38;2;132;204;243m⠛\u001b[0m\u001b[38;2;220;238;252m⡷\u001b[0m\u001b[38;2;162;150;233m⠦\u001b[0m\u001b[38;2;141;96;238m⢄\u001b[0m\u001b[38;2;219;201;248m⡀\u001b[0m\u001b[0m",
+    "    \u001b[38;2;174;234;249m⡠\u001b[0m\u001b[38;2;174;234;249m⠢\u001b[0m\u001b[38;2;220;238;252m⣉\u001b[0m\u001b[38;2;186;232;255m⣅\u001b[0m\u001b[38;2;186;232;255m⠍\u001b[0m\u001b[38;2;186;232;255m⣏\u001b[0m\u001b[38;2;186;232;255m⣯\u001b[0m\u001b[38;2;186;232;255m⡿\u001b[0m\u001b[38;2;186;232;255m⢏\u001b[0m\u001b[38;2;186;232;255m⡕\u001b[0m\u001b[38;2;186;232;255m⡶\u001b[0m\u001b[38;2;186;232;255m⡿\u001b[0m\u001b[38;2;186;232;255m⣓\u001b[0m\u001b[38;2;186;232;255m⠖\u001b[0m\u001b[38;2;186;232;255m⠿\u001b[0m\u001b[38;2;220;238;252m⠶\u001b[0m\u001b[38;2;186;232;255m⠾\u001b[0m\u001b[38;2;186;232;255m⠟\u001b[0m\u001b[38;2;186;232;255m⠍\u001b[0m\u001b[38;2;132;204;243m⠐\u001b[0m\u001b[38;2;189;179;241m⠁\u001b[0m \u001b[38;2;132;204;243m⢰\u001b[0m\u001b[38;2;82;179;241m⡟\u001b[0m\u001b[38;2;220;238;252m⠱\u001b[0m\u001b[38;2;58;113;233m⢶\u001b[0m\u001b[38;2;220;238;252m⢝\u001b[0m\u001b[38;2;174;234;249m⡀\u001b[0m\u001b[38;2;220;238;252m⣺\u001b[0m\u001b[38;2;186;232;255m⣳\u001b[0m\u001b[38;2;88;75;213m⡆\u001b[0m\u001b[38;2;186;232;255m⣸\u001b[0m\u001b[38;2;110;107;236m⡇\u001b[0m\u001b[0m",
+    "  \u001b[38;2;174;234;249m⠠\u001b[0m\u001b[38;2;186;232;255m⣪\u001b[0m\u001b[38;2;186;232;255m⡄\u001b[0m\u001b[38;2;186;232;255m⢸\u001b[0m\u001b[38;2;186;232;255m⠋\u001b[0m\u001b[38;2;186;232;255m⣶\u001b[0m\u001b[38;2;186;232;255m⡿\u001b[0m\u001b[38;2;186;232;255m⡛\u001b[0m\u001b[38;2;186;232;255m⣵\u001b[0m\u001b[38;2;186;232;255m⢎\u001b[0m\u001b[38;2;186;232;255m⡯\u001b[0m\u001b[38;2;186;232;255m⠋\u001b[0m\u001b[38;2;82;179;241m⠉\u001b[0m           \u001b[38;2;82;179;241m⠑\u001b[0m\u001b[38;2;49;148;234m⢿\u001b[0m\u001b[38;2;82;179;241m⣮\u001b[0m\u001b[38;2;132;204;243m⠜\u001b[0m\u001b[38;2;220;238;252m⢻\u001b[0m\u001b[38;2;132;204;243m⣮\u001b[0m\u001b[38;2;174;234;249m⡿\u001b[0m\u001b[38;2;186;232;255m⣟\u001b[0m\u001b[38;2;186;232;255m⣼\u001b[0m\u001b[38;2;141;96;238m⡾\u001b[0m\u001b[38;2;162;150;233m⠗\u001b[0m\u001b[0m",
+    " \u001b[38;2;174;234;249m⠰\u001b[0m\u001b[38;2;186;232;255m⠽\u001b[0m\u001b[38;2;186;232;255m⣲\u001b[0m\u001b[38;2;220;238;252m⡭\u001b[0m\u001b[38;2;186;232;255m⢿\u001b[0m\u001b[38;2;186;232;255m⣘\u001b[0m\u001b[38;2;186;232;255m⢏\u001b[0m\u001b[38;2;186;232;255m⣮\u001b[0m\u001b[38;2;186;232;255m⣞\u001b[0m\u001b[38;2;186;232;255m⢵\u001b[0m\u001b[38;2;162;150;233m⠋\u001b[0m              \u001b[38;2;82;179;241m⠰\u001b[0m\u001b[38;2;58;113;233m⠊\u001b[0m\u001b[38;2;132;204;243m⠛\u001b[0m\u001b[38;2;58;113;233m⠹\u001b[0m\u001b[38;2;110;107;236m⠒\u001b[0m\u001b[38;2;162;150;233m⠥\u001b[0m\u001b[38;2;162;150;233m⠓\u001b[0m\u001b[38;2;162;150;233m⠪\u001b[0m\u001b[38;2;162;150;233m⠋\u001b[0m\u001b[0m",
+    " \u001b[38;2;174;234;249m⣿\u001b[0m\u001b[38;2;186;232;255m⡷\u001b[0m\u001b[38;2;186;232;255m⡙\u001b[0m\u001b[38;2;186;232;255m⠾\u001b[0m\u001b[38;2;186;232;255m⡏\u001b[0m\u001b[38;2;186;232;255m⣷\u001b[0m\u001b[38;2;186;232;255m⣾\u001b[0m\u001b[38;2;186;232;255m⣿\u001b[0m\u001b[38;2;162;150;233m⣬\u001b[0m\u001b[38;2;219;201;248m⡆\u001b[0m\u001b[0m",
+    " \u001b[38;2;174;234;249m⠿\u001b[0m\u001b[38;2;186;232;255m⢯\u001b[0m\u001b[38;2;186;232;255m⡉\u001b[0m\u001b[38;2;186;232;255m⡗\u001b[0m\u001b[38;2;186;232;255m⡡\u001b[0m\u001b[38;2;186;232;255m⢃\u001b[0m\u001b[38;2;186;232;255m⣿\u001b[0m\u001b[38;2;186;232;255m⣿\u001b[0m\u001b[38;2;141;96;238m⢦\u001b[0m\u001b[38;2;219;201;248m⡇\u001b[0m\u001b[0m",
+    " \u001b[38;2;132;204;243m⡵\u001b[0m\u001b[38;2;186;232;255m⣒\u001b[0m\u001b[38;2;186;232;255m⡧\u001b[0m\u001b[38;2;186;232;255m⢫\u001b[0m\u001b[38;2;186;232;255m⠷\u001b[0m\u001b[38;2;186;232;255m⡽\u001b[0m\u001b[38;2;186;232;255m⠵\u001b[0m\u001b[38;2;186;232;255m⣟\u001b[0m\u001b[38;2;186;232;255m⡯\u001b[0m\u001b[38;2;189;179;241m⢶\u001b[0m\u001b[38;2;132;204;243m⡀\u001b[0m              \u001b[38;2;186;232;255m⣀\u001b[0m\u001b[38;2;186;232;255m⣀\u001b[0m\u001b[38;2;186;232;255m⣀\u001b[0m\u001b[38;2;186;232;255m⡀\u001b[0m \u001b[38;2;105;98;192m⣀\u001b[0m\u001b[0m",
+    " \u001b[38;2;82;179;241m⠨\u001b[0m\u001b[38;2;132;204;243m⣭\u001b[0m\u001b[38;2;132;204;243m⣥\u001b[0m\u001b[38;2;186;232;255m⡻\u001b[0m\u001b[38;2;186;232;255m⣕\u001b[0m\u001b[38;2;186;232;255m⡍\u001b[0m\u001b[38;2;186;232;255m⣍\u001b[0m\u001b[38;2;186;232;255m⣺\u001b[0m\u001b[38;2;186;232;255m⡿\u001b[0m\u001b[38;2;186;232;255m⢣\u001b[0m\u001b[38;2;186;232;255m⡾\u001b[0m\u001b[38;2;186;232;255m⣂\u001b[0m\u001b[38;2;49;148;234m⡀\u001b[0m    \u001b[38;2;77;127;205m⢀\u001b[0m\u001b[38;2;186;232;255m⣀\u001b[0m\u001b[38;2;186;232;255m⣠\u001b[0m\u001b[38;2;186;232;255m⣴\u001b[0m\u001b[38;2;49;148;234m⠤\u001b[0m\u001b[38;2;186;232;255m⣯\u001b[0m\u001b[38;2;250;229;156m⣦\u001b[0m\u001b[38;2;250;229;156m⣛\u001b[0m\u001b[38;2;250;229;156m⣫\u001b[0m\u001b[38;2;250;229;156m⣽\u001b[0m\u001b[38;2;250;229;156m⣯\u001b[0m\u001b[38;2;250;229;156m⣺\u001b[0m\u001b[38;2;110;107;236m⣺\u001b[0m\u001b[38;2;110;107;236m⣶\u001b[0m\u001b[38;2;186;232;255m⣺\u001b[0m\u001b[38;2;186;232;255m⠟\u001b[0m\u001b[38;2;186;232;255m⣮\u001b[0m\u001b[38;2;186;232;255m⠶\u001b[0m\u001b[0m",
+    "  \u001b[38;2;132;204;243m⠐\u001b[0m\u001b[38;2;162;150;233m⢘\u001b[0m\u001b[38;2;132;204;243m⢿\u001b[0m\u001b[38;2;132;204;243m⢨\u001b[0m\u001b[38;2;186;232;255m⣝\u001b[0m\u001b[38;2;186;232;255m⢦\u001b[0m\u001b[38;2;186;232;255m⢱\u001b[0m\u001b[38;2;186;232;255m⢾\u001b[0m\u001b[38;2;186;232;255m⡭\u001b[0m\u001b[38;2;186;232;255m⢤\u001b[0m\u001b[38;2;186;232;255m⢛\u001b[0m\u001b[38;2;186;232;255m⠯\u001b[0m\u001b[38;2;186;232;255m⢺\u001b[0m\u001b[38;2;186;232;255m⣪\u001b[0m\u001b[38;2;186;232;255m⠽\u001b[0m\u001b[38;2;186;232;255m⠿\u001b[0m\u001b[38;2;186;232;255m⣷\u001b[0m\u001b[38;2;186;232;255m⣿\u001b[0m\u001b[38;2;186;232;255m⣿\u001b[0m\u001b[38;2;186;232;255m⣯\u001b[0m\u001b[38;2;186;232;255m⣷\u001b[0m\u001b[38;2;186;232;255m⡵\u001b[0m\u001b[38;2;250;229;156m⣻\u001b[0m\u001b[38;2;250;229;156m⣿\u001b[0m\u001b[38;2;250;229;156m⣿\u001b[0m\u001b[38;2;250;229;156m⣿\u001b[0m\u001b[38;2;250;229;156m⣿\u001b[0m\u001b[38;2;250;229;156m⡿\u001b[0m\u001b[38;2;250;229;156m⡯\u001b[0m\u001b[38;2;220;238;252m⠗\u001b[0m\u001b[38;2;186;232;255m⣏\u001b[0m\u001b[38;2;220;238;252m⣒\u001b[0m\u001b[38;2;186;232;255m⠊\u001b[0m\u001b[38;2;141;96;238m⠃\u001b[0m\u001b[0m",
+    "     \u001b[38;2;189;179;241m⢟\u001b[0m\u001b[38;2;162;150;233m⣟\u001b[0m\u001b[38;2;141;96;238m⣞\u001b[0m\u001b[38;2;186;232;255m⣾\u001b[0m\u001b[38;2;186;232;255m⣞\u001b[0m\u001b[38;2;186;232;255m⡂\u001b[0m\u001b[38;2;186;232;255m⢭\u001b[0m\u001b[38;2;186;232;255m⠯\u001b[0m\u001b[38;2;186;232;255m⣯\u001b[0m\u001b[38;2;186;232;255m⣓\u001b[0m\u001b[38;2;186;232;255m⡹\u001b[0m\u001b[38;2;186;232;255m⢭\u001b[0m\u001b[38;2;186;232;255m⡟\u001b[0m\u001b[38;2;186;232;255m⡋\u001b[0m\u001b[38;2;186;232;255m⠕\u001b[0m\u001b[38;2;186;232;255m⡻\u001b[0m\u001b[38;2;186;232;255m⢿\u001b[0m\u001b[38;2;186;232;255m⣿\u001b[0m\u001b[38;2;186;232;255m⡿\u001b[0m\u001b[38;2;186;232;255m⣪\u001b[0m\u001b[38;2;250;229;156m⣻\u001b[0m\u001b[38;2;250;229;156m⣿\u001b[0m\u001b[38;2;186;232;255m⢿\u001b[0m\u001b[38;2;186;232;255m⢷\u001b[0m\u001b[38;2;186;232;255m⢹\u001b[0m\u001b[38;2;220;238;252m⡕\u001b[0m\u001b[38;2;174;234;249m⣟\u001b[0m\u001b[38;2;174;234;249m⠟\u001b[0m\u001b[38;2;48;67;233m⠃\u001b[0m\u001b[0m",
+    "      \u001b[38;2;189;179;241m⠉\u001b[0m\u001b[38;2;162;150;233m⠛\u001b[0m\u001b[38;2;110;107;236m⠿\u001b[0m\u001b[38;2;110;107;236m⣿\u001b[0m\u001b[38;2;94;85;237m⣷\u001b[0m\u001b[38;2;94;85;237m⣶\u001b[0m\u001b[38;2;186;232;255m⣴\u001b[0m\u001b[38;2;186;232;255m⣶\u001b[0m\u001b[38;2;220;238;252m⣆\u001b[0m\u001b[38;2;186;232;255m⣙\u001b[0m\u001b[38;2;186;232;255m⣻\u001b[0m\u001b[38;2;186;232;255m⣯\u001b[0m\u001b[38;2;186;232;255m⢮\u001b[0m\u001b[38;2;186;232;255m⣷\u001b[0m\u001b[38;2;186;232;255m⣢\u001b[0m\u001b[38;2;186;232;255m⠽\u001b[0m\u001b[38;2;220;238;252m⢃\u001b[0m\u001b[38;2;186;232;255m⣴\u001b[0m\u001b[38;2;186;232;255m⠯\u001b[0m\u001b[38;2;186;232;255m⣸\u001b[0m\u001b[38;2;186;232;255m⣟\u001b[0m\u001b[38;2;220;238;252m⣼\u001b[0m\u001b[38;2;174;234;249m⠼\u001b[0m\u001b[38;2;19;91;241m⠞\u001b[0m\u001b[38;2;19;91;241m⠁\u001b[0m\u001b[0m",
+    "          \u001b[38;2;94;85;237m⠈\u001b[0m\u001b[38;2;48;67;233m⠉\u001b[0m\u001b[38;2;58;113;233m⠛\u001b[0m\u001b[38;2;19;91;241m⠙\u001b[0m\u001b[38;2;19;91;241m⠛\u001b[0m\u001b[38;2;82;179;241m⠻\u001b[0m\u001b[38;2;82;179;241m⠟\u001b[0m\u001b[38;2;49;148;234m⠾\u001b[0m\u001b[38;2;49;148;234m⠾\u001b[0m\u001b[38;2;19;91;241m⠛\u001b[0m\u001b[38;2;174;234;249m⠻\u001b[0m\u001b[38;2;174;234;249m⠏\u001b[0m\u001b[38;2;49;148;234m⠙\u001b[0m\u001b[38;2;49;148;234m⠛\u001b[0m\u001b[38;2;19;91;241m⠉\u001b[0m\u001b[38;2;19;91;241m⠉\u001b[0m\u001b[38;2;49;148;234m⠉\u001b[0m\u001b[0m",
   ];
-  if (projectName) wm.push('  ' + C.primary('║') + '  ' + C.dim('  Project') + '      ' + C.accent(projectName) + ' '.repeat(Math.max(0, ow - 22 - projectName.length)) + C.primary('║'));
-  wm.push('  ' + C.primary('║') + '  ' + ' '.repeat(ow - 4) + '  ' + C.primary('║'));
-  if (onboardingSteps && onboardingSteps.length > 0) {
-    wm.push('  ' + C.primary('║') + '  ' + C.primary('━'.repeat(ow - 4)) + '  ' + C.primary('║'));
-    wm.push('  ' + C.primary('║') + '  ' + ' '.repeat(ow - 4) + '  ' + C.primary('║'));
-    for (const step of onboardingSteps) {
-      const pad = Math.max(0, ow - 4 - dw(step));
-      wm.push('  ' + C.primary('║') + '  ' + step + ' '.repeat(pad) + '  ' + C.primary('║'));
-    }
+}
+
+function _clearLogoLines(): string[] {
+  const edge = chalk.hex('#B7F3FF');
+  const wire = chalk.hex('#58A6FF');
+  const deep = chalk.hex('#3B5BDB');
+  const lock = chalk.hex('#A78BFA');
+  const card = chalk.hex('#F6D365');
+  const dim = C.dim;
+  const pad = (line: string) => padAnsi(line, 37);
+
+  return [
+    pad('       ' + edge('╭─────────────╮') + '    ' + lock('╭────╮')),
+    pad('    ' + edge('╭──╯') + '  ' + wire('●────●') + '     ' + edge('╰╮') + '  ' + lock('│╭──╮│')),
+    pad('  ' + edge('╭─╯') + '  ' + dim('╭───────╮') + '      ' + edge('│') + '  ' + lock('││▣ ││')),
+    pad(' ' + edge('╭╯') + '   ' + dim('╭╯       ╰╮') + '     ' + edge('│') + '  ' + lock('│╰──╯│')),
+    pad(' ' + edge('│') + '    ' + dim('│') + '          ' + edge('╰────╯') + '  ' + lock('╰────╯')),
+    pad(' ' + edge('│') + '    ' + dim('│') + '     ' + wire('╭──●──╮')),
+    pad(' ' + deep('│') + '    ' + dim('│') + '     ' + wire('│') + '     ' + wire('●')),
+    pad(' ' + deep('╰╮') + '   ' + dim('╰╮') + '    ' + wire('╰─────╮') + '  ' + card('╭──╮')),
+    pad('  ' + deep('╰╮') + '   ' + dim('╰──') + wire('●') + dim('──╯') + '     ' + card('│▣▣│')),
+    pad('    ' + deep('╰╮') + '              ' + card('╰──╯')),
+    pad('      ' + deep('╰────────╮') + '      ' + dim('╭─╯')),
+    pad('               ' + deep('╰──────╯')),
+    pad(''),
+  ];
+}
+
+export function welcomeScreen(provider: string, model: string, projectName?: string, onboardingSteps?: string[]): string {
+  const tw = termWidth();
+  const outerWidth = Math.max(72, Math.min(tw - 4, 96));
+  const innerWidth = outerWidth - 2;
+  const compact = outerWidth < 86;
+  const workspace = process.cwd();
+  const stack = projectName ? 'Auto detected' : 'Run /scan';
+  const rows: string[] = [
+    '',
+    '  ' + C.dim('╔' + '═'.repeat(outerWidth - 2) + '╗'),
+    frameLine(innerWidth),
+  ];
+
+  const title = '   ' + C.accentBold('i C l o s e r') + C.bright('   ') + C.primaryBold('Agent Shell');
+  if (compact) {
+    rows.push(frameLine(innerWidth, title));
+    rows.push(frameLine(innerWidth, '   ' + C.bright('Terminal AI Engineering Assistant')));
+    rows.push(frameLine(innerWidth));
+    rows.push(frameLine(innerWidth, '   ' + kv('PROJECT', projectName || 'Uninitialized', C.accent)));
+    rows.push(frameLine(innerWidth, '   ' + kv('PROVIDER', `${provider} / ${model}`, C.primary)));
+    rows.push(frameLine(innerWidth, '   ' + kv('WORKSPACE', workspace, C.bright)));
+    rows.push(frameLine(innerWidth, '   ' + kv('CONTEXT', 'ready', C.success)));
+  } else {
+    const contentWidth = innerWidth - 6;
+    rows.push(frameLine(innerWidth, title));
+    rows.push(frameLine(innerWidth, '   ' + C.bright('Terminal AI Engineering Assistant')));
+    rows.push(frameLine(innerWidth));
+    rows.push(frameLine(innerWidth, '   ' + kvPair('PROJECT', projectName || 'Uninitialized', 'PROVIDER', `${provider} / ${model}`, contentWidth, C.accent, C.primary)));
+    rows.push(frameLine(innerWidth, '   ' + kvPair('WORKSPACE', workspace, 'MEMORY', 'auto recall · project rules', contentWidth, C.bright, C.success)));
+    rows.push(frameLine(innerWidth, '   ' + kvPair('STACK', stack, 'CONTEXT', 'live budget · compressed history', contentWidth, C.bright, C.success)));
+    rows.push(frameLine(innerWidth));
+    rows.push(frameLine(innerWidth, '   ' + kv('FLOW', 'ask → plan → tools → diff → verify', C.dim)));
+    rows.push(frameLine(innerWidth, '   ' + kv('EVIDENCE', 'tool calls visible in real time', C.dim)));
+    rows.push(frameLine(innerWidth, '   ' + kv('CONTROL', 'review before write / commit', C.dim)));
   }
-  wm.push(
-    '  ' + C.primary('║') + '  ' + ' '.repeat(ow - 4) + '  ' + C.primary('║'),
-    '  ' + C.primary('║') + '  ' + C.dim('  /help 命令  |  Ctrl+C 中断  |  直接输入需求开始') + ' '.repeat(Math.max(0, ow - 4 - dw('  /help 命令  |  Ctrl+C 中断  |  直接输入需求开始'))) + C.primary('║'),
-    '  ' + C.primary('║') + '  ' + ' '.repeat(ow - 4) + '  ' + C.primary('║'),
-    '  ' + C.primary('╰') + C.primary('═'.repeat(ow)) + C.primary('╯'),
+
+  rows.push(frameLine(innerWidth));
+  rows.push(frameLine(innerWidth, '   ' + C.bright('Ready: ') + C.dim('scan · edit · test · launch · explain')));
+  if (onboardingSteps && onboardingSteps.length > 0) {
+    rows.push(frameLine(innerWidth));
+    const quick = onboardingSteps.slice(0, 3).map((step, idx) => {
+      const prefix = idx === 0 ? '   Quick start ' : '               ';
+      return prefix + C.dim(String(idx + 1).padStart(2) + '  ') + fitAnsi(normalizeQuickStep(step), innerWidth - dw(prefix) - 7);
+    });
+    for (const line of quick) rows.push(frameLine(innerWidth, line));
+  }
+  rows.push(
+    frameLine(innerWidth),
+    '  ' + C.dim('╚' + '═'.repeat(outerWidth - 2) + '╝'),
   );
-  return wm.join('\n');
+  return rows.join('\n');
 }
 
 export function commandHelp(): string {
-  const cmds = [
-    ['/help', '查看帮助'], ['/init', '初始化项目'], ['/scan', '扫描项目'],
-    ['/verify', '验证项目'], ['/write', '写入待确认文件'], ['/diff', '预览变更'],
-    ['/undo', '撤销上次写入'], ['/test', '生成测试'], ['/report', '生成报告'],
-    ['/commit', '提交 Git'], ['/status', '查看状态'], ['/doctor', '诊断下一步'],
-    ['/config', '查看配置'], ['/apikey', '输入 API Key'],
-    ['/run', 'Agent 执行任务'], ['/agents', 'Agent 列表'], ['/orchestrate', '多 Agent 编排'],
-    ['/search', '搜索代码'], ['/intel', '代码智能'], ['/context', '查看上下文'],
-    ['/history', '对话历史'], ['/start', '启动项目'], ['/stop', '停止项目'],
-    ['/clear', '清空对话'], ['/exit', '退出'],
+  const groups = [
+    ['setup', '配置模型和环境', '/help /apikey /config /doctor /status /exit'],
+    ['project', '理解和启动项目', '/scan /context /start /stop'],
+    ['ai', '自然语言工程任务', '直接输入需求 /run /orchestrate'],
+    ['tools', '搜索、网页、命令证据', '/search /intel /diff'],
+    ['code', '代码交付和验证', '/write /diff /verify /undo'],
+    ['memory', '长期记忆和项目规则', '/memory /global'],
+    ['collab', '提交和团队协作', '/commit /report'],
+    ['release', '发布前质量信任', '/verify /report /doctor'],
   ];
-  const tw = termWidth(); const w = Math.min(tw - 4, 60);
+  const tw = termWidth(); const w = Math.min(tw - 4, 78);
   let out = '  ' + C.primary('╭') + C.primary('─'.repeat(w)) + C.primary('╮') + '\n';
-  out += '  ' + C.primary('│') + ' ' + C.primaryBold('iCloser Agent Shell') + ' ' + C.dim('- 常用命令') + ' '.repeat(Math.max(0, w - 33)) + ' ' + C.primary('│') + '\n';
+  out += '  ' + C.primary('│') + ' ' + C.primaryBold('iCloser Agent Shell') + ' ' + C.dim('- 按目标选择，不用背命令') + ' '.repeat(Math.max(0, w - 41)) + ' ' + C.primary('│') + '\n';
   out += '  ' + C.primary('│') + ' '.repeat(w + 2) + ' ' + C.primary('│') + '\n';
-  for (const [cmd, desc] of cmds) {
-    out += '  ' + C.primary('│') + ' ' + C.accent(cmd.padEnd(14)) + ' ' + C.dim(desc) + ' '.repeat(Math.max(0, w - 18 - desc.length)) + ' ' + C.primary('│') + '\n';
+  for (const [group, desc, cmds] of groups) {
+    const line = `${C.accent(group.padEnd(9))} ${C.bright(desc.padEnd(16))} ${C.dim(cmds)}`;
+    const clean = `${group.padEnd(9)} ${desc.padEnd(16)} ${cmds}`;
+    out += '  ' + C.primary('│') + ' ' + line + ' '.repeat(Math.max(0, w - clean.length)) + ' ' + C.primary('│') + '\n';
   }
+  out += '  ' + C.primary('│') + ' '.repeat(w + 2) + ' ' + C.primary('│') + '\n';
+  out += '  ' + C.primary('│') + ' ' + C.dim('新手路径: 直接输入需求 → 看任务驾驶舱 → 看工具证据 → /diff → /write → /verify') + ' '.repeat(Math.max(0, w - 68)) + ' ' + C.primary('│') + '\n';
   out += '  ' + C.primary('│') + ' ' + C.dim('快捷键: y=确认 n=拒绝 h=帮助 s=扫描 d=差异 c=清除 w=写入 q=退出') + ' '.repeat(Math.max(0, w - 42)) + ' ' + C.primary('│') + '\n';
   out += '  ' + C.primary('╰') + C.primary('─'.repeat(w)) + C.primary('╯');
   return out;
