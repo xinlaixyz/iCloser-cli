@@ -111,7 +111,8 @@ export function registerProjectCommands(program: Command): void {
           console.log(`  ${chalk.cyan('cd /path/to/project && ic init')}`);
           console.log(`  ${chalk.cyan('ic provider doctor')}`);
           console.log(`  ${chalk.cyan('ic provider test')}`);
-          console.log(`  ${chalk.cyan('ic t "你的任务描述"')}\n`);
+          console.log(`  ${chalk.cyan('ic t "你的任务描述"')}`);
+          console.log(chalk.dim(`\n  提示：如果 ic 命令不可用，运行 ${chalk.cyan('npm link')} 注册全局命令，或用 ${chalk.cyan('npx ic')} 代替。\n`));
         }
       } catch (err) { printError(err as Error); }
     });
