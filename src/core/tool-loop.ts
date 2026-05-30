@@ -5,6 +5,8 @@
 import type { ToolDefinition, AIProviderAdapter } from '../ai/provider.js';
 import type { AIResponse } from '../types.js';
 import { executeToolCall as executeTool } from './tool-executor.js';
+import { summarizeToolEvidence, normalizeEvidenceText } from './evidence-store.js';
+import { formatAICallFailure } from '../ai/errors.js';
 
 export interface ToolLoopOptions {
   task: string;
@@ -16,6 +18,8 @@ export interface ToolLoopOptions {
   maxRounds?: number;
   tokenBudget?: number;
   onProgress?: (event: ToolLoopProgress) => void;
+  /** Keep exploring for action-oriented tasks such as project startup instead of forcing a report after a few reads. */
+  suppressReadSynthesis?: boolean;
   /** Pre-loaded code snippets + memory injected before the first AI round */
   preloadContext?: { codeSnippets?: { file: string; content: string }[]; memory?: string };
 }
@@ -48,7 +52,10 @@ export interface ToolLoopCallRecord {
 
 const DEFAULT_MAX_ROUNDS = 8;
 const DEFAULT_TOKEN_BUDGET = 80000; // 80K chars — roughly 20K tokens
-const TOOL_RESULT_MAX_LENGTH = 15000; // truncate each tool result (was 6000, too small for web pages)
+const TOOL_RESULT_MAX_LENGTH = 6000;
+const MAX_TOOL_CALLS_PER_ROUND = 8;
+const MAX_WEB_SEARCH_CALLS_PER_ROUND = 5;
+const PROVIDER_HISTORY_MAX_LENGTH = 22000;
 
 interface ToolMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
@@ -127,26 +134,27 @@ export async function runToolLoop(options: ToolLoopOptions): Promise<ToolLoopRes
         options.tools.length > 0 ? options.tools : undefined,
       );
     } catch (err) {
-      return { finalResponse: `AI 调用失败: ${(err as Error).message}`, rounds: round + 1, toolCalls: records, tokensUsed: totalTokensUsed, success: false };
+      return { finalResponse: `AI 调用失败:\n${formatAICallFailure(err)}`, rounds: round + 1, toolCalls: records, tokensUsed: totalTokensUsed, success: false };
     }
 
     totalTokensUsed += response.tokensUsed || Math.ceil(response.content.length / 4);
 
     // Check if AI returned tool calls
     if (response.toolCalls && response.toolCalls.length > 0) {
+      const plannedToolCalls = limitToolCallsForRound(response.toolCalls);
       // Record assistant message with tool calls
       // P1-8: normalize arguments — providers may return parsed objects or JSON strings
       messages.push({
         role: 'assistant',
         content: response.content || '',
-        tool_calls: response.toolCalls.map(tc => ({
+        tool_calls: plannedToolCalls.map(tc => ({
           name: tc.name,
           arguments: normalizeArgs(tc.arguments),
         })),
       });
 
       // Execute each tool call
-      for (const tc of response.toolCalls) {
+      for (const tc of plannedToolCalls) {
         const args = normalizeArgs(tc.arguments);
         options.onProgress?.({
           phase: 'tool_call',
@@ -167,7 +175,7 @@ export async function runToolLoop(options: ToolLoopOptions): Promise<ToolLoopRes
           && fetchedUrls.has(`search:${searchQuery}`);
 
         if (isRepeatRead) {
-          toolResult = `⚠️ 重复读取拦截：你已读取过 ${filePath}。直接使用之前内容，禁止重复读取。\n\n---\n${readFiles.get(filePath)}`;
+          toolResult = `[cache reused] ${filePath}\n\n---\n${readFiles.get(filePath)}`;
           messages.push({
             role: 'user',
             content: `[系统] 你刚才重复读取了 ${filePath}。该文件内容已在对话中，请立即生成最终报告，不要再调用任何工具。已读取: ${[...readFiles.keys()].join(', ')}`,
@@ -192,7 +200,7 @@ export async function runToolLoop(options: ToolLoopOptions): Promise<ToolLoopRes
         if ((tc.name === 'read_file' || tc.name === 'read_pdf' || tc.name === 'list_dir') && !readFiles.has(filePath) && !toolResult.startsWith('错误') && toolResult.length > 50) {
           readFiles.set(filePath, toolResult);
           // After first successful read, inject gentle stop signal
-          if (readFiles.size >= 2) {
+          if (readFiles.size >= 2 && !options.suppressReadSynthesis) {
             messages.push({
               role: 'user',
               content: `[系统] 已读取 ${readFiles.size} 个文件。信息充足，请立即生成最终报告，不要再调用工具。`,
@@ -244,9 +252,16 @@ export async function runToolLoop(options: ToolLoopOptions): Promise<ToolLoopRes
       }
 
       // No-progress detection: ANY repeat or stall → force synthesis immediately
-      const thisRoundKeys = new Set(response.toolCalls.map(tc => `${tc.name}:${JSON.stringify(normalizeArgs(tc.arguments))}`));
-      const hasRepeatInRound = thisRoundKeys.size < response.toolCalls.length; // same tool+args duplicated in one round
+      const thisRoundKeys = new Set(plannedToolCalls.map(tc => `${tc.name}:${JSON.stringify(normalizeArgs(tc.arguments))}`));
+      const hasRepeatInRound = thisRoundKeys.size < plannedToolCalls.length; // same tool+args duplicated in one round
       const isStall = lastRoundTools.size > 0 && setsEqual(thisRoundKeys, lastRoundTools);
+
+      if (plannedToolCalls.length < response.toolCalls.length) {
+        messages.push({
+          role: 'user',
+          content: `[系统] 本轮模型请求了 ${response.toolCalls.length} 次工具调用，已限流执行 ${plannedToolCalls.length} 次，防止上下文爆炸。请基于已有证据输出最终报告，不要继续搜索。`,
+        });
+      }
 
       if (hasRepeatInRound || isStall) {
         messages.push({
@@ -304,14 +319,39 @@ export async function runToolLoop(options: ToolLoopOptions): Promise<ToolLoopRes
       success: true,
     };
   } catch (err) {
+    if (records.some(record => record.success)) {
+      return {
+        finalResponse: buildFallbackReport(options.task, records, formatAICallFailure(err)),
+        rounds: round + 1,
+        toolCalls: records,
+        tokensUsed: totalTokensUsed,
+        success: true,
+      };
+    }
     return {
-      finalResponse: `分析超时: ${(err as Error).message}`,
+      finalResponse: `分析超时:\n${formatAICallFailure(err)}`,
       rounds: round + 1,
       toolCalls: records,
       tokensUsed: totalTokensUsed,
       success: false,
     };
   }
+}
+
+function limitToolCallsForRound(
+  calls: Array<{ name: string; arguments: unknown }>,
+): Array<{ name: string; arguments: unknown }> {
+  const kept: Array<{ name: string; arguments: unknown }> = [];
+  let webSearchCount = 0;
+  for (const call of calls) {
+    if (kept.length >= MAX_TOOL_CALLS_PER_ROUND) break;
+    if (call.name === 'web_search') {
+      if (webSearchCount >= MAX_WEB_SEARCH_CALLS_PER_ROUND) continue;
+      webSearchCount++;
+    }
+    kept.push(call);
+  }
+  return kept;
 }
 
 function normalizeArgs(args: unknown): Record<string, unknown> {
@@ -381,7 +421,7 @@ ${toolList}
 }
 
 function formatMessagesForProvider(messages: ToolMessage[]): string {
-  return messages.map(m => {
+  const formatted = messages.map(m => {
     const prefix = m.role === 'system' ? '系统' :
       m.role === 'user' ? '用户' :
       m.role === 'assistant' ? 'AI' : `工具${m.name ? `(${m.name})` : ''}`;
@@ -391,10 +431,76 @@ function formatMessagesForProvider(messages: ToolMessage[]): string {
       text += ` 决定调用: ${m.tool_calls.map(tc => tc.name).join(', ')}`;
     }
     if (m.content) {
-      // Tool results can be large (web pages); keep full content, cap at 20K
-      const maxLen = m.role === 'tool' ? 20000 : 4000;
-      text += ' ' + m.content.slice(0, maxLen);
+      if (m.role === 'tool') {
+        text += ' ' + normalizeEvidenceText(summarizeToolEvidence(m.name || 'tool', {}, m.content), 700);
+      } else {
+        text += ' ' + normalizeEvidenceText(m.content, m.role === 'user' ? 2500 : 1200);
+      }
     }
     return text;
-  }).join('\n');
+  });
+  const joined = formatted.join('\n');
+  if (joined.length <= PROVIDER_HISTORY_MAX_LENGTH) return joined;
+  const first = formatted[0] || '';
+  const tail = joined.slice(-Math.max(8000, PROVIDER_HISTORY_MAX_LENGTH - first.length - 80));
+  return `${first}\n[系统] 历史过长，已压缩，仅保留关键尾部证据。\n${tail}`;
+}
+
+function buildFallbackReport(task: string, records: ToolLoopCallRecord[], failure: string): string {
+  const successful = records.filter(record => record.success);
+  const webFetches = successful.filter(record => record.name === 'web_fetch');
+  const webSearches = successful.filter(record => record.name === 'web_search');
+  const sources = successful
+    .map(record => {
+      const target = String(record.args.url || record.args.query || record.args.path || record.args.pattern || '').trim();
+      const summary = summarizeToolEvidence(record.name, record.args, record.result);
+      return { name: record.name, target, summary: normalizeEvidenceText(summary, 500) };
+    })
+    .filter(item => item.summary || item.target)
+    .slice(0, 10);
+  const isInvestment = /(投资|融资|估值|商业|市场|竞品|valuation|investment|funding|report)/i.test(task);
+  const lines: string[] = [];
+  lines.push(isInvestment ? '## 投资分析报告（证据兜底版）' : '## 分析报告（证据兜底版）');
+  lines.push('');
+  lines.push(`AI 最终合成阶段超时，但已完成 ${successful.length} 条有效取证。下面是基于工具证据的本地兜底报告。`);
+  lines.push('');
+  lines.push('### 1. 已确认信息');
+  if (sources.length === 0) {
+    lines.push('- 已执行工具，但没有可用文本证据。');
+  } else {
+    for (const source of sources.slice(0, 5)) {
+      lines.push(`- ${source.name}${source.target ? `：${source.target}` : ''}。${source.summary.split('\n')[0] || '已获取相关证据。'}`);
+    }
+  }
+  lines.push('');
+  if (isInvestment) {
+    lines.push('### 2. 投资判断框架');
+    lines.push('- 市场：需要把公开叙事拆成真实用户、付费场景、监管边界和增长渠道四类证据。');
+    lines.push('- 产品：优先验证钱包、自托管、Web3 支付、合规/KYC、帮助中心等功能是否真实可用。');
+    lines.push('- 团队：公开报道可作为线索，但不能替代创始人履历、融资记录、股权结构和执行数据。');
+    lines.push('- 风险：当前证据以公开页面和媒体资料为主，缺少财务、用户、留存、交易规模等硬指标。');
+    lines.push('');
+    lines.push('### 3. 需要补充的关键材料');
+    lines.push('- 最近 12 个月 MAU、注册用户、活跃钱包数、交易笔数和交易金额。');
+    lines.push('- 收入结构、毛利、获客成本、合规成本和现金流。');
+    lines.push('- 核心团队履历、股权结构、融资条款、历史投资人和退出限制。');
+    lines.push('- 竞品对比：钱包、Web3 支付、合规发卡/支付入口、DID/自托管方向。');
+    lines.push('');
+    lines.push('### 4. 下一步建议');
+    lines.push('- 把本轮公开证据整理成正式投资报告的“公开信息章节”。');
+    lines.push('- 再跑一轮受控深挖：限定 5 个问题、最多 6 次网页工具，避免再次上下文爆炸。');
+    lines.push('- 如果要做投资结论，必须补齐硬指标后再给估值区间。');
+  } else {
+    lines.push('### 2. 初步结论');
+    lines.push('- 当前已有证据足以形成初步判断，但最终 AI 合成超时，建议缩小问题范围继续深挖。');
+    lines.push('- 后续应按“事实、风险、行动”三段继续补充。');
+  }
+  lines.push('');
+  lines.push('### 5. 证据概览');
+  lines.push(`- web_search：${webSearches.length} 次`);
+  lines.push(`- web_fetch：${webFetches.length} 次`);
+  lines.push(`- 总工具调用：${records.length} 次`);
+  lines.push('');
+  lines.push(`> 兜底原因：${normalizeEvidenceText(failure, 300)}`);
+  return lines.join('\n');
 }

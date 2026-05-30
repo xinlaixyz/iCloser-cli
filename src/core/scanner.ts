@@ -46,6 +46,7 @@ export interface ScanOptions {
   deep: boolean;          // deep scan with AST parsing
   includeTests: boolean;
   maxFileSize: number;    // bytes, skip larger files
+  quiet?: boolean;        // suppress stdout progress output
 }
 
 export interface ScanResult {
@@ -78,7 +79,7 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
   // Phase 2.5: Incremental scan — compute fingerprints, skip unchanged files
   const oldFingerprints = await loadPreviousFingerprints(rootPath);
   const { currentFingerprints, changedFiles, skippedCount } = await computeFingerprints(filteredFiles, oldFingerprints);
-  if (skippedCount > 100) process.stdout.write(`  增量扫描：跳过 ${skippedCount} 个未变更文件\n`);
+  if (skippedCount > 100 && !options.quiet) process.stdout.write(`  增量扫描：跳过 ${skippedCount} 个未变更文件\n`);
 
   const isIncremental = changedFiles.length > 0 && changedFiles.length < filteredFiles.length * 0.8;
 
@@ -159,7 +160,7 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
     if (subs.length > 0) {
       subprojects = subs;
       if (options.deep) {
-        process.stdout.write(`  发现 ${subs.length} 个子项目: ${subs.map(s => s.name).join(', ')}\n`);
+        if (!options.quiet) process.stdout.write(`  发现 ${subs.length} 个子项目: ${subs.map(s => s.name).join(', ')}\n`);
       }
     }
   } catch { /* non-blocking */ }
@@ -248,27 +249,8 @@ const ALL_SOURCE_PATTERNS: string[] = [
   '**/*.json',
   '**/*.pdf', '**/*.html', '**/*.htm', '**/*.pptx', '**/*.ppt', '**/*.docx', '**/*.xlsx',
 ];
-const TEST_PATTERNS: RegExp[] = [
-  /\.test\.\w+$/, /\.spec\.\w+$/, /_test\.\w+$/,
-  /\/test_\w+\.\w+$/, /\/\w+_test\.\w+$/, /\/\w+Test\.\w+$/,
-  /\/__tests__\//, /\/tests\//, /\/test\//,
-];
-const GENERATED_PATTERNS: RegExp[] = [
-  /\.d\.ts$/, /\.generated\./, /\.pb\.\w+$/,
-  /\/node_modules\//, /\/vendor\//, /\/\.git\//,
-  /\/dist\//, /\/build\//, /\/target\//, /\/\.next\//, /\/\.nuxt\//,
-  /\/__pycache__\//, /\/\.icloser\//,
-];
-
 function getSourceFilePatterns(_language: string): string[] {
   return ALL_SOURCE_PATTERNS;
-}
-
-function _isTestFile(filePath: string): boolean {
-  return TEST_PATTERNS.some(p => p.test(filePath));
-}
-function _isGeneratedFile(filePath: string): boolean {
-  return GENERATED_PATTERNS.some(p => p.test(filePath));
 }
 
 async function filterBySize(

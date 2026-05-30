@@ -5,7 +5,7 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
 import { jsonEnvelope } from '../cli/json.js';
-import { fail, info, section } from '../cli/output.js';
+import { fail, info, section, warn } from '../cli/output.js';
 import { formatDegrade, networkFailure, toolUnavailable } from '../core/degradation.js';
 
 export function registerSearchCommands(program: Command): void {
@@ -33,7 +33,7 @@ export function registerSearchCommands(program: Command): void {
             }
             if (results.length === 0) info('未找到结果');
           }
-        } catch (err) { console.warn(formatDegrade(networkFailure((err as Error).message))); }
+        } catch (err) { warn(formatDegrade(networkFailure((err as Error).message))); }
         return;
       }
       // Local code search
@@ -86,7 +86,7 @@ export function registerSearchCommands(program: Command): void {
           if (hits.length === 0) info('无匹配');
           console.log();
         }
-        if (hits.length === 0) process.stderr.write(formatDegrade(toolUnavailable('ripgrep', '搜索不可用，需要安装 ripgrep')) + '\n');
+        if (hits.length === 0) warn(formatDegrade(toolUnavailable('ripgrep', '搜索不可用，需要安装 ripgrep')));
       }
     });
 

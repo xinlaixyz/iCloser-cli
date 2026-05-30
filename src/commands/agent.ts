@@ -4,7 +4,7 @@
 
 import { Command } from 'commander';
 import chalk from 'chalk';
-import { success, fail, warn, info, progress, section, printError } from '../cli/output.js';
+import { success, fail, warn, info, progress, printError } from '../cli/output.js';
 import { jsonEnvelope } from '../cli/json.js';
 import { statusLabel } from './task.js';
 import type { AgentStatus, AgentType } from '../types.js';

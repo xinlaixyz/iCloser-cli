@@ -93,6 +93,29 @@ ic t "修复登录页样式问题" --go
 ic t "增加手机登录" "增加邮箱验证" "修复头像上传"
 ```
 
+## 主路径与命令分组
+
+iCloser 后续所有自然语言任务都进入统一 AgentTaskLoop：
+
+```text
+理解需求 -> 采用记忆 -> 调用工具 -> 结构化证据 -> 生成结果/补丁 -> diff/写入/验证 -> 报告与记忆
+```
+
+命令按用户问题分组：
+
+| 分组 | 用户问题 | 主要入口 |
+|------|----------|----------|
+| `setup` | 怎么安装、配置模型服务、排查为什么进不了 AI | `ic setup`、`ic doctor`、`ic provider`、`/apikey` |
+| `project` | 这个项目是什么、怎么扫描、怎么启动 | `ic init`、`ic scan`、`ic android` |
+| `ai` | 让 AI 执行一个工程任务 | `ic`、`ic t "需求"`、`ic task-run`、`ic orchestrate` |
+| `tools` | AI 用了哪些工具、结果是什么 | REPL 工具轨迹、`ic search`、`ic diff explain` |
+| `code` | 生成、修复、重构、验证代码 | `ic gen`、`ic code`、`ic impact`、`ic verify` |
+| `memory` | 查看和维护长期记忆 | `ic mem`、`ic mem edit`、`ic mem used`、`ic mem why` |
+| `collab` | 生成 PR、commit、review、审计材料 | `ic collab`、`ic pr`、`ic commit-draft` |
+| `release` | 判断能不能发布 | `ic release report`、`npm run release:trust`、`npm run release:checksum` |
+
+新用户优先使用 `ic` 直接输入自然语言；高级用户再使用下面的完整命令表。
+
 ## 命令参考
 
 ### 核心工作流

@@ -1,0 +1,314 @@
+[
+  {
+    "path": "TypeScript/类型安全",
+    "domain": "Frontend",
+    "scope": "project",
+    "content": "项目启用了 TypeScript strict 模式，所有修改必须通过严格类型检查",
+    "confidence": 0.7,
+    "tags": [
+      "typescript",
+      "strict",
+      "auto-detected"
+    ],
+    "verificationCount": 1,
+    "sourceEpisodeIds": [],
+    "isPermanent": false,
+    "id": "rule-mpcsc99t-50tbw",
+    "created_at": "2026-05-19T15:26:03.761Z",
+    "updated_at": "2026-05-19T15:26:03.761Z"
+  },
+  {
+    "path": "CodeStyle/ESLint",
+    "domain": "General",
+    "scope": "project",
+    "content": "项目配置了 ESLint，生成的代码必须符合 ESLint 规则",
+    "confidence": 0.6,
+    "tags": [
+      "eslint",
+      "code-style",
+      "auto-detected"
+    ],
+    "verificationCount": 1,
+    "sourceEpisodeIds": [],
+    "isPermanent": false,
+    "id": "rule-mpcsc99u-xvoxz",
+    "created_at": "2026-05-19T15:26:03.762Z",
+    "updated_at": "2026-05-19T15:26:03.762Z"
+  },
+  {
+    "path": "Testing/Vitest",
+    "domain": "General",
+    "scope": "project",
+    "content": "项目使用 Vitest 作为测试框架，修改源码时应同步更新或补充测试",
+    "confidence": 0.6,
+    "tags": [
+      "testing",
+      "vitest",
+      "auto-detected"
+    ],
+    "verificationCount": 1,
+    "sourceEpisodeIds": [],
+    "isPermanent": false,
+    "id": "rule-mpcsc99v-rkkoh",
+    "created_at": "2026-05-19T15:26:03.763Z",
+    "updated_at": "2026-05-19T15:26:03.763Z"
+  },
+  {
+    "path": "DevOps/Docker",
+    "domain": "DevOps",
+    "scope": "project",
+    "content": "项目使用 Docker 部署，修改依赖或构建脚本后需验证 Docker 构建是否成功",
+    "confidence": 0.5,
+    "tags": [
+      "docker",
+      "deployment",
+      "auto-detected"
+    ],
+    "verificationCount": 1,
+    "sourceEpisodeIds": [],
+    "isPermanent": false,
+    "id": "rule-mpcsc99w-4rrlo",
+    "created_at": "2026-05-19T15:26:03.764Z",
+    "updated_at": "2026-05-19T15:26:03.764Z"
+  },
+  {
+    "path": "General/自动规则",
+    "domain": "General",
+    "content": "文件经常一起修改: doc/CHANGELOG.md + doc/PROJECT_STATUS.md (3次)",
+    "scope": "project",
+    "confidence": 0.3,
+    "verificationCount": 0,
+    "sourceEpisodeIds": [
+      "ep-mpeu89dj-0",
+      "ep-mpeu89dl-1",
+      "ep-mpeu89dn-2",
+      "ep-mpeu89dp-3",
+      "ep-mpeu89e1-4"
+    ],
+    "tags": [
+      "auto-generated",
+      "consolidation",
+      "general"
+    ],
+    "isPermanent": false,
+    "id": "rule-mpeu89gv-441cb059",
+    "created_at": "2026-05-21T01:54:28.975Z",
+    "updated_at": "2026-05-21T01:54:28.975Z"
+  },
+  {
+    "path": "General/自动规则",
+    "domain": "General",
+    "content": "文件经常一起修改: src/agent/manager.ts + src/cli/repl.ts (4次)",
+    "scope": "project",
+    "confidence": 0.3,
+    "verificationCount": 0,
+    "sourceEpisodeIds": [
+      "ep-mpeu89dj-0",
+      "ep-mpeu89dl-1",
+      "ep-mpeu89dn-2",
+      "ep-mpeu89dp-3",
+      "ep-mpeu89e1-4"
+    ],
+    "tags": [
+      "auto-generated",
+      "consolidation",
+      "general"
+    ],
+    "isPermanent": false,
+    "id": "rule-mpeu89gv-1376bd90",
+    "created_at": "2026-05-21T01:54:28.975Z",
+    "updated_at": "2026-05-21T01:54:28.975Z"
+  },
+  {
+    "path": "Config/自动规则",
+    "domain": "Config",
+    "content": "文件经常一起修改: src/agent/manager.ts + src/config.ts (3次)",
+    "scope": "project",
+    "confidence": 0.3,
+    "verificationCount": 0,
+    "sourceEpisodeIds": [
+      "ep-mpeu89dj-0",
+      "ep-mpeu89dl-1",
+      "ep-mpeu89dn-2",
+      "ep-mpeu89dp-3",
+      "ep-mpeu89e1-4"
+    ],
+    "tags": [
+      "auto-generated",
+      "consolidation",
+      "config"
+    ],
+    "isPermanent": false,
+    "id": "rule-mpeu89gv-9de1c6ca",
+    "created_at": "2026-05-21T01:54:28.975Z",
+    "updated_at": "2026-05-21T01:54:28.975Z"
+  },
+  {
+    "path": "General/自动规则",
+    "domain": "General",
+    "content": "文件经常一起修改: src/agent/manager.ts + src/core/ast-parser.ts (3次)",
+    "scope": "project",
+    "confidence": 0.3,
+    "verificationCount": 0,
+    "sourceEpisodeIds": [
+      "ep-mpeu89dj-0",
+      "ep-mpeu89dl-1",
+      "ep-mpeu89dn-2",
+      "ep-mpeu89dp-3",
+      "ep-mpeu89e1-4"
+    ],
+    "tags": [
+      "auto-generated",
+      "consolidation",
+      "general"
+    ],
+    "isPermanent": false,
+    "id": "rule-mpeu89gv-1e37345f",
+    "created_at": "2026-05-21T01:54:28.975Z",
+    "updated_at": "2026-05-21T01:54:28.975Z"
+  },
+  {
+    "path": "General/自动规则",
+    "domain": "General",
+    "content": "文件经常一起修改: src/cli/output.ts + src/cli/repl.ts (3次)",
+    "scope": "project",
+    "confidence": 0.3,
+    "verificationCount": 0,
+    "sourceEpisodeIds": [
+      "ep-mpeu89dj-0",
+      "ep-mpeu89dl-1",
+      "ep-mpeu89dn-2",
+      "ep-mpeu89dp-3",
+      "ep-mpeu89e1-4"
+    ],
+    "tags": [
+      "auto-generated",
+      "consolidation",
+      "general"
+    ],
+    "isPermanent": false,
+    "id": "rule-mpeu89gv-1032dca9",
+    "created_at": "2026-05-21T01:54:28.975Z",
+    "updated_at": "2026-05-21T01:54:28.975Z"
+  },
+  {
+    "path": "General/自动规则",
+    "domain": "General",
+    "content": "文件经常一起修改: doc/CHANGELOG.md + doc/PROJECT_STATUS.md (5次)",
+    "scope": "project",
+    "confidence": 0.3,
+    "verificationCount": 0,
+    "sourceEpisodeIds": [
+      "ep-mpeubbtz-0",
+      "ep-mpeu89dj-0",
+      "ep-mpeubbu1-1",
+      "ep-mpeu89dl-1",
+      "ep-mpeubbu3-2"
+    ],
+    "tags": [
+      "auto-generated",
+      "consolidation",
+      "general"
+    ],
+    "isPermanent": false,
+    "id": "rule-mpeubbwz-29664240",
+    "created_at": "2026-05-21T01:56:52.116Z",
+    "updated_at": "2026-05-21T01:56:52.116Z"
+  },
+  {
+    "path": "DevOps/自动规则",
+    "domain": "DevOps",
+    "content": "文件经常一起修改: .github/workflows/ci.yml + .github/workflows/smoke.yml (4次)",
+    "scope": "project",
+    "confidence": 0.3,
+    "verificationCount": 0,
+    "sourceEpisodeIds": [
+      "ep-mpeubbtz-0",
+      "ep-mpeu89dj-0",
+      "ep-mpeubbu1-1",
+      "ep-mpeu89dl-1",
+      "ep-mpeubbu3-2"
+    ],
+    "tags": [
+      "auto-generated",
+      "consolidation",
+      "devops"
+    ],
+    "isPermanent": false,
+    "id": "rule-mpeubbx0-7cc9f80b",
+    "created_at": "2026-05-21T01:56:52.116Z",
+    "updated_at": "2026-05-21T01:56:52.116Z"
+  },
+  {
+    "path": "General/自动规则",
+    "domain": "General",
+    "content": "文件经常一起修改: src/agent/manager.ts + src/cli/output.ts (4次)",
+    "scope": "project",
+    "confidence": 0.3,
+    "verificationCount": 0,
+    "sourceEpisodeIds": [
+      "ep-mpeubbtz-0",
+      "ep-mpeu89dj-0",
+      "ep-mpeubbu1-1",
+      "ep-mpeu89dl-1",
+      "ep-mpeubbu3-2"
+    ],
+    "tags": [
+      "auto-generated",
+      "consolidation",
+      "general"
+    ],
+    "isPermanent": false,
+    "id": "rule-mpeubbx0-240e47e7",
+    "created_at": "2026-05-21T01:56:52.116Z",
+    "updated_at": "2026-05-21T01:56:52.116Z"
+  },
+  {
+    "path": "General/自动规则",
+    "domain": "General",
+    "content": "文件经常一起修改: src/agent/manager.ts + src/cli/repl.ts (7次)",
+    "scope": "project",
+    "confidence": 0.3,
+    "verificationCount": 0,
+    "sourceEpisodeIds": [
+      "ep-mpeubbtz-0",
+      "ep-mpeu89dj-0",
+      "ep-mpeubbu1-1",
+      "ep-mpeu89dl-1",
+      "ep-mpeubbu3-2"
+    ],
+    "tags": [
+      "auto-generated",
+      "consolidation",
+      "general"
+    ],
+    "isPermanent": false,
+    "id": "rule-mpeubbx0-32418d44",
+    "created_at": "2026-05-21T01:56:52.116Z",
+    "updated_at": "2026-05-21T01:56:52.116Z"
+  },
+  {
+    "path": "General/自动规则",
+    "domain": "General",
+    "content": "文件经常一起修改: src/agent/manager.ts + src/cli/tui.ts (4次)",
+    "scope": "project",
+    "confidence": 0.3,
+    "verificationCount": 0,
+    "sourceEpisodeIds": [
+      "ep-mpeubbtz-0",
+      "ep-mpeu89dj-0",
+      "ep-mpeubbu1-1",
+      "ep-mpeu89dl-1",
+      "ep-mpeubbu3-2"
+    ],
+    "tags": [
+      "auto-generated",
+      "consolidation",
+      "general"
+    ],
+    "isPermanent": false,
+    "id": "rule-mpeubbx0-6f510e2a",
+    "created_at": "2026-05-21T01:56:52.116Z",
+    "updated_at": "2026-05-21T01:56:52.116Z"
+  }
+]

@@ -5,13 +5,13 @@ import { describe, expect, it } from 'vitest';
 import {
   createTask, generatePlan, persistTask, loadTask,
   listTasks, acquireFileLocks, releaseFileLocks,
-  addFileChange, addReasoning, setVerifyResult,
+  addFileChange, addReasoning,
   updateTaskStatus,
   setTaskLoopStep, advanceTaskLoopState, completeTaskLoop,
 } from '../src/core/task-engine.js';
-import { saveProjectIndex, loadProjectIndex } from '../src/core/scanner.js';
+import { saveProjectIndex } from '../src/core/scanner.js';
 import { detectProject } from '../src/utils/detect.js';
-import type { Task, ProjectIndex } from '../src/types.js';
+import type { ProjectIndex } from '../src/types.js';
 
 async function writeProjectFile(root: string, file: string, content: string) {
   const full = join(root, file);
@@ -39,7 +39,7 @@ async function makeTestIndex(root: string): Promise<ProjectIndex> {
     "router.post('/auth/login', login);",
   ].join('\n'));
 
-  const identity = await detectProject(root);
+  await detectProject(root);
   const { scanProject } = await import('../src/core/scanner.js');
   const result = await scanProject({
     rootPath: root, deep: false, includeTests: false, maxFileSize: 256 * 1024,
@@ -138,7 +138,7 @@ describe('task-engine', () => {
   it('listTasks returns all persisted tasks sorted by date', async () => {
     const root = await mkdtemp(join(tmpdir(), 'icloser-te-'));
     try {
-      const index = await makeTestIndex(root);
+      const _index = await makeTestIndex(root);
 
       const t1 = createTask('任务一');
       const t2 = createTask('任务二');
@@ -192,7 +192,7 @@ describe('task-engine', () => {
       // (re-generate plan since taskB was blocked)
       taskB.status = 'queued';
       taskB.errorLog = [];
-      const lockedB = acquireFileLocks(taskB);
+      acquireFileLocks(taskB);
       expect(taskB.status).not.toBe('blocked');
     } finally {
       await rm(root, { recursive: true, force: true });

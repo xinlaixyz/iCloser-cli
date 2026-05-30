@@ -5,11 +5,13 @@ describe('skill-system', () => {
   it('lists built-in skills', async () => {
     const { listSkills } = await import('../src/core/skill-system.js');
     const skills = listSkills();
-    expect(skills.length).toBeGreaterThanOrEqual(5);
+    expect(skills.length).toBeGreaterThanOrEqual(8);
+    expect(skills.some(s => s.name === 'project-index')).toBe(true);
     expect(skills.some(s => s.name === 'code-review')).toBe(true);
-    expect(skills.some(s => s.name === 'test-gen')).toBe(true);
-    expect(skills.some(s => s.name === 'api-doc')).toBe(true);
+    expect(skills.some(s => s.name === 'test-generator')).toBe(true);
     expect(skills.some(s => s.name === 'security-review')).toBe(true);
+    expect(skills.some(s => s.name === 'local-tools')).toBe(true);
+    expect(skills.some(s => s.name === 'api-doc')).toBe(true);
     expect(skills.some(s => s.name === 'refactor-guide')).toBe(true);
   });
 

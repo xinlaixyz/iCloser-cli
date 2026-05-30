@@ -4,26 +4,36 @@
 // Errors are logged via memdbg for diagnostics (ICLOSER_MEMORY_DEBUG env var).
 import { memdbg } from './debug.js';
 import type { MemoryRuntime } from './runtime.js';
+import * as path from 'path';
 
 let _runtime: MemoryRuntime | null = null;
+let _runtimeRoot: string | null = null;
 let _initRetries = 0;
 const MAX_INIT_RETRIES = 2;
 
 /** Get or lazily initialize the Memory Runtime singleton for a project */
 export async function getMemoryRuntime(rootPath: string): Promise<MemoryRuntime> {
-  if (_runtime) return _runtime;
+  const resolvedRoot = path.resolve(rootPath);
+  if (_runtime && _runtimeRoot === resolvedRoot) return _runtime;
+  if (_runtime && _runtimeRoot !== resolvedRoot) {
+    try { await _runtime.shutdown(); } catch { /* best-effort */ }
+    _runtime = null;
+    _runtimeRoot = null;
+  }
 
   try {
     const { ensureMemoryStore } = await import('./store.js');
-    const store = await ensureMemoryStore(rootPath);
+    const store = await ensureMemoryStore(resolvedRoot);
     const { MemoryRuntime } = await import('./runtime.js');
     _runtime = new MemoryRuntime(store);
     await _runtime.init();
+    _runtimeRoot = resolvedRoot;
     _initRetries = 0;
-    memdbg.info('integration', `MemoryRuntime 初始化成功 (${rootPath})`);
+    memdbg.info('integration', `MemoryRuntime 初始化成功 (${resolvedRoot})`);
     return _runtime;
   } catch (err) {
     _runtime = null; // Don't cache a broken instance
+    _runtimeRoot = null;
     _initRetries++;
     memdbg.warn('integration', `MemoryRuntime 初始化失败 (尝试 ${_initRetries}/${MAX_INIT_RETRIES})`);
 
@@ -42,6 +52,7 @@ export async function resetMemoryRuntime(): Promise<void> {
   if (_runtime) {
     try { await _runtime.shutdown(); } catch { /* best-effort */ }
     _runtime = null;
+    _runtimeRoot = null;
   }
   _initRetries = 0;
 }

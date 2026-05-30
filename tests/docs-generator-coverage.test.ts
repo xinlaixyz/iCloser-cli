@@ -1,7 +1,7 @@
 // Coverage for src/core/docs-generator.ts
 // Targets: sync helpers, file-op helpers, and providerAdapter async functions
 import { describe, it, expect, afterAll } from 'vitest';
-import { mkdtemp, mkdir, writeFile, rm } from 'fs/promises';
+import { mkdtemp, writeFile, rm } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import {

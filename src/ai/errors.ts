@@ -84,7 +84,7 @@ export function classifyError(
 
   // Timeout
   if (
-    lower.includes('timeout') || lower.includes('timed out') ||
+    lower.includes('timeout') || lower.includes('timed out') || msg.includes('超时') ||
     lower.includes('abort') || lower.includes('etimedout')
   ) {
     return new AICallError(
@@ -153,4 +153,29 @@ export function classifyError(
     '1. 检查 API Key 和网络\n  2. 运行 ic provider test 诊断\n  3. 查看原始错误信息定位问题',
     msg,
   );
+}
+
+export function formatAICallFailure(err: unknown): string {
+  if (err instanceof AICallError) {
+    const lines = [
+      `${err.message}`,
+      err.suggestion ? `恢复建议：${err.suggestion}` : '',
+      recoveryCommand(err),
+    ].filter(Boolean);
+    return lines.join('\n');
+  }
+  const msg = err instanceof Error ? err.message : String(err);
+  return [
+    msg,
+    '恢复建议：1. 运行 ic provider test 诊断模型连接\n  2. 切换更快模型或减少上下文后重试\n  3. 如果刚生成了补丁，输入“继续”恢复待处理产物',
+  ].join('\n');
+}
+
+function recoveryCommand(err: AICallError): string {
+  if (err.code === 'TIMEOUT') return '可执行：/config model deepseek-v4-flash 后重试，或缩小任务范围。';
+  if (err.code === 'NETWORK_ERROR') return '可执行：ic provider test；如公司网络受限，配置 HTTPS_PROXY 后重试。';
+  if (err.code === 'AUTH_FAILED' || err.code === 'MISSING_API_KEY') return '可执行：/apikey 重新安全录入 Key，然后运行 ic provider test。';
+  if (err.code === 'INVALID_MODEL') return '可执行：ic provider models 查看模型，再用 /config model <模型名> 切换。';
+  if (err.code === 'RATE_LIMITED') return '可执行：等待 60 秒后输入“继续”，或切换低延迟模型。';
+  return '可执行：ic provider test 查看连接状态。';
 }

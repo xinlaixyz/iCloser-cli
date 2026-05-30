@@ -573,7 +573,7 @@ export function registerCollaborationCommands(program: Command): void {
           for (const commit of gitCommits.slice(0, 5)) console.log(`  ${chalk.dim(commit)}`);
         }
         console.log();
-      } catch (err) { if (!options?.json) console.error(err); }
+      } catch (err) { if (!options?.json) warn((err as Error).message); }
     });
 
   // TC-05: ic collab review — code review 输入
@@ -682,7 +682,7 @@ export function registerCollaborationCommands(program: Command): void {
         console.log();
         info('将以上内容作为 code review 的输入，审查者可以快速理解变更意图、验证结果和风险。');
         console.log();
-      } catch (err) { if (!options?.json) console.error(err); }
+      } catch (err) { if (!options?.json) warn((err as Error).message); }
     });
 
   // TC-06: ic collab status — 团队视角
@@ -797,7 +797,7 @@ export function registerCollaborationCommands(program: Command): void {
           info(`建议下一步：${actions.join(' / ')}`);
         }
         console.log();
-      } catch (err) { if (!options?.json) console.error(err); }
+      } catch (err) { if (!options?.json) warn((err as Error).message); }
     });
 
   program.command('commit-draft')

@@ -51,9 +51,7 @@ describe('verifier', () => {
     }
   });
 
-  // TODO: Implement fail-fast behavior — verifier should stop and skip
-  // remaining stages when compile fails with non-zero exit code.
-  it.skip('fails fast on a failing project script and skips following stages', async () => {
+  it('fails fast on a failing project script and skips following stages', async () => {
     const root = await mkdtemp(join(tmpdir(), 'icloser-verifier-'));
     try {
       await writeProjectFile(root, 'package.json', JSON.stringify({
@@ -82,9 +80,7 @@ describe('verifier', () => {
     }
   });
 
-  // TODO: Add beginner-friendly error guidance when local tooling
-  // (tsc, eslint, vitest, etc.) is missing in node_modules/.bin.
-  it.skip('adds beginner dependency guidance when project scripts miss local tools', async () => {
+  it('adds beginner dependency guidance when project scripts miss local tools', async () => {
     const root = await mkdtemp(join(tmpdir(), 'icloser-verifier-'));
     try {
       await writeProjectFile(root, 'package.json', JSON.stringify({

@@ -30,7 +30,7 @@
 | 项目 | 结果 |
 |------|------|
 | `npx tsc --noEmit` | 通过 |
-| `npm run lint` | 通过，`eslint ok (158 warnings)` |
+| `npm run lint` | 通过，`eslint ok (9 warnings)` |
 | `npm test` | 116 测试文件通过；1715 passed / 2 skipped |
 | 代码能力定向测试 | 9 个测试文件，171 passed |
 | 文档/PDF/工具补漏测试 | 3 个测试文件，104 passed |

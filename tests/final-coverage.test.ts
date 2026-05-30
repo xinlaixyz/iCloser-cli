@@ -4,7 +4,7 @@
 //   src/utils/fs.ts        — writeFiles error (260-261), readFileChunks (287-300)
 //   src/core/memory/forgetting.ts — archiveEpisodes (151-156), cleanup sqlite (175-181)
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtemp, rm, writeFile as fsWriteFile, mkdir } from 'fs/promises';
+import { mkdtemp, rm, writeFile as fsWriteFile } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { execSync } from 'child_process';
@@ -145,7 +145,7 @@ describe('fs.ts extra coverage', () => {
     const entries = [
       { path: '/\0invalid\0path/file.ts', content: 'const x = 1;' }, // null bytes in path → error
     ];
-    const { written, errors } = await writeFiles(entries, undefined);
+    const { errors } = await writeFiles(entries, undefined);
     // Should have recorded an error, not crashed
     expect(errors.length).toBeGreaterThan(0);
     expect(errors[0].path).toContain('invalid');

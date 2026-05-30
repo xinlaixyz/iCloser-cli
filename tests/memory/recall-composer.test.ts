@@ -61,6 +61,15 @@ describe('RecallEngine', () => {
     expect(query.action).toBeTruthy();
   });
 
+  it('expands Chinese validation tasks into English code constraint keywords', () => {
+    const query = engine.parseTask('为 add 和 multiply 函数添加参数校验');
+    expect(query.keywords).toContain('finite');
+    expect(query.keywords).toContain('number');
+    expect(query.keywords).toContain('nan');
+    expect(query.keywords).toContain('infinity');
+    expect(query.keywords).toContain('function');
+  });
+
   it('parses file entities', () => {
     const query = engine.parseTask('修改 src/wallet/index.tsx 和 src/swap.ts');
     // At minimum one entity should be detected (regex may behave differently with CJK)
@@ -182,7 +191,7 @@ describe('ContextComposer', () => {
   });
 
   it('respects max token budget', () => {
-    const results = Array.from({ length: 20 }, (_, i) =>
+    const results = Array.from({ length: 20 }, (_, _i) =>
       makeRecallResult('timeline', 'LONG_CONTENT '.repeat(100), 0.5)
     );
 

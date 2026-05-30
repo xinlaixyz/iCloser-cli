@@ -1,7 +1,7 @@
 // Additional coverage for src/core/code-writer.ts
 // Targets: runCompileCheck (lines 522-560) and checkStyleConsistency (via enforceCodeQuality)
 import { describe, it, expect } from 'vitest';
-import { mkdir, mkdtemp, rm as fsRm } from 'fs/promises';
+import { mkdtemp, rm as fsRm } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { runCompileCheck } from '../src/core/code-writer.js';

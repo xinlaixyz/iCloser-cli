@@ -2,7 +2,7 @@
 // Targets: createEpisode variants, defaultImportance, defaultTags, toMarkdownJournal,
 //          queryJsonl sorting, EpisodicMemory methods, MemoryRuntime lifecycle hooks
 import { describe, it, expect, afterAll } from 'vitest';
-import { mkdtemp, mkdir, rm } from 'fs/promises';
+import { mkdtemp, rm } from 'fs/promises';
 import { mkdirSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';

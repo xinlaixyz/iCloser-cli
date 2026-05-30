@@ -15,6 +15,21 @@ import {
 } from '../src/cli/theme.js';
 
 const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, '');
+const cjk = /[一-鿿㐀-䶿豈-﫿　-〿＀-￯぀-ヿ가-힯⺀-⿟]/g;
+const displayWidth = (s: string) => {
+  const clean = strip(s);
+  return clean.length + (clean.match(cjk) || []).length;
+};
+
+function withTerminalWidth<T>(width: number, fn: () => T): T {
+  const original = Object.getOwnPropertyDescriptor(process.stdout, 'columns');
+  Object.defineProperty(process.stdout, 'columns', { configurable: true, value: width });
+  try {
+    return fn();
+  } finally {
+    if (original) Object.defineProperty(process.stdout, 'columns', original);
+  }
+}
 
 describe('theme constants', () => {
   it('C colors are callable functions', () => {
@@ -201,6 +216,9 @@ describe('commandHelp', () => {
     expect(out).toContain('/verify');
     expect(out).toContain('/commit');
     expect(out).toContain('/exit');
+    expect(out).toContain('setup');
+    expect(out).toContain('project');
+    expect(out).toContain('memory');
   });
 
   it('contains keyboard shortcut hints', () => {
@@ -226,5 +244,31 @@ describe('welcomeScreen', () => {
     const out = strip(welcomeScreen('Mock', 'mock', undefined, ['Step 1: init', 'Step 2: scan']));
     expect(out).toContain('Step 1: init');
     expect(out).toContain('Step 2: scan');
+  });
+
+  it('keeps Chinese onboarding inside the terminal width on wide screens', () => {
+    withTerminalWidth(110, () => {
+      const out = welcomeScreen('deepseek', 'deepseek-v4-pro', 'Codex', [
+        '1  直接输入需求，例如：帮我给登录模块加手机号验证',
+        '2  /scan 扫描项目',
+        '3  /help 查看所有命令和快捷键',
+      ]);
+      for (const line of out.split('\n')) expect(displayWidth(line)).toBeLessThanOrEqual(110);
+      expect(strip(out)).toContain('Quick start');
+      expect(strip(out)).not.toMatch(/Quick start\s+1\s+1\s+/);
+      expect(strip(out)).not.toMatch(/\n\s+2\s+2\s+/);
+    });
+  });
+
+  it('uses the compact welcome layout on narrow terminals without overflowing', () => {
+    withTerminalWidth(80, () => {
+      const out = welcomeScreen('deepseek', 'deepseek-v4-pro', 'Codex', [
+        '直接输入需求，例如：帮我给登录模块加手机号验证',
+        '/scan 扫描项目',
+        '/help 查看所有命令和快捷键',
+      ]);
+      for (const line of out.split('\n')) expect(displayWidth(line)).toBeLessThanOrEqual(80);
+      expect(strip(out)).toContain('i C l o s e r');
+    });
   });
 });

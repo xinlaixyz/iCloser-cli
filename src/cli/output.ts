@@ -116,8 +116,63 @@ function stripAnsi(str: string): string {
 let sanitizedCount = 0;
 let sanitizedLines = 0;
 const MAX_LINE_LENGTH = 1000;
+let pendingSecretEcho = '';
+
+const SECRET_PATTERNS = [
+  /^sk-ant-[A-Za-z0-9_-]{12,}$/,
+  /^sk-[A-Za-z0-9_-]{16,}$/,
+  /^dashscope-[A-Za-z0-9_-]{8,}$/,
+  /^qwen-[A-Za-z0-9_-]{8,}$/,
+];
+
+function isSecretPrefix(text: string): boolean {
+  if (!text) return false;
+  return (
+    'sk-ant-'.startsWith(text) ||
+    /^sk-ant-[A-Za-z0-9_-]*$/.test(text) ||
+    'sk-'.startsWith(text) ||
+    /^sk-[A-Za-z0-9_-]*$/.test(text) ||
+    'dashscope-'.startsWith(text) ||
+    /^dashscope-[A-Za-z0-9_-]*$/.test(text) ||
+    'qwen-'.startsWith(text) ||
+    /^qwen-[A-Za-z0-9_-]*$/.test(text)
+  );
+}
+
+function isCompleteSecret(text: string): boolean {
+  return SECRET_PATTERNS.some(pattern => pattern.test(text));
+}
+
+function maskEchoSecret(text: string): string {
+  if (text.length <= 8) return '<redacted>';
+  return `${text.slice(0, 6)}...${text.slice(-4)}`;
+}
+
+function redactStreamingSecretEcho(text: string): string {
+  // Readline may echo pasted API keys in tiny chunks ("s", "k-", "abc").
+  // Buffer likely secret prefixes so raw keys never reach stdout.
+  if (!pendingSecretEcho && !isSecretPrefix(text)) return text;
+
+  const combined = pendingSecretEcho + text;
+  if (isCompleteSecret(combined)) {
+    pendingSecretEcho = '';
+    sanitizedCount += combined.length;
+    return maskEchoSecret(combined);
+  }
+
+  if (isSecretPrefix(combined)) {
+    pendingSecretEcho = combined;
+    return '';
+  }
+
+  const flushed = pendingSecretEcho;
+  pendingSecretEcho = '';
+  return flushed + text;
+}
 
 export function sanitizeOutput(text: string): string {
+  text = redactStreamingSecretEcho(text);
+  if (!text) return '';
   let out = '';
   for (let i = 0; i < text.length; i++) {
     const code = text.charCodeAt(i);

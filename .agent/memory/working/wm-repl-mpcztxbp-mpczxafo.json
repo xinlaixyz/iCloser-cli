@@ -1,0 +1,49 @@
+{
+  "layers": [
+    {
+      "type": "task",
+      "content": "你分析下改进空间",
+      "priority": 100,
+      "addedAt": "2026-05-19T18:55:45.398Z",
+      "tokenEstimate": 6
+    },
+    {
+      "type": "recall",
+      "content": "[记忆·历史] fix: 三个致命 UI bug — JSON泄露 + 面板堆叠 + 输入穿透 2026-05-15 03:59:58 +0800\nCommit 46c62f0: fix: 三个致命 UI bug — JSON泄露 + 面板堆叠 + 输入穿透 2026-05-15 03:59:58 +0800\n变更文件: src/cli/repl.ts, src/index.ts",
+      "priority": 45,
+      "addedAt": "2026-05-19T18:55:45.403Z",
+      "tokenEstimate": 63
+    },
+    {
+      "type": "recall",
+      "content": "[记忆·历史] 开始任务: 继续\nRecall 找到 5 条相关记忆",
+      "priority": 40,
+      "addedAt": "2026-05-19T18:55:45.403Z",
+      "tokenEstimate": 16
+    },
+    {
+      "type": "recall",
+      "content": "[记忆·历史] 开始任务: 开始\nRecall 找到 5 条相关记忆",
+      "priority": 40,
+      "addedAt": "2026-05-19T18:55:45.403Z",
+      "tokenEstimate": 16
+    },
+    {
+      "type": "recall",
+      "content": "[记忆·历史] 分析项目质量\n分析项目质量",
+      "priority": 40,
+      "addedAt": "2026-05-19T18:55:45.403Z",
+      "tokenEstimate": 12
+    },
+    {
+      "type": "recall",
+      "content": "[记忆·历史] 开始任务: 分析项目质量\nRecall 找到 5 条相关记忆",
+      "priority": 40,
+      "addedAt": "2026-05-19T18:55:45.403Z",
+      "tokenEstimate": 19
+    }
+  ],
+  "taskId": "repl-mpcztxbp",
+  "savedAt": "2026-05-19T18:58:22.356Z",
+  "totalTokens": 132
+}

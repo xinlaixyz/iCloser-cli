@@ -1,0 +1,49 @@
+{
+  "layers": [
+    {
+      "type": "task",
+      "content": "google",
+      "priority": 100,
+      "addedAt": "2026-05-20T03:45:11.218Z",
+      "tokenEstimate": 2
+    },
+    {
+      "type": "recall",
+      "content": "[记忆·历史] 开始任务: 上次你分析的结果你可重新发我吗？\nRecall 找到 5 条相关记忆",
+      "priority": 40,
+      "addedAt": "2026-05-20T03:45:11.221Z",
+      "tokenEstimate": 25
+    },
+    {
+      "type": "recall",
+      "content": "[记忆·历史] 开始任务: 继续\nRecall 找到 5 条相关记忆",
+      "priority": 40,
+      "addedAt": "2026-05-20T03:45:11.221Z",
+      "tokenEstimate": 16
+    },
+    {
+      "type": "recall",
+      "content": "[记忆·历史] 开始任务: 检查项目的缺陷和对比其他同类型对比\nRecall 找到 5 条相关记忆",
+      "priority": 40,
+      "addedAt": "2026-05-20T03:45:11.221Z",
+      "tokenEstimate": 26
+    },
+    {
+      "type": "recall",
+      "content": "[记忆·历史] 继续\n继续",
+      "priority": 40,
+      "addedAt": "2026-05-20T03:45:11.221Z",
+      "tokenEstimate": 7
+    },
+    {
+      "type": "recall",
+      "content": "[记忆·历史] 开始任务: 继续\nRecall 找到 5 条相关记忆",
+      "priority": 40,
+      "addedAt": "2026-05-20T03:45:11.221Z",
+      "tokenEstimate": 16
+    }
+  ],
+  "taskId": "repl-mpdiqrzl",
+  "savedAt": "2026-05-20T03:45:25.687Z",
+  "totalTokens": 92
+}

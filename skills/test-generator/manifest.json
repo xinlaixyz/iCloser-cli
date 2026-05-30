@@ -1,0 +1,11 @@
+{
+  "name": "test-generator",
+  "version": "1.0.0",
+  "description": "测试生成：为源码自动生成单元测试、集成测试，检测空测试和缺失断言",
+  "triggers": ["生成测试", "补测试", "test", "单元测试", "测试覆盖", "coverage"],
+  "requires": ["project-index"],
+  "provider": "claude",
+  "author": "iCloser",
+  "license": "MIT",
+  "type": "builtin"
+}

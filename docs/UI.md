@@ -3,6 +3,12 @@
 版本：0.4.0
 日期：2026-05-20
 
+> 2026-05-21 更新：新增 Grand Terminal Console 启动首屏方案与 AI 输出交互节奏要求。执行文档见 [`doc/tasks/2026-05-21-grand-terminal-ui-plan.md`](../doc/tasks/2026-05-21-grand-terminal-ui-plan.md)。
+>
+> 2026-05-22 更新：启动首屏进入实现基线。默认首屏不再强行展示终端 logo，避免低保真字符图破坏专业感；首屏排版改为干净的工程工作台入口；Quick start 改为三行短句，80/110 columns 下必须不越界。
+>
+> 2026-05-22 追加：任务驾驶舱 P0-P2 升级进入执行。目标是把 REPL 从工具流水账升级为 AI 工作指挥系统，执行文档见 [`doc/tasks/2026-05-22-mission-cockpit-p0-p2-execution.md`](../doc/tasks/2026-05-22-mission-cockpit-p0-p2-execution.md)。
+
 ## 设计原则
 
 ```
@@ -10,7 +16,194 @@
 反馈感 > 沉默       每个动作都有响应，等待有进度
 可达性 > 记忆       常用操作一键可达，减少输入
 容错性 > 严格       错误有指引，操作可撤销
+大气感 > 堆料       品牌首屏要像工程指挥台，不像脚本欢迎页
+节奏感 > 倾倒       AI 输出分阶段推进，不一次性吐出大段内容
 ```
+
+---
+
+## 0. Grand Terminal Console 启动首屏
+
+### 0.1 品牌要求
+
+REPL 启动首屏必须固定使用产品品牌：
+
+```text
+i C l o s e r   Agent Shell
+Terminal AI Engineering Assistant
+```
+
+启动屏目标不是“炫”，而是大气、稳、专业。它应像本地工程指挥台，能够传达：当前项目、AI Provider、长期记忆、上下文预算和可执行能力都已经就绪。
+
+### 0.2 视觉方向
+
+风格名：**Grand Terminal Console**
+
+```text
+黑底银灰 / 青绿状态 / 紫色点缀 / FC 像素加密朋克 / 工程终端 / 克制留白
+```
+
+规则：
+
+- 不使用大面积紫色边框。
+- 不使用无信息价值的右侧 ASCII 装饰。
+- 不使用 logo 方框、卡片边框或占位框。
+- 默认首屏不展示低保真字符 logo。
+- 宽度优先 88-96 columns，低于 80 columns 自动紧凑。
+
+### 0.3 首屏目标布局
+
+```text
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                                                                              ║
+║   i C l o s e r   Agent Shell                                              ║
+║   Terminal AI Engineering Assistant                                          ║
+║                                                                              ║
+║   PROJECT     Polymarket                PROVIDER    deepseek / deepseek-v4   ║
+║   WORKSPACE   D:\temp\Codex\Polymarket   MEMORY      12 rules · 3 relevant   ║
+║   STACK       Android · Gradle           CONTEXT     5.9K / 100K             ║
+║                                                                              ║
+║   Ready for engineering work: scan · edit · test · launch · explain          ║
+║                                                                              ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+  Session restored   15 messages · last topic: 启动项目
+
+  /help   /scan   /diff   /mem   /start   /clear
+```
+
+### 0.4 Logo 分级
+
+| 终端能力 | 展示方式 |
+| --- | --- |
+| 支持图片协议 | 显示无边框 FC 像素加密朋克 logo |
+| 不支持图片协议 | 显示文本/Unicode 徽记 |
+| 宽度不足 | 隐藏 logo，只保留品牌和状态 |
+
+### 0.4.1 当前实现基线
+
+当前 REPL 默认启动页不展示 logo，只展示品牌名与工程状态。
+
+来源要求：
+
+- Logo 母版以用户提供的 `iCloser-LOGOvector.svg` 为准。
+- 默认首屏不得使用低保真字符 logo，因为半块像素锯齿明显，Braille 细节过密，轮廓图也无法稳定表达原始品牌。
+- Logo 只在高保真图片协议、`/logo`、README 或品牌页中展示。
+- 若未来要恢复默认首屏 logo，必须先通过人工截图验收，不能只靠宽度测试通过。
+
+排版要求：
+
+- 主框最大宽度控制在约 96 columns，避免全屏横向铺满。
+- 宽屏时采用双列状态信息工作台布局。
+- 窄屏时只保留品牌、Provider、Workspace 和 Context。
+- `Quick start` 必须拆成多行，不允许中文长句冲出边框。
+- Quick start 输入若已经带编号，渲染层必须去重，不能出现 `1  1`。
+
+当前首屏信息层级：
+
+```text
+i C l o s e r   Agent Shell
+Terminal AI Engineering Assistant
+
+PROJECT / PROVIDER
+WORKSPACE / MEMORY
+STACK / CONTEXT
+FLOW / EVIDENCE / CONTROL
+
+Ready: scan · edit · test · launch · explain
+Quick start
+  1  直接输入需求
+  2  /scan 扫描项目
+  3  /help 查看所有命令和快捷键
+```
+
+### 0.5 首屏验收
+
+- 第一眼能识别 `i C l o s e r Agent Shell`。
+- 默认首屏不展示低保真 logo。
+- 不再重复输出 Project/AI 状态栏。
+- `Session restored` 不再以突兀小卡片显示。
+- Windows Terminal、PowerShell、macOS Terminal、iTerm2 下不乱码、不错位。
+- 80 columns 与 110 columns 下，所有首屏文本行都不能越界。
+- Quick start 不允许单行塞入多个中文长句。
+- Quick start 不允许出现重复编号。
+
+---
+
+## 0.6 AI 输出交互节奏
+
+### 问题
+
+当前 AI 内容容易一下子输出很多，用户看不到“它正在做什么”。这会削弱 Claude Code 替代品体验：缺少阶段感、缺少工具过程、缺少可中断的陪跑感。
+
+### 目标
+
+AI 输出从“结果倾倒”改为“任务陪跑”：
+
+```text
+◇ 启动项目
+
+  ● 理解启动需求
+  ● 识别 Android / Gradle 项目
+  ● 检查 SDK、ADB 与模拟器
+  ● 构建并安装 APK
+  ● 启动 MainActivity
+
+Tools
+  ✓ read_file      app/build.gradle.kts          4.3K
+  ✓ read_file      gradle/libs.versions.toml     6.4K
+  ✓ run_command    adb devices                   emulator-5554 device
+  ✓ run_command    gradlew installDebug          BUILD SUCCESSFUL
+
+Result
+  应用已启动，MainActivity 位于前台。
+```
+
+### 输出规则
+
+- 任务开始先显示 3-6 个阶段。
+- 任务开始必须显示本轮工具/搜索预算，让用户知道 AI 会如何控制工具数量和上下文。
+- 工具调用前显示目标，工具完成后只显示一行摘要。
+- 大段回答按 `Summary / Evidence / Next` 组织。
+- 超过 12 行的日志或解释默认折叠。
+- 重复读取文件显示 `reused from cache`，不再刷 warning。
+- 输出中保持 `Ctrl+C 中断` 可见。
+- 任务完成必须给出 `Result` 或 `Next`，不能只停在工具日志。
+- 任务完成必须展示关键证据来源，网页/研究类任务优先显示来源域名，不能只显示工具名称。
+
+### 0.6.1 任务驾驶舱
+
+任务驾驶舱是 REPL 面向普通用户的主视图。它的职责不是装饰，而是把 AI 的工程闭环翻译成人能理解的执行路径。
+
+开始面板必须包含：
+
+```text
+任务    用户原始需求
+类型    代码交付 / 投资市场研究 / 网页访问 / 项目启动 / 长期记忆
+目标    本轮要交付什么
+AI      provider / model
+记忆    是否注入项目规则和相关历史
+目录    当前工作目录
+预算    工具次数、搜索次数、证据压缩或文件读取策略
+执行顺序  理解 → 取证 → 交付 → 验证
+确认点    是否会写文件、运行命令、提交或发布
+```
+
+结果面板必须包含：
+
+```text
+理解    是否识别用户目标
+取证    调用了哪些工具
+交付    已生成报告 / 已生成补丁 / 已启动项目
+验证    基于证据核对 / 命令运行证据 / 等待验证
+记忆    是否使用任务记忆
+证据    证据数量、工具次数、AI 轮数、token
+来源    关键 URL 域名或本地文件
+回答    最终回答行数
+下一步  可执行恢复或继续动作
+```
+
+投资、市场、网页研究类任务必须避免代码话术，例如 `本轮没有代码补丁`、`等待写入后验证`。这类任务的验证标准是“是否有成功工具证据支撑结论”。
 
 ---
 

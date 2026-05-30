@@ -75,6 +75,16 @@ const ENG_TIME_PATTERNS: Array<{ regex: RegExp; daysBack: number }> = [
   { regex: /after rollback/, daysBack: 14 },
 ];
 
+const QUERY_ALIASES: Array<[RegExp, string[]]> = [
+  [/参数|入参|输入/, ['argument', 'parameter', 'param', 'input']],
+  [/校验|验证|检查/, ['validate', 'validation', 'verify', 'check', 'finite', 'number', 'nan', 'infinity']],
+  [/有限|数字|数值|number/i, ['finite', 'number', 'numeric', 'nan', 'infinity']],
+  [/函数|方法/, ['function', 'method']],
+  [/公开|导出|api/i, ['public', 'export', 'api']],
+  [/注释|说明|文档|jsdoc/i, ['comment', 'jsdoc', 'documentation']],
+  [/测试|用例/, ['test', 'tests', 'node:test', 'assert']],
+];
+
 export class RecallEngine {
   private episodic: EpisodicMemory;
   private semantic: SemanticMemory;
@@ -181,11 +191,17 @@ export class RecallEngine {
       }
     }
 
+    for (const [pattern, aliases] of QUERY_ALIASES) {
+      if (pattern.test(task)) {
+        keywords.push(...aliases);
+      }
+    }
+
     // Extract entities (filenames, paths)
     const fileMatches = task.matchAll(/([a-zA-Z0-9_\-./]+\.(ts|js|py|go|java|kt|swift|tsx|jsx|vue|css|json|yaml|md))/gi);
     for (const m of fileMatches) entities.push(m[1]);
 
-    return { module, platform, action, keywords, entities, timeHints };
+    return { module, platform, action, keywords: [...new Set(keywords)], entities, timeHints };
   }
 
   /** Log that a memory source was accessed (for recentUsage scoring) */

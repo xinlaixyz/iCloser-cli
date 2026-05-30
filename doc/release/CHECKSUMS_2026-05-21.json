@@ -1,0 +1,21 @@
+{
+  "generated": "2026-05-21T03:13:40.358Z",
+  "version": "0.1.0",
+  "entries": [
+    {
+      "file": "dist/config.js",
+      "sha256": "5ae10a4e8fd44754c20ad3d1404ec171db17fd9bcc91c6d5a0fd1b0defed685d",
+      "size": 6545
+    },
+    {
+      "file": "dist/index.js",
+      "sha256": "5496ce22fa8d28aa1c97de611fef9ebfd8281b7afe8807b7021d99523cee65a5",
+      "size": 219509
+    },
+    {
+      "file": "dist/types.js",
+      "sha256": "d6f3af039e7517a93b8f70393f9a75fb389bbc94e21afa534581b727f08c8480",
+      "size": 93
+    }
+  ]
+}

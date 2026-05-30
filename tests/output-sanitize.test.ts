@@ -71,6 +71,13 @@ describe('sanitizeOutput (S20.1)', () => {
     expect(after).toBeGreaterThan(before);
   });
 
+  it('redacts API key echoes even when readline writes tiny chunks', () => {
+    const chunks = ['s', 'k-', 'fake', '-direct', '-paste-', '1234567890abcdef'];
+    const out = chunks.map(chunk => sanitizeOutput(chunk)).join('');
+    expect(out).not.toContain('sk-fake-direct-paste-1234567890abcdef');
+    expect(out).toContain('sk-fak...');
+  });
+
   it('empty input returns empty', () => {
     expect(sanitizeOutput('')).toBe('');
   });

@@ -5,7 +5,7 @@
  * extractResultPreview — extracts a short content preview from a tool result
  */
 import { describe, it, expect } from 'vitest';
-import { createToolProgressDisplay, extractToolHint, extractResultPreview, stripAnsi } from '../src/cli/tool-display.js';
+import { createToolProgressDisplay, explainToolPurpose, extractToolHint, extractResultPreview, stripAnsi } from '../src/cli/tool-display.js';
 
 // ── extractToolHint ───────────────────────────────────────────────────────────
 
@@ -163,6 +163,12 @@ describe('extractResultPreview', () => {
 });
 
 describe('createToolProgressDisplay', () => {
+  it('explains tool purpose in beginner-readable language', () => {
+    expect(explainToolPurpose('read_file')).toBe('读取关键文件');
+    expect(explainToolPurpose('run_command')).toBe('执行验证命令');
+    expect(explainToolPurpose('unknown')).toBe('调用工程工具');
+  });
+
   it('renders a single completed line for a tool call/result pair', () => {
     let output = '';
     const display = createToolProgressDisplay(text => { output += text; });
@@ -173,6 +179,7 @@ describe('createToolProgressDisplay', () => {
     const clean = stripAnsi(output);
     expect(clean).toContain('read_file');
     expect(clean).toContain('src/index.ts');
+    expect(clean).toContain('读取关键文件');
     expect(clean).toContain('export const x');
     expect(clean.endsWith('\n')).toBe(true);
   });

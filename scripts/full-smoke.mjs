@@ -8,6 +8,7 @@ const steps = [
   ['test', ['run', 'test'], 180000],
   ['first-run', ['run', 'smoke:first-run'], 180000],
   ['repl', ['run', 'smoke:repl'], 180000],
+  ['repl-apikey', ['run', 'smoke:repl:apikey'], 180000],
   ['repl-init', ['run', 'smoke:repl:init'], 180000],
   ['repl-e2e', ['run', 'smoke:repl:e2e'], 180000],
   ['memory', ['run', 'smoke:memory'], 180000],
@@ -55,5 +56,4 @@ try {
   process.stderr.write(`\n[smoke:all] FAIL ${err instanceof Error ? err.message : String(err)}\n`);
   process.exit(1);
 }
-
 

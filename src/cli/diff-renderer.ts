@@ -19,6 +19,24 @@ export interface DiffFile {
   hunks: DiffHunk[];
 }
 
+export interface PendingDiffFileSummary {
+  file: string;
+  additions: number;
+  deletions: number;
+  risk: 'low' | 'medium' | 'high';
+  likelyIntent: string;
+  verification: string[];
+}
+
+export interface PendingDiffSummary {
+  fileCount: number;
+  additions: number;
+  deletions: number;
+  highestRisk: 'low' | 'medium' | 'high';
+  files: PendingDiffFileSummary[];
+  nextChecks: string[];
+}
+
 export function parseDiff(diffText: string): DiffFile[] {
   const files: DiffFile[] = [];
   const fileLines = diffText.split('\n');
@@ -128,6 +146,52 @@ export function renderDiffBrief(files: DiffFile[]): string {
   return stats.join('\n');
 }
 
+export function buildPendingDiffSummary(files: { path: string; content: string; previousContent?: string }[]): PendingDiffSummary {
+  const summaries = files.map(file => {
+    const previous = (file.previousContent || '').split('\n');
+    const next = file.content.split('\n');
+    const additions = Math.max(0, next.length - commonLineCount(previous, next));
+    const deletions = file.previousContent === undefined ? 0 : Math.max(0, previous.length - commonLineCount(previous, next));
+    const likelyIntent = inferPendingIntent(file.path, file.content, file.previousContent || '');
+    const risk = inferPendingRisk(file.path, additions, deletions, next.length);
+    return {
+      file: file.path,
+      additions,
+      deletions,
+      risk,
+      likelyIntent,
+      verification: inferPendingVerification(file.path, likelyIntent),
+    };
+  });
+  const additions = summaries.reduce((sum, file) => sum + file.additions, 0);
+  const deletions = summaries.reduce((sum, file) => sum + file.deletions, 0);
+  const nextChecks = [...new Set(summaries.flatMap(file => file.verification))];
+  return {
+    fileCount: summaries.length,
+    additions,
+    deletions,
+    highestRisk: highestRisk(summaries.map(file => file.risk)),
+    files: summaries,
+    nextChecks: nextChecks.length > 0 ? nextChecks : ['npx tsc --noEmit', 'npm run lint'],
+  };
+}
+
+export function renderPendingDiffSummary(summary: PendingDiffSummary): string {
+  if (summary.fileCount === 0) return '没有待写入文件。';
+  const riskLabel = summary.highestRisk === 'high' ? chalk.red('高') : summary.highestRisk === 'medium' ? chalk.yellow('中') : chalk.green('低');
+  const lines = [
+    `摘要 ${summary.fileCount} 个文件，新增 ${summary.additions} 行，删除 ${summary.deletions} 行，整体风险 ${riskLabel}`,
+    '变更：',
+    ...summary.files.slice(0, 6).map(file => {
+      const risk = file.risk === 'high' ? chalk.red('高') : file.risk === 'medium' ? chalk.yellow('中') : chalk.green('低');
+      return `- ${file.file}  +${file.additions}/-${file.deletions}  风险:${risk}  ${file.likelyIntent}`;
+    }),
+    ...(summary.files.length > 6 ? [`- 还有 ${summary.files.length - 6} 个文件未展开`] : []),
+    `建议验证：${summary.nextChecks.slice(0, 4).join(' / ')}`,
+  ];
+  return lines.join('\n');
+}
+
 export function filesToDiff(files: { path: string; content: string; previousContent?: string }[]): string {
   // Generate a simple unified diff from file contents
   const parts: string[] = [];
@@ -143,4 +207,48 @@ export function filesToDiff(files: { path: string; content: string; previousCont
     }
   }
   return parts.join('\n');
+}
+
+function commonLineCount(a: string[], b: string[]): number {
+  const set = new Set(a);
+  return b.reduce((sum, line) => sum + (set.has(line) ? 1 : 0), 0);
+}
+
+function inferPendingIntent(file: string, added: string, removed: string): string {
+  const text = `${file}\n${added}\n${removed}`.toLowerCase();
+  if (/test|spec|vitest|jest/.test(text)) return '补充或调整测试验证。';
+  if (/html|css|style|page|h5|mobile|login|button|input/.test(text)) return '交付可运行页面或前端交互。';
+  if (/readme|docs?|\.md$/.test(text)) return '补充产品、使用或验收文档。';
+  if (/memory|agents\.md|claude\.md/.test(text)) return '调整长期记忆或项目规则。';
+  if (/provider|deepseek|openai|claude|anthropic|qwen/.test(text)) return '调整 AI Provider 或模型调用。';
+  if (/repl|tool|shell|command|diff|verify/.test(text)) return '增强 REPL、工具或验证体验。';
+  return '更新工程逻辑或项目文件。';
+}
+
+function inferPendingRisk(file: string, additions: number, deletions: number, totalLines: number): 'low' | 'medium' | 'high' {
+  const normalized = file.replace(/\\/g, '/').toLowerCase();
+  if (/security|provider|executor|git|config|index\.ts|repl\.ts/.test(normalized) && additions + deletions > 120) return 'high';
+  if (additions + deletions > 300 || totalLines > 500) return 'high';
+  if (/src\//.test(normalized) || additions + deletions > 100) return 'medium';
+  return 'low';
+}
+
+function inferPendingVerification(file: string, intent: string): string[] {
+  const checks = new Set<string>();
+  const normalized = file.replace(/\\/g, '/').toLowerCase();
+  if (/\.(html|css)$/.test(normalized) || /页面|前端|交互/.test(intent)) {
+    checks.add('浏览器打开页面检查布局和交互');
+    checks.add('npm run lint');
+    return [...checks];
+  }
+  checks.add('npx tsc --noEmit');
+  checks.add('npm run lint');
+  if (/测试/.test(intent) || /\.(test|spec)\./.test(normalized)) checks.add('npm test');
+  return [...checks];
+}
+
+function highestRisk(risks: Array<'low' | 'medium' | 'high'>): 'low' | 'medium' | 'high' {
+  if (risks.includes('high')) return 'high';
+  if (risks.includes('medium')) return 'medium';
+  return 'low';
 }

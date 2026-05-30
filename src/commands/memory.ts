@@ -109,6 +109,11 @@ async function updateMemoryCandidateReview(
 
   if (status === 'approved') {
     success(`已保存到项目记忆：${match.summary}`);
+    try {
+      const { ensureAgentMemoryManifest } = await import('../core/memory-experience.js');
+      const manifest = await ensureAgentMemoryManifest(rootPath, 'AGENTS.md', { force: true });
+      detail('已同步', manifest.path);
+    } catch { /* manifest sync best-effort */ }
   } else {
     warn(`已暂不保存：${match.summary}`);
   }
@@ -176,6 +181,12 @@ export function registerMemoryCommands(program: Command): void {
           console.log(`  ${chalk.cyan('ic mem events')}              查看用户输入事件`);
           console.log(`  ${chalk.cyan('ic mem candidates')}          查看记忆候选`);
           console.log(`  ${chalk.cyan('ic mem review')}              待确认记忆审查`);
+          console.log(`  ${chalk.cyan('ic mem edit [file]')}          创建/查看 Agent 记忆文件`);
+          console.log(`  ${chalk.cyan('ic mem edit add <规则>')}      添加项目规则并写回 AGENTS.md`);
+          console.log(`  ${chalk.cyan('ic mem edit delete <id>')}     删除项目规则并写回 AGENTS.md`);
+          console.log(`  ${chalk.cyan('ic mem edit list')}            查看项目规则`);
+          console.log(`  ${chalk.cyan('ic mem why <id|关键词>')}      解释某条记忆为什么会被使用`);
+          console.log(`  ${chalk.cyan('ic mem used <任务描述>')}      预览任务执行前会采用的记忆`);
           console.log(`  ${chalk.cyan('ic mem import [file...]')}     导入 AGENTS.md / CLAUDE.md 等 Agent 记忆文件`);
           console.log(`  ${chalk.cyan('ic mem export [file]')}        导出项目规则到 AGENTS.md`);
           console.log(`  ${chalk.cyan('ic mem manifests')}            查看可识别的 Agent 记忆文件`);
@@ -191,6 +202,93 @@ export function registerMemoryCommands(program: Command): void {
           await printMemoryCandidates(rootPath);
         } else if (verb === 'review') {
           await printMemoryReview(rootPath);
+        } else if (verb === 'edit') {
+          const sub = rest[0];
+          if (sub === 'add' || sub === '--rule' || sub === 'rule') {
+            const { addProjectMemoryRule } = await import('../core/memory-experience.js');
+            const content = rest.slice(1).join(' ').trim();
+            if (!content) {
+              warn(`请提供规则内容，例如：${chalk.cyan('ic mem edit add "默认先跑 tsc"')}`);
+              return;
+            }
+            const rule = await addProjectMemoryRule(rootPath, content);
+            success(`已添加项目规则：${rule.id}`);
+            detail('规则', rule.description);
+            detail('已同步', 'AGENTS.md');
+            return;
+          }
+          if (sub === 'delete' || sub === 'remove' || sub === 'rm') {
+            const { deleteProjectMemoryRule } = await import('../core/memory-experience.js');
+            const selector = rest.slice(1).join(' ').trim();
+            if (!selector) {
+              warn(`请提供规则 id 或关键词，例如：${chalk.cyan('ic mem edit delete rule-abc')}`);
+              return;
+            }
+            const removed = await deleteProjectMemoryRule(rootPath, selector);
+            if (!removed) warn(`没有找到项目规则：${chalk.cyan(selector)}`);
+            else {
+              success(`已删除项目规则：${removed.id}`);
+              detail('已同步', 'AGENTS.md');
+            }
+            return;
+          }
+          if (sub === 'list' || sub === 'ls') {
+            const { loadProjectMemory } = await import('../core/memory.js');
+            const memory = await loadProjectMemory(rootPath);
+            section('项目规则');
+            if (memory.rules.length === 0) info('暂无项目规则。');
+            for (const rule of memory.rules) console.log(`  ${chalk.cyan(rule.id)} ${rule.description} ${chalk.dim(rule.scope)}`);
+            return;
+          }
+          const { ensureAgentMemoryManifest } = await import('../core/memory-experience.js');
+          const manifest = await ensureAgentMemoryManifest(rootPath, rest[0] || 'AGENTS.md');
+          if (manifest.created) success(`已创建 Agent 记忆文件：${manifest.path}`);
+          else success(`Agent 记忆文件已存在：${manifest.path}`);
+          console.log();
+          console.log(manifest.content);
+        } else if (verb === 'why') {
+          const { explainMemoryUse } = await import('../core/memory-experience.js');
+          const selector = rest.join(' ').trim();
+          if (!selector) {
+            warn(`请提供记忆 id 或关键词，例如：${chalk.cyan('ic mem why memory')}`);
+            return;
+          }
+          const result = await explainMemoryUse(rootPath, selector);
+          if (!result) {
+            info(`未找到可解释的记忆：${chalk.cyan(selector)}`);
+            return;
+          }
+          section('记忆解释');
+          detail('来源', `${result.source} ${result.status ? `(${result.status})` : ''}`);
+          detail('标题', result.title);
+          detail('原因', result.reason);
+          if (result.riskLevel) detail('风险', result.riskLevel);
+          if (result.taskId) detail('任务', result.taskId);
+          if (result.updatedAt) detail('更新时间', result.updatedAt);
+          if (result.content) {
+            console.log();
+            console.log(chalk.cyan('内容'));
+            console.log(`  ${result.content}`);
+          }
+          if (result.evidence.length > 0) {
+            console.log();
+            console.log(chalk.cyan('证据'));
+            for (const item of result.evidence) console.log(`  - ${item}`);
+          }
+        } else if (verb === 'used') {
+          const { buildTaskMemorySummary, renderTaskMemorySummary } = await import('../core/memory-experience.js');
+          const taskText = rest.join(' ').trim();
+          if (!taskText) {
+            warn(`请提供任务描述，例如：${chalk.cyan('ic mem used "修复登录测试"')}`);
+            return;
+          }
+          const summary = await buildTaskMemorySummary(rootPath, taskText, 8);
+          const rendered = renderTaskMemorySummary(summary);
+          if (!rendered) {
+            info('当前任务没有命中长期记忆。');
+            return;
+          }
+          console.log(rendered);
         } else if (verb === 'import') {
           const { memoryManifestImport } = await import('../core/memory/cli-handlers.js');
           await memoryManifestImport(rootPath, rest);
@@ -291,7 +389,7 @@ export function registerMemoryCommands(program: Command): void {
   // ============================================================
   program.command('overview')
     .alias('info')
-    .description('项目健康总览：初始化状态、Provider、任务、Agent、工具能力')
+    .description('项目健康总览：初始化状态、Provider、任务、Agent、工具、记忆、Git')
     .option('--json', 'JSON 格式输出')
     .action(async (options?: { json?: boolean }) => {
       const rootPath = process.cwd();
@@ -301,6 +399,7 @@ export function registerMemoryCommands(program: Command): void {
         const { listTasks } = await import('../core/task-engine.js');
         const { getProviderStatus } = await import('../ai/provider.js');
         const { buildToolCapabilitySnapshot } = await import('../core/tool-registry.js');
+        const { isGitRepo, getCurrentBranch, getGitStatus } = await import('../utils/git.js');
 
         const config = await loadConfig(rootPath);
         const index = await loadProjectIndex(rootPath);
@@ -308,10 +407,27 @@ export function registerMemoryCommands(program: Command): void {
         const providerStatus = getProviderStatus(config?.ai || { provider: 'mock', model: 'mock-offline', maxTokens: 100000, temperature: 0.3 });
         const toolSnapshot = buildToolCapabilitySnapshot();
 
+        // Memory status
+        let memRules = 0, memCandidates = 0, memPending = 0;
+        try {
+          const { loadProjectMemory } = await import('../core/memory.js');
+          const mem = await loadProjectMemory(rootPath);
+          memRules = mem.rules.length;
+          memCandidates = (mem.memoryCandidates || []).length;
+          memPending = (mem.memoryCandidates || []).filter(c => c.reviewStatus === 'proposed').length;
+        } catch { /* best-effort */ }
+
+        // Git status
+        const inGit = isGitRepo(rootPath);
+        const branch = inGit ? getCurrentBranch(rootPath) : null;
+        const gitClean = inGit ? getGitStatus(rootPath).clean : null;
+
         const completed = tasks.filter(t => t.status === 'completed').length;
-        const failed = tasks.filter(t => t.status === 'failed').length;
+        const failedT = tasks.filter(t => t.status === 'failed').length;
         const running = tasks.filter(t => t.status === 'running').length;
         const availableTools = toolSnapshot.capabilities.filter(c => c.status === 'available').length;
+        const degradedTools = toolSnapshot.capabilities.filter(c => c.status !== 'available').length;
+        const fileCount = index?.modules.reduce((s, m) => s + m.files.length, 0) || 0;
 
         if (options?.json) {
           console.log(JSON.stringify(jsonEnvelope('overview', {
@@ -319,15 +435,17 @@ export function registerMemoryCommands(program: Command): void {
             initialized: !!config,
             language: index?.identity.language || 'unknown',
             framework: index?.identity.framework || 'unknown',
+            architecture: index?.architecturePattern || 'unknown',
             provider: providerStatus.name,
             providerReady: providerStatus.ready,
             keySource: providerStatus.keySource,
             model: config?.ai.model || 'unknown',
             modules: index?.modules.length || 0,
-            files: index?.modules.reduce((s, m) => s + m.files.length, 0) || 0,
-            tasks: { total: tasks.length, completed, failed, running },
-            tools: { total: toolSnapshot.capabilities.length, available: availableTools },
-            toolDetails: toolSnapshot.capabilities.map(c => ({ name: c.name, status: c.status })),
+            files: fileCount,
+            tasks: { total: tasks.length, completed, failed: failedT, running },
+            tools: { total: toolSnapshot.capabilities.length, available: availableTools, degraded: degradedTools },
+            memory: { rules: memRules, candidates: memCandidates, pending: memPending },
+            git: inGit ? { branch, clean: gitClean } : null,
             lastScan: index?.lastScan || null,
           }), null, 2));
           return;
@@ -335,18 +453,73 @@ export function registerMemoryCommands(program: Command): void {
 
         section('项目健康总览');
         console.log();
+
         if (!config) { warn('项目未初始化，运行 ic init'); console.log(); return; }
 
-        detail('语言', index?.identity.language || '—');
-        detail('框架', index?.identity.framework || '—');
-        detail('模块', `${index?.modules.length || 0} 个 / ${index?.modules.reduce((s, m) => s + m.files.length, 0) || 0} 文件`);
-        detail('Provider', `${providerStatus.name} ${providerStatus.ready ? chalk.green('✓') : chalk.red('✗')} ${providerStatus.keySource ? chalk.dim('(' + providerStatus.keySource + ')') : ''}`);
-        detail('模型', config?.ai.model || '—');
-        console.log();
-        detail('任务', `${chalk.cyan(String(tasks.length))} 个 ${chalk.dim(`(完成 ${completed}, 失败 ${failed}, 运行中 ${running})`)}`);
-        detail('工具', `${availableTools}/${toolSnapshot.capabilities.length} 可用`);
-        console.log();
+        // Row 1: Project identity
+        const langLabel = index?.identity.language || '—';
+        const fwLabel = index?.identity.framework || '—';
+        const archLabel = index?.architecturePattern || '—';
+        info(`项目身份    ${chalk.cyan(langLabel)}  ${chalk.dim('·')}  ${chalk.cyan(fwLabel)}  ${chalk.dim('·')}  ${archLabel}`);
+        detail('规模', `${index?.modules.length || 0} 个模块 / ${fileCount} 个文件`);
+
+        // Row 2: AI Provider
+        const providerIcon = providerStatus.ready ? chalk.green('✓') : chalk.red('✗');
+        const keyInfo = providerStatus.keySource ? chalk.dim(`(${providerStatus.keySource})`) : '';
+        info(`AI Provider  ${providerIcon} ${providerStatus.name} ${keyInfo}  ${chalk.dim('·')}  ${config?.ai.model || '—'}`);
+
+        // Row 3: Memory
+        const memParts: string[] = [];
+        if (memRules > 0) memParts.push(`${chalk.cyan(String(memRules))} 规则`);
+        if (memCandidates > 0) memParts.push(`${memCandidates} 候选`);
+        if (memPending > 0) memParts.push(chalk.yellow(`${memPending} 待确认`));
+        info(`长期记忆    ${memParts.length > 0 ? memParts.join('  ') : chalk.dim('暂无记忆')}`);
+
+        // Row 4: Tasks
+        const taskParts: string[] = [];
+        if (tasks.length > 0) taskParts.push(`${chalk.cyan(String(tasks.length))} 个任务`);
+        if (completed > 0) taskParts.push(chalk.green(`${completed} 完成`));
+        if (failedT > 0) taskParts.push(chalk.red(`${failedT} 失败`));
+        if (running > 0) taskParts.push(chalk.yellow(`${running} 运行中`));
+        info(`任务状态    ${taskParts.length > 0 ? taskParts.join('  ') : chalk.dim('暂无任务')}`);
+
+        // Row 5: Tools
+        const toolIcon = degradedTools === 0 ? chalk.green('✓') : chalk.yellow('⚠');
+        const degradedInfo = degradedTools > 0 ? chalk.yellow(` ${degradedTools} 降级`) : '';
+        info(`工具能力    ${toolIcon} ${availableTools} 可用${degradedInfo}`);
+
+        // Row 6: Git
+        if (inGit) {
+          const gitIcon = gitClean ? chalk.green('✓') : chalk.yellow('•');
+          const cleanLabel = gitClean ? chalk.dim('clean') : chalk.yellow('dirty');
+          info(`Git         ${gitIcon} ${branch || '—'}  ${cleanLabel}`);
+        } else {
+          info(`Git         ${chalk.dim('非 Git 仓库')}`);
+        }
+
+        // Row 7: Last scan
         if (index?.lastScan) detail('最后扫描', index.lastScan);
+
+        // Recent task activity
+        const recentTasks = tasks.filter(t => t.completedAt).sort((a, b) => (b.completedAt || '').localeCompare(a.completedAt || '')).slice(0, 3);
+        if (recentTasks.length > 0) {
+          console.log();
+          section('最近任务');
+          for (const t of recentTasks) {
+            const sIcon = t.status === 'completed' ? chalk.green('✓') : chalk.red('✗');
+            const desc = t.description.length > 50 ? t.description.slice(0, 47) + '...' : t.description;
+            detail(`${sIcon} ${t.id.slice(-6)}`, desc);
+          }
+        }
+
+        // Degraded tools
+        if (degradedTools > 0) {
+          console.log();
+          const degList = toolSnapshot.capabilities.filter(c => c.status !== 'available');
+          for (const d of degList) detail(`${chalk.yellow('⚠')} ${d.name}`, d.fallback || '不可用');
+        }
+
+        console.log();
         info(`运行 ${chalk.cyan('ic overview --json')} 获取 JSON 格式`);
         console.log();
       } catch (err) { printError(err as Error); }

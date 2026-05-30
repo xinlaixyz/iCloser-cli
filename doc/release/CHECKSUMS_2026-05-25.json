@@ -1,0 +1,17 @@
+{
+  "generated": "2026-05-24T16:27:51.932Z",
+  "entries": [
+    {
+      "file": "config.js",
+      "sha256": "4addf4a60de544623d64ce1f7cb2c3199d6084a23c40d9abe807838ef4d79a96"
+    },
+    {
+      "file": "index.js",
+      "sha256": "5a612a977b96a1eb5e42425a962d7a4ea053e28b220a87302990689a854c46af"
+    },
+    {
+      "file": "types.js",
+      "sha256": "d6f3af039e7517a93b8f70393f9a75fb389bbc94e21afa534581b727f08c8480"
+    }
+  ]
+}

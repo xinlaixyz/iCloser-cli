@@ -1,0 +1,49 @@
+{
+  "layers": [
+    {
+      "type": "task",
+      "content": "你给我的方案呢？",
+      "priority": 100,
+      "addedAt": "2026-05-20T03:48:20.916Z",
+      "tokenEstimate": 5
+    },
+    {
+      "type": "recall",
+      "content": "[记忆·历史] 开始任务: 增加google gemini模型的支持，最好别只有api，能通过网页认证的方式最好，你看看有没有思路。\nRecall 找到 5 条相关记忆",
+      "priority": 40,
+      "addedAt": "2026-05-20T03:48:20.918Z",
+      "tokenEstimate": 41
+    },
+    {
+      "type": "recall",
+      "content": "[记忆·历史] 开始任务: google\nRecall 找到 5 条相关记忆",
+      "priority": 40,
+      "addedAt": "2026-05-20T03:48:20.918Z",
+      "tokenEstimate": 16
+    },
+    {
+      "type": "recall",
+      "content": "[记忆·历史] 开始任务: 上次你分析的结果你可重新发我吗？\nRecall 找到 5 条相关记忆",
+      "priority": 40,
+      "addedAt": "2026-05-20T03:48:20.918Z",
+      "tokenEstimate": 25
+    },
+    {
+      "type": "recall",
+      "content": "[记忆·历史] 开始任务: 继续\nRecall 找到 5 条相关记忆",
+      "priority": 40,
+      "addedAt": "2026-05-20T03:48:20.918Z",
+      "tokenEstimate": 16
+    },
+    {
+      "type": "recall",
+      "content": "[记忆·历史] 开始任务: 检查项目的缺陷和对比其他同类型对比\nRecall 找到 5 条相关记忆",
+      "priority": 40,
+      "addedAt": "2026-05-20T03:48:20.918Z",
+      "tokenEstimate": 26
+    }
+  ],
+  "taskId": "repl-mpdiuud0",
+  "savedAt": "2026-05-20T03:49:23.535Z",
+  "totalTokens": 129
+}

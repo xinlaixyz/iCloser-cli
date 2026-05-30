@@ -56,6 +56,7 @@
 | `ic auto [mode]` | `autopilot` | `[--json] [--go] [--yes] [--auto] [--module]` | 自动分析/文档/测试生成 |
 | `ic auto docs --go --auto` | — | `[--yes]` | 写入文档，验证失败时自动回滚 |
 | `ic auto tests --go --auto` | — | `[--module]` | 写入测试，验证失败时自动回滚 |
+| `ic orchestrate <task...>` | `orch` | `[--execute] [--json] [--max-steps <n>]` | 自然语言任务 → 工具计划 → 执行/观察/恢复/证据；默认 dry-run 命令，显式 `--execute` 后才真实执行 |
 | `ic intel <query>` | `code` | `[--json] [--callers]` | 代码智能查询 |
 | `ic search <pattern>` | — | `[--json] [--web]` | 代码/网络搜索 |
 
@@ -68,6 +69,20 @@
 | `ic provider use <name>` | — | `[model]` | 切换 Provider |
 | `ic provider test` | — | — | 测试 Provider 连接 |
 | `ic provider doctor` | — | `[--json]` | Provider 健康诊断 |
+
+### 团队协作草稿
+
+| 命令 | 别名 | 参数 | 说明 |
+|------|------|------|------|
+| `ic collab issue <text...>` | `ic issue <text...>` | `[--json]` | 从 issue/需求文本生成本地执行计划 |
+| `ic collab pr` | `ic pr` | `[--title <title>] [--base <branch>] [--task <id>] [--json]` | 生成本地 PR 草稿，可附加任务报告/验证日志，不推送、不调用 GitHub API |
+| `ic collab commit [message]` | `ic commit-draft [message]` | `[--json]` | 生成提交说明草稿，不执行 git commit |
+
+### Claude Code 对标体验
+
+| 命令 | 别名 | 参数 | 说明 |
+|------|------|------|------|
+| `ic diff explain` | `ic explain-diff` | `[--staged] [--json]` | 解释当前 diff 的变更意图、风险与建议验证 |
 
 ### 记忆系统 (Memory Kernel v1.0)
 
@@ -89,6 +104,12 @@
 | `ic mem events` | — | — | 查看用户输入事件 |
 | `ic mem review` | — | — | 待确认记忆审查 |
 | `ic mem approve/reject <id>` | — | — | 批准/拒绝记忆候选 |
+| `ic mem edit [file]` | — | — | 创建/查看 Agent 记忆文件，默认 `AGENTS.md` |
+| `ic mem edit list` | — | — | 查看当前项目规则 |
+| `ic mem edit add <规则>` | — | — | 新增项目规则并同步写回 `AGENTS.md` |
+| `ic mem edit delete <id或关键词>` | — | — | 删除项目规则并同步写回 `AGENTS.md` |
+| `ic mem used <任务描述>` | — | — | 预览某个任务会采用哪些长期记忆 |
+| `ic mem why <id或关键词>` | — | — | 解释某条记忆为什么会被召回或使用 |
 
 > 调试: `ICLOSER_MEMORY_DEBUG=info ic mem status` 查看详细日志
 
@@ -98,8 +119,15 @@
 |------|------|------|------|
 | `ic start` | `serve` | — | 启动项目开发服务 |
 | `ic stop` | — | — | 停止后台服务 |
+| `ic release report` | — | `[--json]` | 汇总类型检查、lint warning 预算、测试、smoke、macOS CI 与发布信任评分 |
 | `ic audit` | — | `[-t <id>]` | 查看审计日志 |
 | `ic` (无参数) | — | — | 进入 REPL 交互模式 |
+
+### REPL 快捷命令
+
+| 命令 | 参数 | 描述 |
+|------|------|------|
+| `/orchestrate <task...>` | 自然语言任务 | 在交互模式中启动工具编排，按“规划 → 执行 → 观察 → 恢复 → 证据”展示过程；默认 dry-run 命令 |
 
 ## 核心模块导出 API
 
@@ -223,7 +251,7 @@ validateAIOutputContract(value: unknown): AIOutputContract
 }
 ```
 
-支持的事件类型：`setup`, `config`, `task`, `task-list`, `gate-result`, `security-rules`, `autopilot-docs`, `autopilot-tests-written`, `intel-callers`, `overview`, `doctor`, `agent-list`, `agent-created`, `agent-status`, `loop-status`, `web-search`, `search`
+支持的事件类型：`setup`, `config`, `task`, `task-list`, `gate-result`, `security-rules`, `autopilot-docs`, `autopilot-tests-written`, `intel-callers`, `overview`, `doctor`, `agent-list`, `agent-created`, `agent-status`, `loop-status`, `web-search`, `search`, `release-report`
 
 ## 认证与鉴权
 

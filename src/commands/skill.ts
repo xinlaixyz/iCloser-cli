@@ -21,7 +21,7 @@ export function registerSkillCommands(program: Command): void {
           const skills = listSkills();
           console.log(chalk.bold(`\n可用技能 (${skills.length}):\n`));
           for (const s of skills) {
-            const builtin = ['code-review', 'test-gen', 'api-doc', 'security-review', 'refactor-guide'].includes(s.name);
+            const builtin = ['project-index', 'code-review', 'test-generator', 'security-review', 'local-tools', 'api-doc', 'refactor-guide', 'pypdf2'].includes(s.name);
             console.log(`  ${builtin ? chalk.dim('[内置]') : chalk.cyan('[自定义]')} ${chalk.bold(s.name)} — ${s.description}`);
             console.log(`    触发词: ${s.triggers.join(', ')}`);
           }
@@ -54,7 +54,7 @@ export function registerSkillCommands(program: Command): void {
             fail(`技能 ${chalk.cyan(name)} 不存在，运行 ic skill list 查看可用技能`);
             return;
           }
-          const builtin = ['code-review', 'test-gen', 'api-doc', 'security-review', 'refactor-guide'].includes(skill.name);
+          const builtin = ['project-index', 'code-review', 'test-generator', 'security-review', 'local-tools', 'api-doc', 'refactor-guide', 'pypdf2'].includes(skill.name);
           console.log(`\n  ${chalk.bold.cyan(skill.name)}  ${builtin ? chalk.dim('[内置]') : chalk.cyan('[自定义]')}`);
           console.log(`  ${chalk.dim('描述')}   ${skill.description}`);
           console.log(`  ${chalk.dim('类别')}   ${skill.category}`);

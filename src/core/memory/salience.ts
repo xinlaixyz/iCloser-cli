@@ -48,6 +48,17 @@ export interface SalienceResult {
   };
 }
 
+function salienceTypePriority(type: Episode['type']): number {
+  switch (type) {
+    case 'error_occurred': return 100;
+    case 'task_failed': return 90;
+    case 'user_correction': return 80;
+    case 'error_resolved': return 70;
+    case 'user_feedback': return 60;
+    default: return 0;
+  }
+}
+
 export class SalienceEngine {
   private config: SalienceConfig;
   // Track how many times similar events occurred (for repetition bonus)
@@ -97,7 +108,11 @@ export class SalienceEngine {
   rank(episodes: Episode[], referenceDate?: Date): (Episode & { salience: SalienceResult })[] {
     return episodes
       .map(e => ({ ...e, salience: this.rateWithDecay(e, referenceDate) }))
-      .sort((a, b) => b.salience.score - a.salience.score);
+      .sort((a, b) => {
+        const diff = b.salience.score - a.salience.score;
+        if (Math.abs(diff) > 0.000001) return diff;
+        return salienceTypePriority(b.type) - salienceTypePriority(a.type);
+      });
   }
 
   /** Is this episode worth keeping? */
@@ -173,8 +188,11 @@ export class SalienceEngine {
     const eventDate = new Date(timestamp);
     const ref = referenceDate || new Date();
     const daysSince = (ref.getTime() - eventDate.getTime()) / (24 * 3600 * 1000);
-    if (daysSince <= 0) return 0;
+    if (daysSince <= 0.000001) return 0;
     // Exponential decay: 0.5 after ~90 days for medium, ~30 days for low
     return 0.3 * (1 - Math.exp(-daysSince / 60));
   }
 }
+
+
+

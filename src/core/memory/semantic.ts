@@ -32,6 +32,16 @@ export interface SemanticQuery {
   limit?: number;
 }
 
+const SEARCH_ALIASES: Array<[RegExp, string[]]> = [
+  [/参数|入参|输入/, ['argument', 'parameter', 'param', 'input']],
+  [/校验|验证|检查/, ['validate', 'validation', 'verify', 'check', 'finite', 'number', 'nan', 'infinity']],
+  [/有限|数字|数值|number/i, ['finite', 'number', 'numeric', 'nan', 'infinity']],
+  [/函数|方法/, ['function', 'method']],
+  [/公开|导出|api/i, ['public', 'export', 'api']],
+  [/注释|说明|文档|jsdoc/i, ['comment', 'jsdoc', 'documentation']],
+  [/测试|用例/, ['test', 'tests', 'node:test', 'assert']],
+];
+
 export class SemanticMemory {
   private store: MemoryStore;
   private rules: SemanticRule[] = [];
@@ -204,6 +214,9 @@ export class SemanticMemory {
           terms.push(t.slice(i, i + 2));
         }
       }
+    }
+    for (const [pattern, aliases] of SEARCH_ALIASES) {
+      if (pattern.test(taskDescription)) terms.push(...aliases);
     }
 
     // Score: count how many search terms match the rule

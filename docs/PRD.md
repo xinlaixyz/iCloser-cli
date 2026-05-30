@@ -32,6 +32,14 @@ AgentCode 是基于 TypeScript 的 AI coding agent CLI 系统，产品定位是 
 - 自动修复循环：验证失败后 AI 自动修复代码并重新验证
 - Agent 自动桥接：每个任务自动关联一个 Agent 实体，通过 Agent 系统驱动执行
 
+### 2.5 工具编排器 (`orchestrate / orch`)
+- 自然语言任务先进入意图路由，再选择工具模板，避免“AI 一次性说很多但没有实际行动”。
+- 支持任务类型模板：启动项目、Bug 修复、功能开发、变更解释、发布检查、记忆维护、通用分析。
+- 每一步按 `plan -> execute -> observe -> recover -> evidence` 记录，工具结果进入短期执行记忆。
+- Observe/Recover 能识别 wrong-shell、command-not-found、missing-env、missing-sdk、test-failed、build-failed、permission-denied、network-failed、timeout 等失败类型，并给出下一步恢复动作。
+- 命令执行默认 dry-run，只有显式 `--execute` 才真实运行系统命令，保证安全与掌控感。
+- CLI 使用 `ic orchestrate <任务>`，REPL 使用 `/orchestrate <任务>`；两者都必须展示工具进度、结果摘要、恢复建议和证据摘要。
+
 ### 3. 质量门禁 (`gate`)
 - 六道门禁：测试、安全、推理、报告、回滚、Git
 - 安全扫描：敏感文件、危险命令、密钥泄露、SQL 注入检测
@@ -106,13 +114,15 @@ AgentCode 是基于 TypeScript 的 AI coding agent CLI 系统，产品定位是 
 - REPL 交互模式：持续对话，支持 `/run` 调用 Agent
 - 输出双模式：文本（人类可读）/ JSON（机器可解析）
 - 配置管理：项目级 + 全局级配置
+- 启动首屏必须体现品牌：`i C l o s e r Agent Shell` + `Terminal AI Engineering Assistant`，采用 Grand Terminal Console 风格，支持无边框 FC 类加密朋克像素 logo。
+- AI 输出必须具备交互节奏：任务阶段、工具调用、工具结果、最终结论分层展示，避免一次性倾倒大段内容。
 
 ## 技术栈
 
 - 语言：TypeScript (ES2022)
 - 框架：无（vanilla）
 - 构建：npm (tsc)
-- 测试：vitest（116 个测试文件 + 18 个 smoke 脚本，1715 passed / 2 skipped；2026-05-21 架构师验收）
+- 测试：vitest（121 个测试文件 + 18 个 smoke 脚本，1738 passed / 2 skipped；2026-05-21 架构师验收）
 - 运行时：>=18.0.0（Node 24+ 自动启用 SQLite 记忆索引；Node 18/20 使用 JSONL/rules 文件降级）
 - 包管理器：npm
 - 部署形态：CLI 工具，npm 包发布
@@ -176,6 +186,13 @@ AgentCode 是基于 TypeScript 的 AI coding agent CLI 系统，产品定位是 
 ### 等待反馈
 - 三阶段反馈：连接中 → 分析中(带计时) → 流式输出(带 token 计数)
 - 脉冲动画 + 进度条，消除"卡死"感
+- 任务型对话必须先展示阶段推进，再展示工具调用和结果摘要；长回答默认分段，必要时折叠详情。
+
+### Grand Terminal 启动首屏
+- 品牌名固定为 `i C l o s e r Agent Shell`，副标题固定为 `Terminal AI Engineering Assistant`。
+- 启动主框展示 Project、Workspace、Stack、Provider、Memory、Context 和 Ready 能力承诺。
+- Logo 位于右上区域，采用无边框像素徽记；终端不支持图片时降级为文本徽记。
+- 欢迎屏后不再重复输出 Project/AI 状态栏。
 
 ### 底部固定操作面板
 - 空闲：快捷命令栏 (help/scan/write/diff/clear...)

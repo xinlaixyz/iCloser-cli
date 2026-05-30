@@ -30,7 +30,7 @@ describe('search enhancement', () => {
     it('generates English variants for Chinese topics', () => {
       const queries = expandSearchQueries('前端框架对比');
       // Should have some English-sounding queries (ASCII chars)
-      const hasEnglish = queries.some(q => /^[a-zA-Z\s]+$/.test(q.replace(/\d/g, '').trim()));
+      const _hasEnglish = queries.some(q => /^[a-zA-Z\s]+$/.test(q.replace(/\d/g, '').trim()));
       // At least some queries should be non-identical
       expect(queries.length).toBeGreaterThan(5);
     });

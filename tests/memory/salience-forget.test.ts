@@ -49,6 +49,17 @@ describe('SalienceEngine', () => {
     expect(ranked[0].salience.score).toBeGreaterThan(ranked[3].salience.score);
   });
 
+  it('uses deterministic type priority when salience scores are tied', () => {
+    const timestamp = '2026-05-23T00:00:00.000Z';
+    const episodes = [
+      makeEpisode('user_correction', '用户纠正', 1, timestamp),
+      makeEpisode('error_occurred', '生产错误', 1, timestamp),
+    ];
+
+    const ranked = engine.rank(episodes, new Date(timestamp));
+    expect(ranked.map(ep => ep.type)).toEqual(['error_occurred', 'user_correction']);
+  });
+
   it('filters important episodes', () => {
     const episodes = [
       makeEpisode('task_started', 'normal', 0.3),
@@ -191,3 +202,4 @@ function makeEpisode(
     timestamp: timestamp || new Date().toISOString(),
   };
 }
+

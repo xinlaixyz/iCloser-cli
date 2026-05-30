@@ -95,7 +95,7 @@ export function registerProjectCommands(program: Command): void {
               info(`试试 ${chalk.cyan('ic provider doctor')} 检测所有 Provider，或 ${chalk.cyan('ic provider test --provider deepseek')} 切换测试。`);
               if (smoke.error) detail('详情', smoke.error.slice(0, 200));
             } else {
-              console.warn(formatDegrade(providerUnavailable(smoke.error || undefined)));
+              warn(formatDegrade(providerUnavailable(smoke.error || undefined)));
             }
           }
         }
@@ -199,8 +199,35 @@ export function registerProjectCommands(program: Command): void {
         const identity = await detectProject(rootPath);
         const { scanProject, saveProjectIndex } = await import('../core/scanner.js');
         const result = await scanProject({ rootPath, deep: true, includeTests: true, maxFileSize: 500 * 1024 });
-        if (spin) spin.succeed(`扫描完成：${result.fileCount} 文件，${result.moduleCount} 模块，${result.apiCount} 接口`);
-        else console.log(JSON.stringify(jsonEnvelope('scan', { fileCount: result.fileCount, moduleCount: result.moduleCount, apiCount: result.apiCount, identity })));
+        if (options.json) {
+          console.log(JSON.stringify(jsonEnvelope('scan', {
+            fileCount: result.fileCount, moduleCount: result.moduleCount, apiCount: result.apiCount,
+            identity, architecture: result.index?.architecturePattern,
+          })));
+        } else {
+          spin?.succeed(`扫描完成：${result.fileCount} 文件，${result.moduleCount} 模块，${result.apiCount} 接口`);
+          const { section, detail, info } = await import('../cli/output.js');
+          console.log();
+          section('项目画像');
+          detail('语言', identity.language);
+          detail('框架', identity.framework || '—');
+          detail('构建', identity.buildSystem);
+          detail('测试', identity.testFramework || '—');
+          detail('数据库', identity.database || '—');
+          detail('架构', result.index?.architecturePattern || '—');
+          if (result.moduleCount > 0) {
+            console.log();
+            section('模块概览');
+            const mods = result.index?.modules || [];
+            for (const m of mods.slice(0, 10)) {
+              detail(m.name, `${m.files.length} 文件 ${m.responsibility ? '· ' + m.responsibility : ''}`);
+            }
+            if (mods.length > 10) info(`... 还有 ${mods.length - 10} 个模块`);
+          }
+          console.log();
+          info(`运行 ${chalk.cyan('ic overview')} 查看完整项目健康仪表盘`);
+          console.log();
+        }
         await saveProjectIndex(rootPath, result.index);
         config.project.identity = identity;
         await saveConfig(config);

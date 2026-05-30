@@ -27,6 +27,12 @@ function safeSpawn(command: string, args: string[], opts: Parameters<typeof spaw
   }
 }
 
+export function shouldUseWindowsShell(command: string): boolean {
+  if (process.platform !== 'win32') return false;
+  const executable = command.replace(/\\/g, '/').split('/').pop()?.toLowerCase() || command.toLowerCase();
+  return !['powershell', 'powershell.exe', 'pwsh', 'pwsh.exe'].includes(executable);
+}
+
 export async function runForegroundCommand(
   command: string,
   args: string[],
@@ -40,7 +46,7 @@ export async function runForegroundCommand(
       cwd,
       env: process.env,
       windowsHide: true,
-      shell: process.platform === 'win32',
+      shell: shouldUseWindowsShell(command),
     });
 
     if (child instanceof Error) {
@@ -82,7 +88,7 @@ export async function startBackgroundCommand(options: {
     cwd,
     env: { ...process.env, BROWSER: 'none' },
     windowsHide: true,
-    shell: process.platform === 'win32',
+    shell: shouldUseWindowsShell(command),
   });
 
   if (child instanceof Error) {

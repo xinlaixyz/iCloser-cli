@@ -770,7 +770,8 @@ async function _executeTool(name: string, args: Record<string, unknown>, rootPat
 
       try {
         const { execSync } = await import('child_process');
-        const output = execSync(adapted, { cwd: rootPath, timeout: 30000, encoding: 'utf-8', maxBuffer: 1024 * 1024 });
+        const timeoutMs = typeof args.timeoutMs === 'number' ? Math.max(1000, Math.min(args.timeoutMs, 10 * 60 * 1000)) : 30000;
+        const output = execSync(adapted, { cwd: rootPath, timeout: timeoutMs, encoding: 'utf-8', maxBuffer: 1024 * 1024 });
         const resultText = output || '(命令执行成功，无输出)';
         const compressed = compressCommandOutput(resultText);
         return wasAdapted ? `[已自动适配: ${adapted}]\n${compressed}` : compressed;

@@ -12,21 +12,20 @@ import {
   inferProviderFromApiKey,
   isLikelyApiKey,
   maskApiKey,
+  normalizeProviderForApiKey,
   smokeTestProvider,
 } from '../ai/provider.js';
+import { createProviderGateway } from '../ai/provider-gateway.js';
 import { parseAIOutput } from '../ai/output-contract.js';
 import { recordUserInputEvent } from '../core/memory.js';
 import {
   C, I, B,
-  welcomeScreen, statusBar, commandHelp,
+  welcomeScreen, commandHelp,
   drawWideBox,
   notification, thinDivider, termWidth,
 } from './theme.js';
 import type { AIConfig, AIProvider, AIPrompt, ContextPackage, ProjectIdentity, ProjectIndex } from '../types.js';
-import {
-  renderSystemOperationApproval,
-  type SystemOperation,
-} from './system-approval.js';
+import { type SystemOperation } from './system-approval.js';
 import {
   formatCommandChunk,
   isProcessRunning,
@@ -54,6 +53,9 @@ import {
   type AutopilotRollbackPlan,
 } from '../core/autopilot-rollback.js';
 import { createToolProgressDisplay } from './tool-display.js';
+import { classifyAgentTask, runAgentTaskLoop } from '../core/agent-task-loop.js';
+import { renderMissionResult, renderMissionStart } from './mission-cockpit.js';
+import { buildPendingDiffSummary, renderPendingDiffSummary } from './diff-renderer.js';
 
 // ============================================================
 // Session State
@@ -76,6 +78,8 @@ interface SessionState {
   convPhase: 'idle' | 'task_created' | 'task_running' | 'task_completed';
   currentTaskId?: string;
   taskBoundaries: number[];  // conversation indices where tasks ended
+  lastToolEvidence?: string;
+  lastAgentTaskId?: string;
 }
 
 interface ProjectIndexSummary {
@@ -203,9 +207,6 @@ const SLASH_COMMANDS = [
   '/global', '/gm', '/memory', '/mem', '/search', '/context', '/ctx', '/intel', '/code',
   '/brief', '/full', '/p', '/orchestrate', '/docs', '/export', '/theme',
 ];
-
-function _box(content: string, title: string): string { return drawWideBox(content, { title }); }
-
 function printStatusLine(): void {
   const ctxTokens = Math.round(state.conversation.reduce((s, m) => s + m.content.length / 2, 0));
   const ctxMax = state.aiConfig.maxTokens || 4096;
@@ -311,9 +312,9 @@ export async function startRepl(): Promise<void> {
   if (resumed) {
     const lastUser = state.conversation.filter(m => m.role === 'user').pop();
     const preview = lastUser ? lastUser.content.replace(/\n/g, ' ').substring(0, 50) : '';
-    console.log(notification(`已恢复上次会话 (${state.conversation.length} 条)` + (preview ? ` — ${preview}…` : ''), 'info'));
+    const restored = `Session restored   ${state.conversation.length} messages${preview ? ` · last topic: ${preview}...` : ''}`;
+    console.log(`\n  ${C.info('●')} ${C.dim(restored)}`);
   }
-  if (state.context.projectName) { console.log(''); console.log(statusBar([{ label: 'PROJECT', value: state.context.projectName, color: 'accent' }, { label: 'LANG', value: state.context.language || '—', color: 'primary' }, { label: 'FRAMEWORK', value: state.context.framework || '—', color: 'primary' }, { label: 'AI', value: state.aiConfig.provider.toUpperCase(), color: 'success' }])); }
   printBottomBlock();
   // Print onboarding hint as a separate line — user input goes to a clean prompt below
   if (_promptCount === 0) console.log(`  ${C.dim('/help 命令 · /scan 扫描 · 直接输入需求开始')}\n`);
@@ -831,8 +832,9 @@ async function saveApiKeyToGlobalConfig(provider: AIProvider, apiKey: string): P
     console.log(`  ${C.accent('帮我给登录模块加手机号验证码登录')}`);
     console.log(`  ${C.dim('AI 生成文件修改后，输入 y 写入、n 取消、d 预览。')}\n`);
   } else {
-    console.log(`  ${C.warn('!')} Key 已保存，但连接测试未通过。你仍可继续使用 mock，稍后运行 ${C.accent('/apikey')} 重新粘贴。\n`);
+    console.log(`  ${C.warn('!')} Key 已保存，但即时连接测试未通过。系统会继续使用 ${C.accent(provider)}，下一次任务会带上完整错误继续诊断。\n`);
     if (result.error) console.log(`  ${C.dim(result.error.split('\n')[0])}\n`);
+    console.log(`  ${C.dim(`可运行 /status 或 ic provider test 复查；需要离线体验时再手动切到 mock。`)}\n`);
   }
 }
 
@@ -922,89 +924,264 @@ async function handleChatWithTools(input: string, prompt: import('../types.js').
   process.stdout.write(`\r\x1b[K  ${C.accent('◇')} ${chalk.bold('You')}  ${input}\n`);
   state.conversation.push({ role: 'user', content: input, timestamp: new Date().toISOString() });
 
-  const tools = (await import('../core/tool-executor.js')).buildToolDefinitions();
-  const { runToolLoop } = await import('../core/tool-loop.js');
   const toolSystemPrompt = await buildSystemPrompt(true);
 
   // Inject assembled context: projectMeta as task suffix, code snippets + memory as preload
   const contextSummary = prompt.context.projectMeta
     ? `\n\n## 已注入项目上下文（无需重新扫描）\n${prompt.context.projectMeta}`
     : '';
+  const followupEvidence = isVagueFollowup(input) ? state.lastToolEvidence : '';
   const enrichedTask = [
     input,
+    followupEvidence ? `## 上一轮工具证据\n${followupEvidence}` : '',
+    followupEvidence ? '[系统要求] 用户正在追问上一轮工具结果。优先回答上一轮网页/工具内容，不要转去分析当前代码项目。' : '',
     contextSummary,
   ].filter(Boolean).join('\n');
 
   // Preload code snippets + memory into AI's first-round context
-  const preloadContext = (prompt.context.relevantCode.length > 0 || prompt.context.relevantMemory) ? {
+  let memoryDigest = '';
+  try {
+    const { buildTaskMemorySummary, renderTaskMemorySummary } = await import('../core/memory-experience.js');
+    memoryDigest = renderTaskMemorySummary(await buildTaskMemorySummary(process.cwd(), input, 5));
+  } catch { /* memory preview is optional */ }
+  const mergedMemory = [prompt.context.relevantMemory, memoryDigest].filter(Boolean).join('\n\n');
+  const preloadContext = followupEvidence ? undefined : (prompt.context.relevantCode.length > 0 || mergedMemory) ? {
     codeSnippets: prompt.context.relevantCode
       .filter(c => c.compression !== 'summary') // skip one-liners
       .map(c => ({ file: c.file, content: c.content })),
-    memory: prompt.context.relevantMemory || undefined,
+    memory: mergedMemory || undefined,
   } : undefined;
 
-  // Analysis intents get more rounds (6) and higher token budget
+  const isStartIntent = isStartProjectIntent(input);
+  // Analysis intents get more rounds (6) and higher token budget; startup also needs enough rounds to read config then act.
   const isAnalysis = isWholeProjectAnalysisIntent(input) || /(分析|检查|审查|review|audit|扫描|项目结构|技术栈|完成度|质量|怎么运行|如何启动)/.test(input);
-  const maxRounds = isAnalysis ? 6 : 3;
+  const maxRounds = isAnalysis || isStartIntent ? 6 : 3;
   const tokenBudget = isAnalysis ? 120000 : 80000; // 120K chars ≈ 30K tokens for analysis
 
   let currentLine = '';
-  process.stdout.write(`  ${C.primary('◉')} ${chalk.bold('AI')} ${C.dim('分析中...')}\n`);
+  process.stdout.write(`  ${C.accent('◇')} ${chalk.bold(input)}\n\n`);
+  const taskType = classifyAgentTask(input);
+  process.stdout.write(renderMissionStart({
+    input,
+    type: taskType,
+    provider: state.aiConfig.provider,
+    model: state.aiConfig.model,
+    memoryApplied: Boolean(preloadContext?.memory || memoryDigest),
+    memoryDigest,
+    workspace: process.cwd(),
+  }));
+  process.stdout.write(renderAgentStageLine('understand', 'active') + '\n');
 
-  const result = await runToolLoop({
-    task: enrichedTask,
+  const result = await runAgentTaskLoop({
+    rootPath: process.cwd(),
+    input,
+    prompt: { ...prompt, task: enrichedTask },
     systemPrompt: toolSystemPrompt,
     provider: provider as any,
-    tools,
-    rootPath: process.cwd(),
     preloadContext,
     maxRounds,
     tokenBudget,
+    previousEvidence: followupEvidence,
     onProgress: createToolProgressDisplay().handle,
   });
 
-  if (result.finalResponse) {
+  state.lastAgentTaskId = result.taskId;
+  const toolEvidence = result.evidence.toProviderContext(6);
+  if (toolEvidence) state.lastToolEvidence = toolEvidence;
+  const displayResponse = synthesizeToolAnswerIfNeeded(input, result.finalResponse, toolEvidence);
+  const evidenceRecords = result.evidence.list();
+  const toolNames = [...new Set(evidenceRecords.map(item => item.source).filter(Boolean))];
+  const evidenceTargets = [...new Set(evidenceRecords.map(item => item.target).filter((target): target is string => Boolean(target)))];
+  const stagePanel = renderMissionResult({
+    state: result.state,
+    type: result.type,
+    finalResponse: displayResponse,
+    codeDelivery: result.codeDelivery,
+    toolNames,
+    evidenceTargets,
+    qualityGate: result.qualityGate,
+    codeDeliveryReadiness: result.codeDeliveryReadiness,
+    memoryCandidateSummary: result.memoryCandidateSummary,
+    rounds: result.rounds,
+    tokensUsed: result.tokensUsed,
+  });
+
+  if (displayResponse) {
     const tw = Math.min(termWidth(), 160);
     const contentW = tw - 4;
-    currentLine = result.finalResponse;
-    const lines = currentLine.split('\n');
-    for (const line of lines) {
+    currentLine = displayResponse;
+    const lines = limitResultLinesForDisplay(currentLine.split('\n'), outputMode);
+    console.log(`  ${C.dim('Result')}`);
+    for (const line of lines.visible) {
       renderMarkdownLine(line, contentW);
+    }
+    if (lines.hidden > 0) {
+      console.log(`  ${C.dim(`… 已折叠 ${lines.hidden} 行，结果已进入会话；输入 /full 后可查看更完整输出`)}`);
     }
     console.log();
     // Brief summary
-    if (lines.length > 30) {
-      console.log(`  ${C.primary('◆')} ${C.dim(lines.find(l => l.trim() && l.trim().length > 10)?.substring(0, 100) || '')}`);
-      console.log(`  ${C.dim(`(${lines.length} 行 · 上方滚动查看完整内容)`)}\n`);
+    if (currentLine.split('\n').length > 30) {
+      console.log(`  ${C.primary('◆')} ${C.dim(currentLine.split('\n').find(l => l.trim() && l.trim().length > 10)?.substring(0, 100) || '')}`);
+      console.log(`  ${C.dim(`(${currentLine.split('\n').length} 行 · 已压缩展示，避免刷屏)`)}\n`);
     }
+    console.log(stagePanel);
   } else {
     console.log(`  ${C.warn('!')} 未能获取响应\n`);
+    console.log(stagePanel);
   }
 
-  const finalContent = result.finalResponse || '(无响应)';
+  const finalContent = [
+    displayResponse || result.finalResponse || '(无响应)',
+    toolEvidence ? `\n\n[工具证据]\n${toolEvidence}` : '',
+  ].filter(Boolean).join('');
   state.conversation.push({ role: 'assistant', content: finalContent, timestamp: new Date().toISOString() });
+  if (result.codeDelivery.status === 'patch-ready') {
+    state.pendingFiles = result.codeDelivery.changes.map(change => ({
+      path: normalizePendingFilePath(change.file),
+      content: change.content,
+      lines: change.content.split('\n').length,
+    }));
+    _printFileConfirm();
+  }
   compressConversation();
   streamState = 'idle';
 
-  const didRunCommand = result.toolCalls.some(call => call.name === 'run_command');
+  const didRunCommand = result.evidence.list().some(call => call.source === 'run_command');
   if (isStartProjectIntent(input) && !didRunCommand && !pendingSystemOperation) {
     console.log(`  ${C.warn('!')} AI 已完成启动分析，但尚未执行启动命令，继续进入本地启动闭环。\n`);
     printLoopStatus('take-action', '准备执行系统命令');
     await cmdStartProject();
   }
 
-  // Process any pending inputs
+  // Process any pending inputs through the same routing as live input.
+  // This matters when the user types "1" while AI is still preparing an approval panel:
+  // the buffered value must confirm the panel, not become a new chat task.
   const buffered = pendingInputStream.splice(0);
   for (const buf of buffered) {
+    if (await handleInlineConfirm(buf)) continue;
+    if (await handleBottomSelection(buf)) continue;
     if (buf.startsWith('/')) await handleSlashCommand(buf);
     else await handleChat(buf);
   }
+}
+
+export function isVagueFollowup(input: string): boolean {
+  const normalized = input.trim().replace(/\s+/g, '');
+  return /^(具体是什么呀?|这是什么|什么意思|展开说说|详细点|说具体点|具体点|然后呢|继续|继续任务|是什么)$/.test(normalized);
+}
+
+export function buildToolEvidenceSummary(calls: Array<{ name: string; args: Record<string, unknown>; result: string; success: boolean }>): string {
+  const useful = calls
+    .filter(call => call.success && ['web_fetch', 'web_search', 'read_file', 'get_project_overview'].includes(call.name))
+    .slice(-4);
+  if (useful.length === 0) return '';
+  return useful.map(call => {
+    const target = call.name === 'web_fetch'
+      ? `URL: ${String(call.args.url || '')}`
+      : call.name === 'read_file'
+        ? `文件: ${String(call.args.path || call.args.file || '')}`
+        : '';
+    return `### ${call.name}${target ? `\n${target}` : ''}\n${call.result.slice(0, 1200)}`;
+  }).join('\n\n');
+}
+
+export function synthesizeToolAnswerIfNeeded(input: string, finalResponse: string, evidence: string): string {
+  if (!evidence) return finalResponse;
+  const weak = /^(让我|我来|我需要|I'll|I will|Let me)/i.test(finalResponse.trim()) ||
+    finalResponse.trim().length < 20 ||
+    /访问.*看看|查看.*内容|先.*了解/.test(finalResponse);
+  if (!weak || !/web_fetch/.test(evidence)) return finalResponse;
+
+  const title = evidence.match(/^标题:\s*(.+)$/m)?.[1]?.trim();
+  const source = evidence.match(/^来源:\s*(.+)$/m)?.[1]?.trim();
+  const body = evidence
+    .replace(/^### web_fetch[\s\S]*?\n标题:/m, '标题:')
+    .split('\n')
+    .filter(line => !/^### |^URL:|^标题:|^来源:|^发布时间:/.test(line.trim()))
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+  const summary = body ? body.slice(0, 700) : '';
+  return [
+    `我访问到的网页内容如下：`,
+    title ? `标题：${title}` : '',
+    source ? `来源：${source}` : '',
+    summary ? `\n主要内容：\n${summary}` : '',
+    !summary && title ? `\n从抓取结果看，它是关于「${title}」的页面。` : '',
+    `\n你的问题是“${input}”，所以直接回答：这是 iCloser 相关站点页面，不是当前本地代码项目。`,
+  ].filter(Boolean).join('\n');
+}
+
+type AgentStageId = 'understand' | 'tools' | 'plan' | 'verify' | 'memory';
+type AgentStageStatus = 'active' | 'done' | 'skip' | 'warn' | 'fail';
+
+const AGENT_STAGES: Array<{ id: AgentStageId; label: string }> = [
+  { id: 'understand', label: '理解需求' },
+  { id: 'tools', label: '调用工具' },
+  { id: 'plan', label: '形成结论' },
+  { id: 'verify', label: '验证证据' },
+  { id: 'memory', label: '沉淀记忆' },
+];
+
+export function renderAgentStageLine(id: AgentStageId, status: AgentStageStatus): string {
+  const stage = AGENT_STAGES.find(item => item.id === id);
+  const label = stage?.label ?? id;
+  const mark = status === 'done' ? C.success('●') :
+    status === 'active' ? C.primary('●') :
+      status === 'fail' ? C.error('●') :
+      status === 'warn' ? C.warn('●') : C.dim('○');
+  const stateText = status === 'done' ? '完成' :
+    status === 'active' ? '进行中' :
+      status === 'fail' ? '失败' :
+      status === 'warn' ? '需注意' : '跳过';
+  return `  ${mark} ${label.padEnd(8)} ${C.dim(stateText)}`;
+}
+
+export function renderGoldenPathPanel(options: {
+  input: string;
+  toolCalls: Array<{ name: string; args: Record<string, unknown>; result: string; success: boolean }>;
+  finalResponse: string;
+  success: boolean;
+  rounds: number;
+}): string {
+  const tools = options.toolCalls;
+  const uniqueTools = [...new Set(tools.map(call => call.name))];
+  const failed = tools.filter(call => !call.success);
+  const hasVerification = tools.some(call => call.name === 'run_command' || call.name === 'git_status');
+  const hasEvidence = tools.some(call => call.success && call.result.trim().length > 0);
+  const hasMemory = Boolean(state.lastToolEvidence || options.finalResponse.includes('[工具证据]'));
+  const failedAiCall = !options.success || /^AI 调用失败|^分析超时/.test(options.finalResponse.trim());
+  const lines = [
+    `  ${C.dim('Golden Path')}`,
+    renderAgentStageLine('understand', 'done'),
+    renderAgentStageLine('tools', tools.length > 0 ? 'done' : 'skip'),
+    renderAgentStageLine('plan', failedAiCall ? 'fail' : options.finalResponse.trim() ? 'done' : 'warn'),
+    renderAgentStageLine('verify', failedAiCall ? 'warn' : hasVerification || hasEvidence ? 'done' : 'skip'),
+    renderAgentStageLine('memory', hasMemory ? 'done' : 'skip'),
+    `  ${C.dim('证据')} ${C.accent(String(tools.length))} 次工具调用${uniqueTools.length ? ` · ${uniqueTools.join(', ')}` : ''}`,
+    `  ${C.dim('结果')} ${options.success && failed.length === 0 ? C.success('完成') : failed.length ? C.warn(`部分完成，${failed.length} 个工具异常`) : C.warn('未完全确认')} ${C.dim(`· ${options.rounds} 轮`)}`,
+  ];
+  if (failedAiCall) {
+    lines.push(`  ${C.dim('失败')} ${C.warn(options.finalResponse.trim().slice(0, 120))}`);
+  }
+  if (failed[0]) {
+    lines.push(`  ${C.dim('风险')} ${C.warn(failed[0].name)} ${C.dim(failed[0].result.slice(0, 90))}`);
+  }
+  if (/启动|运行|修复|修改|生成|发布|提交/.test(options.input) && !hasVerification) {
+    lines.push(`  ${C.dim('下一步')} ${C.accent('建议运行验证命令或让 AI 继续执行验证')}`);
+  }
+  return `${lines.join('\n')}\n`;
 }
 
 // Chat
 // ============================================================
 async function handleChat(input: string): Promise<void> {
   if (state.pendingFiles.length > 0) {
+    if (isPendingFileContinuation(input)) {
+      console.log(`  ${C.info('●')} 已恢复上一次代码产物，先处理待确认文件。\n`);
+      _printFileConfirm();
+      return;
+    }
     clearPendingFileConfirmation();
   }
   if (isCliCommandInRepl(input)) {
@@ -1093,7 +1270,7 @@ async function handleChat(input: string): Promise<void> {
     const richContext = await buildRichContext(input);
     const prompt: AIPrompt = { systemPrompt: await buildSystemPrompt(false), context: richContext, task: input, history };
     printToolDegradationNotice();
-    const provider = createProvider(state.aiConfig);
+    const provider = createProviderGateway(state.aiConfig);
     const naturalLocalFallback = getNaturalLanguageLocalFallback(input, {
       provider: state.aiConfig.provider,
       supportsToolUse: provider.supportsToolUse,
@@ -1276,6 +1453,17 @@ async function handleChat(input: string): Promise<void> {
       : `  ${C.dim('建议: /doctor 诊断系统状态  |  /status 查看配置')}\n`;
     console.log(`  ${I.err} ${msg}\n${hint}`);
   } finally { abortController = null; }
+}
+
+export function isPendingFileContinuation(input: string): boolean {
+  const normalized = input.trim().replace(/\s+/g, '');
+  return /^(继续|继续任务|下一步|接着来|接着做|继续写入|继续处理|处理产物|看diff|预览diff|写入|确认写入)$/.test(normalized);
+}
+
+export function limitResultLinesForDisplay(lines: string[], mode: 'full' | 'brief'): { visible: string[]; hidden: number } {
+  const limit = mode === 'brief' ? 18 : 28;
+  if (lines.length <= limit + 12) return { visible: lines, hidden: 0 };
+  return { visible: lines.slice(0, limit), hidden: lines.length - limit };
 }
 
 async function handleAutopilotRoute(route: AutopilotRoute): Promise<void> {
@@ -1633,6 +1821,7 @@ function isStartProjectIntent(input: string): boolean {
   const isQuestion = /^(怎么|如何|怎样|你知道|请问|谁能|谁知道|啥是|什么是|为什么)/i.test(normalized) ||
     /(怎么启动|如何启动|怎样启动|怎么运行|如何运行|怎么跑|如何跑)/i.test(normalized);
   if (isQuestion) return false;
+  if (/^(启动|运行|跑|打开|启动起来|运行起来|跑起来|打开起来|启动一下|运行一下|跑一下|打开一下|启动吧|运行吧|跑吧|打开吧)$/i.test(normalized)) return true;
   return /(启动|运行|跑起来|打开|起服务|启动服务|运行项目|启动项目|跑项目|start|serve|yarn|pnpm|run|docker|npmrundev|launch)/i.test(normalized) &&
     /(项目|服务|前端|后端|vite|react|app|应用|dev|serve|start|up)/i.test(normalized);
 }
@@ -2189,18 +2378,6 @@ async function cmdStartProject(): Promise<void> {
   }
 }
 
-function _printSystemOperationConfirm(operation: SystemOperation): void {
-  activeChoicePanel = {
-    title: '系统权限确认',
-    options: [
-      { id: 1, label: '允许执行一次' },
-      { id: 2, label: `允许执行，并在本次会话记住：${operation.approvalKey}` },
-      { id: 3, label: '取消' },
-    ],
-  };
-  process.stdout.write(renderSystemOperationApproval(operation));
-}
-
 async function handleSystemOperationApprove(): Promise<void> {
   if (!pendingSystemOperation) return;
   const op = pendingSystemOperation;
@@ -2289,11 +2466,53 @@ async function doWriteFiles(targets: PendingFile[]): Promise<void> {
   state.lastWrittenFiles = [...state.lastWrittenFiles, ...writtenFiles];
   const writtenSet = new Set(writtenFiles);
   state.pendingFiles = state.pendingFiles.filter(file => !writtenSet.has(file));
-  if (written > 0) { console.log(`  ${thinDivider()}`); console.log(`  ${I.ok} ${C.success(String(written))} 个文件  ${C.primary('+' + totalLines)} 行`); console.log(`  ${C.dim('下次可问：刚才写到哪里了')}\n`); }
+  if (written > 0) {
+    console.log(`  ${thinDivider()}`);
+    console.log(`  ${I.ok} ${C.success(String(written))} 个文件  ${C.primary('+' + totalLines)} 行`);
+    console.log(drawWideBox(renderPostWriteVerificationPlan(buildPostWriteVerificationPlan(writtenFiles)), { title: '写入后验收' }) + '\n');
+  }
   if (failed > 0) console.log(`  ${I.err} ${failed} 个文件写入失败，未从待写入列表移除\n`);
 }
 
+export interface PostWriteVerificationPlan {
+  files: string[];
+  checks: string[];
+  nextActions: string[];
+}
+
+export function buildPostWriteVerificationPlan(files: Array<{ path: string }>): PostWriteVerificationPlan {
+  const checks = new Set<string>();
+  const nextActions = new Set<string>();
+  const normalized = files.map(file => file.path.replace(/\\/g, '/'));
+  if (normalized.some(file => /\.(html|css)$/i.test(file))) {
+    checks.add('浏览器打开页面，检查布局、输入、按钮和移动端宽度');
+    checks.add('npm run lint');
+  }
+  if (normalized.some(file => /\.(ts|tsx|js|jsx)$/i.test(file))) {
+    checks.add('npx tsc --noEmit');
+    checks.add('npm run lint');
+  }
+  if (normalized.some(file => /\.(test|spec)\.(ts|tsx|js|jsx)$/i.test(file))) checks.add('npm test');
+  if (normalized.some(file => /\.md$/i.test(file))) checks.add('人工快速阅读文档标题、步骤和验收标准');
+  if (checks.size === 0) checks.add('运行项目默认验证命令，或输入 /verify');
+  nextActions.add('/verify 运行项目验证');
+  nextActions.add('/diff 查看当前工作区变更');
+  nextActions.add('验证失败时输入“继续修复”');
+  return { files: normalized, checks: [...checks], nextActions: [...nextActions] };
+}
+
+export function renderPostWriteVerificationPlan(plan: PostWriteVerificationPlan): string {
+  return [
+    `已写入 ${plan.files.length} 个文件：${plan.files.slice(0, 4).join(', ')}${plan.files.length > 4 ? ` +${plan.files.length - 4}` : ''}`,
+    '建议验证：',
+    ...plan.checks.map(check => `- ${check}`),
+    '下一步：',
+    ...plan.nextActions.map(action => `- ${action}`),
+  ].join('\n');
+}
+
 function _printFileConfirm(): void {
+  const summary = buildPendingDiffSummary(state.pendingFiles);
   const fileOptions = state.pendingFiles.map((pf, index) => ({
     id: index + 1,
     label: `写入 ${pf.path}`,
@@ -2303,8 +2522,8 @@ function _printFileConfirm(): void {
   const undoId = state.pendingFiles.length + 2;
   activeChoicePanel = {
     title: '文件写入确认',
-    subtitle: `${state.pendingFiles.length} 个文件待处理`,
-    bodyLines: state.pendingFiles.map(pf => `文件 ${pf.path} (+${pf.lines} 行)`),
+    subtitle: `${state.pendingFiles.length} 个文件待处理 · 风险 ${summary.highestRisk}`,
+    bodyLines: renderPendingDiffSummary(summary).split('\n'),
     options: [
       ...fileOptions,
       { id: diffId, label: '预览变更' },
@@ -2376,22 +2595,34 @@ async function getAgentManager(): Promise<AgentManager> {
 }
 
 async function cmdOrchestrate(description: string): Promise<void> {
-  const mgr = await getAgentManager();
-  console.log(`\n  ${I.running} ${chalk.bold('编排')} ${C.dim('拆解任务 → 并行执行 → 汇总')}`);
-  console.log(`  ${C.dim('╭─')} ${C.accent(description.substring(0, 60))}`);
-  const result = await mgr.orchestrate(description);
-  if (result.success) {
-    console.log(`  ${C.dim('├─')} ${I.ok} ${result.summary}`);
-    for (let i = 0; i < result.childResults.length; i++) {
-      const cr = result.childResults[i];
-      const isLast = i === result.childResults.length - 1;
-      const prefix = isLast ? '└─' : '├─';
-      console.log(`  ${C.dim(prefix)} ${cr.success ? I.ok : I.err} ${cr.agentName} ${C.dim(cr.output.substring(0, 60))}`);
-    }
-    console.log('');
-  } else {
-    console.log(`  ${C.dim('╰─')} ${I.err} ${result.summary}\n`);
+  const { runToolOrchestrator } = await import('../core/tool-orchestrator.js');
+  console.log(`\n  ${I.running} ${chalk.bold('工具编排')} ${C.dim('规划 → 执行 → 观察 → 恢复 → 证据')}`);
+  console.log(`  ${C.dim('╭─')} ${C.accent(description.substring(0, 70))}`);
+  const result = await runToolOrchestrator({
+    rootPath: process.cwd(),
+    task: description,
+    executeCommands: false,
+    onProgress(event) {
+      if (event.phase === 'plan') {
+        console.log(`  ${C.dim('├─')} ${I.running} ${event.message}`);
+      } else if (event.phase === 'step_start' && event.step) {
+        console.log(`  ${C.dim('├─')} ${C.primary('→')} ${event.step.id} ${event.step.title} ${C.dim(event.step.tool)}`);
+      } else if (event.phase === 'step_result' && event.step) {
+        const icon = event.step.status === 'success' ? I.ok : I.err;
+        console.log(`  ${C.dim('├─')} ${icon} ${event.step.id} ${C.dim((event.step.result || '').substring(0, 90))}`);
+      } else if (event.phase === 'recover' && event.step) {
+        console.log(`  ${C.dim('├─')} ${C.warn('!')} 恢复：${event.step.title}`);
+      }
+    },
+  });
+  console.log(`  ${C.dim('╰─')} ${result.success ? I.ok : I.err} ${result.summary.split('\n')[0]}`);
+  if (result.memory.failures.length > 0) {
+    console.log(`      ${C.dim('失败: ' + result.memory.failures[0].substring(0, 100))}`);
   }
+  if (result.memory.verified.length > 0) {
+    console.log(`      ${C.dim('验证: ' + result.memory.verified.slice(0, 2).join(' / ').substring(0, 130))}`);
+  }
+  console.log('');
 }
 async function cmdRunAgent(description: string): Promise<void> {
   const mgr = await getAgentManager();
@@ -2731,8 +2962,6 @@ function printFooter(_hasFiles: boolean): void {
   // S20 panel handles file confirmation — old inline system disabled
 }
 
-function _stripAnsiLen(str: string): number { if (!str) return 0; return str.replace(/\x1b\[[0-9;]*m/g, '').length; }
-
 // Terminal display width — CJK/fullwidth chars count as 2 columns
 const CJK_RX = /[一-鿿㐀-䶿豈-﫿　-〿＀-￯぀-ヿ가-힯⺀-⿟]/g;
 function displayWidth(str: string): number {
@@ -2777,7 +3006,6 @@ function stopWaitingPhase(): void {
   // Status line printed by stream handler or startStreamingPhase — no duplicate here
 }
 
-function _startSpinner(): void { startWaitingPhase(); }
 function stopSpinner(): void { stopWaitingPhase(); }
 
 export async function replCompleter(line: string): Promise<[string[], string]> {
@@ -2879,7 +3107,7 @@ const ALL_PALETTE = [
   { name: '/run', desc: 'Agent 执行任务', aliases: '' },
   { name: '/agents', desc: 'Agent 列表', aliases: '/ag' },
   { name: '/docs', desc: '文档操作(ask/summarize/review...)', aliases: '' },
-  { name: '/orchestrate', desc: '多 Agent 编排', aliases: '' },
+  { name: '/orchestrate', desc: '工具编排：规划→执行→观察→恢复', aliases: '' },
   { name: '/search', desc: '代码搜索', aliases: '' },
   { name: '/intel', desc: '代码智能(符号/调用图)', aliases: '/code' },
   { name: '/context', desc: '查看 AI 上下文', aliases: '/ctx' },
@@ -2965,7 +3193,7 @@ function printProviderKeyHelp(provider: AIProvider): void {
   console.log('');
 }
 
-async function loadGlobalConfig(): Promise<void> { try { const fsp = await import('fs/promises'); const path = await import('path'); const home = process.env.HOME || process.env.USERPROFILE || '~'; const cp = path.join(home, '.icloser', 'config.json'); const raw = await fsp.readFile(cp, 'utf-8'); try { const cfg = JSON.parse(raw); const ai = cfg.ai || {}; if (ai.provider) state.aiConfig.provider = ai.provider; if (ai.model) state.aiConfig.model = ai.model; if (ai.apiKey) state.aiConfig.apiKey = ai.apiKey; if (ai.maxTokens) state.aiConfig.maxTokens = ai.maxTokens; } catch { const fsp2 = await import('fs/promises'); const path2 = await import('path'); const bak = cp + '.corrupted.' + Date.now(); await fsp2.copyFile(cp, bak).catch(() => {}); await fsp2.unlink(cp).catch(() => {}); console.log(`  ${C.warn('!')} 配置文件损坏，已备份至 ${path2.basename(bak)} 并重置\n`); } } catch { /* best-effort */ } }
+async function loadGlobalConfig(): Promise<void> { try { const fsp = await import('fs/promises'); const path = await import('path'); const home = process.env.HOME || process.env.USERPROFILE || '~'; const cp = path.join(home, '.icloser', 'config.json'); const raw = await fsp.readFile(cp, 'utf-8'); try { const cfg = JSON.parse(raw); const ai = cfg.ai || {}; if (ai.provider) state.aiConfig.provider = ai.provider; if (ai.model) state.aiConfig.model = ai.model; if (ai.apiKey) state.aiConfig.apiKey = ai.apiKey; if (ai.maxTokens) state.aiConfig.maxTokens = ai.maxTokens; const normalizedProvider = normalizeProviderForApiKey(state.aiConfig.provider, state.aiConfig.apiKey); if (normalizedProvider !== state.aiConfig.provider) { state.aiConfig.provider = normalizedProvider; state.aiConfig.model = getProviderInfo(normalizedProvider).defaultModel; } } catch { const fsp2 = await import('fs/promises'); const path2 = await import('path'); const bak = cp + '.corrupted.' + Date.now(); await fsp2.copyFile(cp, bak).catch(() => {}); await fsp2.unlink(cp).catch(() => {}); console.log(`  ${C.warn('!')} 配置文件损坏，已备份至 ${path2.basename(bak)} 并重置\n`); } } catch { /* best-effort */ } }
 async function saveSession(): Promise<void> { try { const fsp = await import('fs/promises'); const path = await import('path'); const home = process.env.HOME || process.env.USERPROFILE || '~'; const sp = path.join(home, '.icloser', 'session.json'); const cwd = process.cwd(); const recentFiles = state.lastWrittenFiles.slice(-20).map(file => ({ path: file.path, fullPath: file.fullPath, lines: file.lines, content: '' })); const KEY_RX = /\b(sk-ant-[a-zA-Z0-9_-]{20,}|sk-or-[a-zA-Z0-9_-]{20,}|dashscope-[a-zA-Z0-9_-]{10,}|sk-[a-zA-Z0-9]{20,})\b/g; const sanitize = (c: Message) => ({ ...c, content: typeof c.content === 'string' ? c.content.replace(KEY_RX, '***API_KEY_MASKED***') : c.content }); const conversation = state.conversation.slice(-20).map(sanitize); await fsp.mkdir(path.dirname(sp), { recursive: true }); await fsp.writeFile(sp, JSON.stringify({ projectRoot: cwd, projectName: state.context.projectName, language: state.context.language, framework: state.context.framework, conversation, lastWrittenFiles: recentFiles, savedAt: new Date().toISOString() }, null, 2), 'utf-8'); } catch { /* best-effort */ } }
 async function loadSession(): Promise<boolean> { try { const fsp = await import('fs/promises'); const path = await import('path'); const home = process.env.HOME || process.env.USERPROFILE || '~'; const sp = path.join(home, '.icloser', 'session.json'); const data = JSON.parse(await fsp.readFile(sp, 'utf-8')); if (Date.now() - new Date(data.savedAt as string).getTime() > 86400000) { const ageH = Math.round((Date.now() - new Date(data.savedAt as string).getTime()) / 3600000); console.log(`  ${C.dim('上次会话已过期（' + ageH + ' 小时前），已打开新会话')}\n`); return false; } const savedRoot = data.projectRoot ? path.resolve(String(data.projectRoot)) : ''; const currentRoot = path.resolve(process.cwd()); if (savedRoot !== currentRoot) return false; if (data.conversation) state.conversation = data.conversation as Message[]; if (Array.isArray(data.lastWrittenFiles)) state.lastWrittenFiles = data.lastWrittenFiles.map((file: Partial<PendingFile>) => ({ path: file.path || '', fullPath: file.fullPath, lines: file.lines || 0, content: '' })).filter((file: PendingFile) => file.path); return state.conversation.length > 0 || state.lastWrittenFiles.length > 0; } catch { return false; } }
 async function detectProjectContext(): Promise<void> {
@@ -3479,8 +3707,4 @@ async function cmdDocsSlash(args: string): Promise<void> {
     }
   } catch (err) { console.log(`  ${I.err} ${(err as Error).message}\n`); }
 }
-
-
-
-
 

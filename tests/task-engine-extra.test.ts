@@ -24,7 +24,7 @@ import {
   completeTaskLoop,
   advanceTaskLoopState,
 } from '../src/core/task-engine.js';
-import type { Task, ProjectIndex, ProjectIdentity } from '../src/types.js';
+import type { ProjectIndex, ProjectIdentity } from '../src/types.js';
 import type { AIProviderAdapter } from '../src/ai/provider.js';
 
 const IDENTITY: ProjectIdentity = {
@@ -140,8 +140,8 @@ describe('getQueue', () => {
 
 describe('getNextTask', () => {
   it('returns highest priority queued task', () => {
-    const lowTask = createTask('Low priority', { priority: 'low' });
-    const highTask = createTask('High priority', { priority: 'high' });
+    createTask('Low priority', { priority: 'low' });
+    createTask('High priority', { priority: 'high' });
     const next = getNextTask();
     // Should get a task back (high priority comes first)
     expect(next).toBeDefined();

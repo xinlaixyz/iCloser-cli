@@ -3,7 +3,7 @@
 ## 测试策略
 
 当前项目采用分层测试策略：
-- **单元测试** (vitest)：覆盖核心模块（116 个测试文件，覆盖扫描器、任务引擎、AI 输出协议、验证器、内存系统、审计、安全、Agent 管理器等）
+- **单元测试** (vitest)：覆盖核心模块（121 个测试文件，覆盖扫描器、任务引擎、AI 输出协议、验证器、内存系统、审计、安全、Agent 管理器、工具编排器等）
 - **Smoke 测试** (18 个独立脚本)：端到端验证发布质量，覆盖安装、REPL 交互、多语言支持、Agent 执行、Web 搜索、自动修复等场景
 - **CI/CD 集成**：GitHub Actions 自动运行，PR 门禁 + 多平台矩阵
 
@@ -26,6 +26,7 @@ npm run test:watch
 
 # 运行特定测试文件
 npx vitest run tests/scanner.test.ts
+npx vitest run tests/tool-orchestrator.test.ts
 
 # 带覆盖率报告
 npx vitest run --coverage
@@ -40,7 +41,7 @@ npm run smoke:web-search # 网络搜索测试
 
 ## 测试文件清单
 
-### 单元测试（116 个文件，下表列出全部核心文件及本轮新增文件）
+### 单元测试（121 个文件，下表列出全部核心文件及本轮新增文件）
 
 | 测试文件 | 覆盖模块 |
 |----------|----------|
@@ -79,6 +80,7 @@ npm run smoke:web-search # 网络搜索测试
 | `tests/task-engine.test.ts` | 任务引擎 |
 | `tests/task-loop.test.ts` | 任务循环 |
 | `tests/tool-registry.test.ts` | 工具注册表 |
+| `tests/tool-orchestrator.test.ts` | 工具编排器：意图路由、任务模板、Observe/Recover、执行记忆 |
 | `tests/repl-tool-viz.test.ts` | REPL 工具执行可视化 |
 | `tests/tool-executor-web-search-root.test.ts` | web_search 项目级缓存 rootPath 回归 |
 | `tests/verifier.test.ts` | 验证器 |
@@ -132,6 +134,7 @@ npm run smoke:web-search # 网络搜索测试
 ```bash
 npx vitest run tests/tool-executor.test.ts tests/tool-executor-extra.test.ts tests/tool-loop.test.ts tests/tool-registry.test.ts
 npx vitest run tests/repl-tool-viz.test.ts tests/tool-loop.test.ts
+npx vitest run tests/tool-orchestrator.test.ts
 npx tsc --noEmit
 npm run lint
 ```
@@ -141,7 +144,7 @@ npm run lint
 ## 测试覆盖目标
 
 源码文件 42 个（不含 scanner-worker.ts），分布在 8 个模块中。
-已有 116 个单元测试文件 + 18 个 smoke 脚本，共 1715 个通过测试用例（2 个跳过，0 个失败）。
+已有 121 个单元测试文件 + 18 个 smoke 脚本，共 1738 个通过测试用例（2 个跳过，0 个失败）。
 
 运行 `ic auto tests` 查看覆盖缺口。
 
@@ -150,8 +153,8 @@ npm run lint
 | 指标 | 数值 |
 |------|------|
 | 语句覆盖率 | **60.02%**（17028 / 28370） |
-| 测试用例数 | 1715 通过，2 跳过，0 失败 |
-| 测试文件数 | 116 个（含 3 个 acceptance） |
+| 测试用例数 | 1738 通过，2 跳过，0 失败 |
+| 测试文件数 | 121 个（含 3 个 acceptance） |
 | 前次基准 | ~55.92% |
 | 本轮净增 | +4.10 个百分点（+1165 语句） |
 
@@ -172,6 +175,25 @@ npm run lint
 - 文件工具（writeFiles 错误路径、readFileChunks 分块读取）
 - 配置管理（setAIProvider、saveConfig/loadConfig、配置验证）
 - 代码能力架构师补漏（web_search rootPath 项目级缓存、doc-reader 加载回归、PDF 工具噪音抑制）
+- 工具编排器（任务意图分类、模板化工具计划、失败分类、恢复动作、执行记忆摘要）
+
+### 工具编排器验收
+
+T1-T4 工具能力最低验收命令：
+
+```bash
+npx vitest run tests/tool-orchestrator.test.ts
+npm run build
+node dist/index.js orchestrate "启动项目" --json
+node dist/index.js orchestrate "发布检查" --json
+node dist/index.js orchestrate "解释 diff 风险"
+```
+
+验收标准：
+- `ic orchestrate` 和 REPL `/orchestrate` 都能展示工具计划、步骤结果、失败观察、恢复建议和执行记忆。
+- 默认命令步骤必须是 dry-run，不得在无 `--execute` 时启动服务、安装依赖或修改系统。
+- `--json` 输出必须使用 JSON envelope，且非 git 目录、缺依赖、命令不可用等场景不得泄漏 fatal 噪音。
+- 工具结果必须进入执行记忆，至少包含 facts、failures、verified、decisions 四类摘要。
 
 ## CI 集成
 
@@ -240,7 +262,10 @@ npm run lint
 npm test
 npm run smoke
 npm run smoke:tools
+npm run macos:acceptance
 ```
+
+`npm run macos:acceptance` 在非 macOS 主机上会以 skipped 方式退出，并列出必须在 macOS 执行的命令；可用 `-- --json --no-report` 生成机器可读状态，或用 `-- --report-dir=<path>` / `ICLOSER_MACOS_REPORT_DIR=<path>` 保存 `MACOS_ACCEPTANCE_YYYY-MM-DD.md`。
 
 macOS 用户路径 smoke：
 

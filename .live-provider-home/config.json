@@ -1,0 +1,14 @@
+{
+  "ai": {
+    "provider": "deepseek",
+    "model": "deepseek-v4-pro",
+    "maxTokens": 100000,
+    "temperature": 0.3
+  },
+  "execution": {
+    "defaultMode": "preview",
+    "maxRetries": 3,
+    "maxParallelTasks": 3
+  },
+  "installed": "2026-05-21T07:48:08.115Z"
+}

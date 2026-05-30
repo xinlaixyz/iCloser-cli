@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { parseDiff, renderDiff, renderDiffBrief, filesToDiff } from '../src/cli/diff-renderer.js';
+import {
+  buildPendingDiffSummary,
+  filesToDiff,
+  parseDiff,
+  renderDiff,
+  renderDiffBrief,
+  renderPendingDiffSummary,
+} from '../src/cli/diff-renderer.js';
 
 describe('diff-renderer (S20.4)', () => {
   const sampleUnifiedDiff = `diff --git a/src/config.ts b/src/config.ts
@@ -92,6 +99,36 @@ describe('diff-renderer (S20.4)', () => {
       expect(diff).toContain('diff --git');
       expect(diff).toContain('test.ts');
       expect(diff).toContain('+line1');
+    });
+  });
+
+  describe('pending diff summary', () => {
+    it('summarizes pending H5 delivery with risk and browser verification', () => {
+      const summary = buildPendingDiffSummary([{
+        path: 'login.html',
+        content: '<!doctype html>\n<input id="phone">\n<button>登录</button>',
+      }]);
+
+      expect(summary.fileCount).toBe(1);
+      expect(summary.additions).toBe(3);
+      expect(summary.highestRisk).toBe('low');
+      expect(summary.files[0].likelyIntent).toContain('页面');
+      expect(summary.nextChecks.join(' ')).toContain('浏览器');
+
+      const rendered = renderPendingDiffSummary(summary);
+      expect(rendered).toContain('login.html');
+      expect(rendered).toContain('建议验证');
+    });
+
+    it('marks large source changes as higher risk', () => {
+      const summary = buildPendingDiffSummary([{
+        path: 'src/cli/repl.ts',
+        previousContent: '',
+        content: Array.from({ length: 140 }, (_, i) => `line ${i}`).join('\n'),
+      }]);
+
+      expect(['medium', 'high']).toContain(summary.highestRisk);
+      expect(summary.nextChecks).toContain('npx tsc --noEmit');
     });
   });
 });

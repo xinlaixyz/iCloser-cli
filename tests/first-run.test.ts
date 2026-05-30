@@ -127,8 +127,9 @@ describe('inferProviderFromApiKey', () => {
     expect(inferProviderFromApiKey('sk-unknown-prefix-key-12345')).toBe('deepseek');
   });
 
-  it('uses custom fallback provider', () => {
-    expect(inferProviderFromApiKey('sk-unknown', 'claude')).toBe('claude');
+  it('does not misclassify generic sk keys as Claude', () => {
+    expect(inferProviderFromApiKey('sk-unknown', 'claude')).toBe('deepseek');
+    expect(inferProviderFromApiKey('sk-unknown', 'openai')).toBe('deepseek');
   });
 
   it('returns deepseek when fallback is mock', () => {

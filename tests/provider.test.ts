@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   createProvider,
+  buildOpenAICompatibleUserContent,
   formatProviderKeyGuidance,
   getAvailableProviders,
   getProviderKeyGuidance,
@@ -10,6 +11,9 @@ import {
   isAIProvider,
   isLikelyApiKey,
   maskApiKey,
+  normalizeProviderForApiKey,
+  resolveProviderRequestModel,
+  sanitizeDeepSeekMessageContent,
   smokeTestProvider,
 } from '../src/ai/provider.js';
 
@@ -167,7 +171,51 @@ describe('mock provider', () => {
     expect(isLikelyApiKey('hello world')).toBe(false);
     expect(inferProviderFromApiKey('sk-ant-1234567890abcdefghijklmnop')).toBe('claude');
     expect(inferProviderFromApiKey('sk-1234567890abcdefghijklmnop', 'deepseek')).toBe('deepseek');
+    expect(inferProviderFromApiKey('sk-1234567890abcdefghijklmnop', 'claude')).toBe('deepseek');
+    expect(inferProviderFromApiKey('sk-1234567890abcdefghijklmnop', 'qwen')).toBe('deepseek');
+    expect(inferProviderFromApiKey('sk-1234567890abcdefghijklmnop', 'openai')).toBe('deepseek');
     expect(maskApiKey('sk-1234567890abcdefghijklmnop')).toBe('sk-123...mnop');
+  });
+
+  it('maps DeepSeek product aliases to public API request models', () => {
+    expect(resolveProviderRequestModel('deepseek', 'deepseek-v4-pro')).toBe('deepseek-v4-pro');
+    expect(resolveProviderRequestModel('deepseek', 'deepseek-v4-flash')).toBe('deepseek-v4-flash');
+    expect(resolveProviderRequestModel('deepseek', '')).toBe('deepseek-v4-pro');
+    expect(resolveProviderRequestModel('openai', 'gpt-4o')).toBe('gpt-4o');
+  });
+
+  it('repairs provider/key mismatches from pasted generic keys', () => {
+    expect(normalizeProviderForApiKey('claude', 'sk-1234567890abcdefghijklmnop')).toBe('deepseek');
+    expect(normalizeProviderForApiKey('qwen', 'sk-1234567890abcdefghijklmnop')).toBe('deepseek');
+    expect(normalizeProviderForApiKey('mock', 'sk-1234567890abcdefghijklmnop')).toBe('deepseek');
+    expect(normalizeProviderForApiKey('openai', 'sk-1234567890abcdefghijklmnop')).toBe('deepseek');
+    expect(normalizeProviderForApiKey('claude', 'sk-ant-1234567890abcdefghijklmnop')).toBe('claude');
+  });
+
+  it('passes tool and conversation history into OpenAI-compatible providers', () => {
+    const content = buildOpenAICompatibleUserContent({
+      systemPrompt: 'test',
+      task: '告诉我这个网页是什么',
+      history: '[工具(web_fetch)] 标题: iCloser | 加密钱包、自托管与Web3支付入口',
+      context: {
+        projectMeta: '',
+        relevantMemory: '',
+        totalTokens: 0,
+        budgetUsed: 0,
+        relevantCode: [],
+      },
+    });
+    expect(content).toContain('## 对话与工具历史');
+    expect(content).toContain('iCloser | 加密钱包、自托管与Web3支付入口');
+  });
+
+  it('escapes DeepSeek message text that contains Windows paths and regex backslashes', () => {
+    const raw = 'D:\\temp\\Codex\\iCloserxyz\\financial-risk-disclosure\nsearch_code /1\\.0[^0-9]/\ncss: content: "\\x";';
+    const sanitized = sanitizeDeepSeekMessageContent(raw);
+    expect(sanitized).toContain('D:/temp/Codex');
+    expect(sanitized).toContain('/1/.0[^0-9]/');
+    expect(sanitized).toContain('/x');
+    expect(sanitized).not.toContain('\\');
   });
 });
 

@@ -6,10 +6,17 @@ export interface Skill {
   triggers: string[];       // keywords that trigger this skill
   systemPrompt: string;    // injected into AI system prompt when triggered
   tools?: string[];        // recommended tools for this skill
-  category: 'code' | 'review' | 'test' | 'docs' | 'security' | 'custom';
+  category?: 'code' | 'review' | 'test' | 'docs' | 'security' | 'custom';
 }
 
 const BUILT_IN_SKILLS: Skill[] = [
+  {
+    name: 'project-index',
+    description: '项目分析：识别项目结构、技术栈、模块职责和架构模式',
+    triggers: ['分析项目', '项目结构', '技术栈', '架构', 'project overview'],
+    systemPrompt: '你正在分析项目。步骤: 1) 读取构建文件识别技术栈 2) 列出目录结构 3) 识别模块和职责 4) 分析架构模式。最后输出项目画像摘要。',
+    tools: ['read_file', 'list_dir', 'get_project_overview', 'search_code'],
+  },
   {
     name: 'code-review',
     description: '代码审查：检查代码质量、风格一致性和潜在bug',
@@ -19,20 +26,12 @@ const BUILT_IN_SKILLS: Skill[] = [
     category: 'review',
   },
   {
-    name: 'test-gen',
-    description: '测试生成：为指定代码生成单元测试',
-    triggers: ['生成测试', '写测试', 'test gen', 'generate test', '补充测试'],
-    systemPrompt: '你正在生成测试代码。必须: 1) 每个函数至少2个测试用例 2) 包含边界条件测试 3) 使用项目已有的测试框架 4) 测试文件命名遵循项目约定。',
+    name: 'test-generator',
+    description: '测试生成：为源码自动生成单元测试，检测空测试和缺失断言',
+    triggers: ['生成测试', '写测试', '补测试', 'test gen', 'generate test', '单元测试', '测试覆盖'],
+    systemPrompt: '你正在生成测试代码。必须: 1) 每个函数至少2个测试用例 2) 包含边界条件测试 3) 使用项目已有的测试框架 4) 测试文件命名遵循项目约定 5) 确保每个测试至少有一个断言。',
     tools: ['read_file', 'search_code', 'code_intel'],
     category: 'test',
-  },
-  {
-    name: 'api-doc',
-    description: 'API文档生成：从代码生成接口文档',
-    triggers: ['生成文档', '写文档', 'API文档', '接口文档', 'api doc'],
-    systemPrompt: '你正在生成API文档。提取: 1) 路由路径和方法 2) 请求参数和类型 3) 响应结构 4) 错误码。按OpenAPI格式组织。',
-    tools: ['read_file', 'search_code', 'code_intel'],
-    category: 'docs',
   },
   {
     name: 'security-review',
@@ -41,6 +40,21 @@ const BUILT_IN_SKILLS: Skill[] = [
     systemPrompt: '你正在执行安全检查。扫描: 1) SQL注入 2) XSS 3) 硬编码密钥 4) 不安全依赖 5) 越权风险。输出安全报告含风险等级。',
     tools: ['read_file', 'search_code', 'web_search'],
     category: 'security',
+  },
+  {
+    name: 'local-tools',
+    description: '本地工具执行：构建、测试、lint、启动服务等本地命令编排',
+    triggers: ['构建', '测试', '启动', 'lint', 'build', 'run test', 'start server'],
+    systemPrompt: '你正在编排本地工具执行。步骤: 1) 先识别项目构建系统 2) 选择合适的命令 3) dry-run 预览 4) 执行并观察结果 5) 失败时分析错误并建议修复。始终先预览再执行。',
+    tools: ['run_command', 'read_file', 'get_project_overview'],
+  },
+  {
+    name: 'api-doc',
+    description: 'API文档生成：从代码生成接口文档',
+    triggers: ['生成文档', '写文档', 'API文档', '接口文档', 'api doc'],
+    systemPrompt: '你正在生成API文档。提取: 1) 路由路径和方法 2) 请求参数和类型 3) 响应结构 4) 错误码。按OpenAPI格式组织。',
+    tools: ['read_file', 'search_code', 'code_intel'],
+    category: 'docs',
   },
   {
     name: 'refactor-guide',

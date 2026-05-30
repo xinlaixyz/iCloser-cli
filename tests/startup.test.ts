@@ -135,6 +135,38 @@ describe('detectSubprojects (P3-1)', () => {
   });
 });
 
+describe('REPL startup detection', () => {
+  it('detects Android Gradle projects as install-and-launch flows, not Java bootRun', async () => {
+    const dir = mkdtemp();
+    fs.mkdirSync(path.join(dir, 'app', 'src', 'main'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'build.gradle.kts'), 'plugins { alias(libs.plugins.android.application) apply false }');
+    fs.writeFileSync(path.join(dir, 'settings.gradle.kts'), 'pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }');
+    fs.writeFileSync(path.join(dir, 'gradlew.bat'), '@echo off\r\n');
+    fs.writeFileSync(path.join(dir, 'local.properties'), 'sdk.dir=C\\:\\\\Android\\\\sdk\n');
+    fs.writeFileSync(path.join(dir, 'app', 'build.gradle.kts'), [
+      'plugins { id("com.android.application") }',
+      'android {',
+      '  namespace = "com.example"',
+      '  defaultConfig { applicationId = "com.example.app" }',
+      '}',
+    ].join('\n'));
+    fs.writeFileSync(path.join(dir, 'app', 'src', 'main', 'AndroidManifest.xml'), '<manifest><application /></manifest>');
+
+    const { detectProjectStartInfo } = await import('../src/cli/startup.js');
+    const info = await detectProjectStartInfo(dir, fs.promises, path);
+
+    expect(info).not.toBeNull();
+    expect(info!.type).toBe('Android (Gradle)');
+    expect(info!.label).toBe('Android assembleDebug + install + launch');
+    expect(info!.background).toBe(false);
+    expect(info!.args.join(' ')).toContain('assembleDebug');
+    expect(info!.args.join(' ')).toContain('pm path android');
+    expect(info!.args.join(' ')).toContain('install -r');
+    expect(info!.args.join(' ')).toContain('com.example.app');
+    expect(info!.args.join(' ')).not.toContain('bootRun');
+  });
+});
+
 describe('checkDependencies (P3-3)', () => {
   it('reports Go project missing go.sum', async () => {
     const dir = mkdtemp();

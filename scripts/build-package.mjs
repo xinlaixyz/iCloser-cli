@@ -4,7 +4,7 @@
 //         out/icloser-agent-shell-0.1.0-portable.tar.gz (macOS/Linux)
 
 import { execSync } from 'child_process';
-import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { createGzip } from 'zlib';
@@ -21,7 +21,7 @@ const DIST_DIR = join(OUT, NAME);
 console.log(`\n  Building offline package: ${NAME}\n`);
 
 // Clean output
-if (existsSync(OUT)) execSync(`rm -rf "${OUT}"`, { shell: true, cwd: ROOT });
+if (existsSync(OUT)) rmSync(OUT, { recursive: true, force: true });
 mkdirSync(DIST_DIR, { recursive: true });
 
 // 1. Build TypeScript
@@ -63,7 +63,11 @@ IC_HOME="$(cd "$(dirname "$0")" && pwd)"
 export PATH="$IC_HOME/node_modules/.bin:$PATH"
 exec node "$IC_HOME/dist/index.js" "$@"
 `);
-execSync(`chmod +x "${join(DIST_DIR, 'ic')}"`, { shell: true });
+try {
+  chmodSync(join(DIST_DIR, 'ic'), 0o755);
+} catch {
+  // Windows may ignore POSIX executable bits; the archive is still usable.
+}
 console.log('        ✓ ic');
 
 // Copy install scripts
@@ -77,10 +81,15 @@ console.log('  [6/6] Creating archives...');
 
 // zip (Windows)
 try {
-  execSync(`powershell -Command "Compress-Archive -Path '${DIST_DIR}\\*' -DestinationPath '${join(OUT, NAME + '.zip')}' -Force"`, { cwd: ROOT, stdio: 'pipe' });
+  execSync(`powershell -NoProfile -Command "Compress-Archive -Path '${DIST_DIR}\\*' -DestinationPath '${join(OUT, NAME + '.zip')}' -Force"`, { cwd: ROOT, stdio: 'ignore' });
   console.log(`        ✓ ${NAME}.zip`);
 } catch {
-  console.log('        ! zip failed (try 7-Zip or WinRAR)');
+  try {
+    execSync(`tar -a -cf "${join(OUT, NAME + '.zip')}" -C "${OUT}" "${NAME}"`, { cwd: ROOT, stdio: 'pipe' });
+    console.log(`        ✓ ${NAME}.zip`);
+  } catch {
+    console.log('        ! zip failed (try 7-Zip or WinRAR)');
+  }
 }
 
 // tar.gz (macOS/Linux)
@@ -92,7 +101,7 @@ try {
 }
 
 // Summary
-const zipSize = existsSync(join(OUT, NAME + '.zip')) ? formatSize(execSync(`wc -c < "${join(OUT, NAME + '.zip')}"`, { shell: true, encoding: 'utf-8' }).trim()) : 'N/A';
+const zipSize = existsSync(join(OUT, NAME + '.zip')) ? formatSize(statSync(join(OUT, NAME + '.zip')).size) : 'N/A';
 
 console.log(`\n  ┌─ Package Ready ─────────────────────────────┐`);
 console.log(`  │  ${OUT}/${NAME}.zip      ${zipSize}`);
@@ -105,18 +114,15 @@ console.log(`  └────────────────────�
 
 // ── Helpers ──────────────────────────────────────────
 function copyDir(src, dest) {
-  mkdirSync(dest, { recursive: true });
-  execSync(process.platform === 'win32'
-    ? `xcopy /E /I /Y /Q "${src}" "${dest}"`
-    : `cp -r "${src}/." "${dest}/"`, { cwd: ROOT, stdio: 'pipe' });
+  cpSync(src, dest, { recursive: true, force: true });
 }
 
 function copyFile(src, dest) {
-  writeFileSync(dest, readFileSync(src));
+  copyFileSync(src, dest);
 }
 
 function formatSize(bytes) {
-  const n = parseInt(bytes);
+  const n = typeof bytes === 'number' ? bytes : parseInt(bytes);
   if (isNaN(n)) return bytes;
   if (n > 1024 * 1024) return (n / (1024 * 1024)).toFixed(1) + ' MB';
   if (n > 1024) return (n / 1024).toFixed(1) + ' KB';

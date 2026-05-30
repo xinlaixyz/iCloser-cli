@@ -121,7 +121,36 @@ export function removeWorktree(rootPath: string, worktreePath: string): boolean 
     gitQuiet(['worktree', 'remove', worktreePath], rootPath, 15000);
     return true;
   } catch {
-    return false;
+    // Force-remove if normal removal fails (e.g., dirty worktree)
+    try { gitQuiet(['worktree', 'remove', '--force', worktreePath], rootPath, 15000); return true; } catch { return false; }
+  }
+}
+
+export function listWorktrees(rootPath: string): WorktreeInfo[] {
+  try {
+    const out = gitQuiet(['worktree', 'list', '--porcelain'], rootPath, 15000);
+    const worktrees: WorktreeInfo[] = [];
+    let current: Partial<WorktreeInfo> = {};
+    for (const line of out.split('\n')) {
+      if (line.startsWith('worktree ')) current.path = line.slice(9);
+      else if (line.startsWith('branch ')) {
+        current.branch = line.slice(7).replace(/^refs\/heads\//, '');
+        if (current.path) worktrees.push({ path: current.path, branch: current.branch });
+        current = {};
+      }
+    }
+    return worktrees;
+  } catch {
+    return [];
+  }
+}
+
+export function pruneWorktrees(rootPath: string): number {
+  try {
+    const out = gitQuiet(['worktree', 'prune'], rootPath, 15000);
+    return out.trim() ? 1 : 0;
+  } catch {
+    return 0;
   }
 }
 

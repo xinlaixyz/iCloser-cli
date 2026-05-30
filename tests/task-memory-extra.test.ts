@@ -12,7 +12,7 @@ import {
 } from '../src/core/task-memory.js';
 import type { Task } from '../src/types.js';
 
-const TASK_MEMORY_PATH = '.icloser/task-memory.json';
+const _TASK_MEMORY_PATH = '.icloser/task-memory.json';
 
 function makeTask(description: string, id = 'task-001'): Task {
   return {

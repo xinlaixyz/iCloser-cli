@@ -1,6 +1,6 @@
 // Unit tests for src/utils/fs.ts — pure functions and async helpers
 import { describe, it, expect, afterAll } from 'vitest';
-import { mkdtemp, mkdir, writeFile as nodWriteFile, rm } from 'fs/promises';
+import { mkdtemp, writeFile as nodWriteFile, rm } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import {

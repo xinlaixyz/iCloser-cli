@@ -12,7 +12,7 @@ AgentCode — 基于 TypeScript 构建，定位是本地工程执行器 + Claude
 
 产品底线：具备 Claude Code 级代码能力，包括读代码库、跨文件修改、运行验证、解释 diff、失败后修复、回滚/提交；同时通过 Memory Kernel 形成跨会话、跨任务的项目级长期记忆。
 
-源码文件：57+ 个 | 测试文件：116 个 | 测试基线：1715 passed / 2 skipped | Memory Kernel: 17 模块
+源码文件：60+ 个 | 测试文件：119 个 | 测试基线：1723 passed / 2 skipped | Memory Kernel: 17 模块
 
 ## 快速开始
 
@@ -33,12 +33,40 @@ npm ci
 npm run build
 npm test
 npm run smoke:tools
+npm run macos:acceptance
 ```
+
+## 团队协作草稿
+
+```bash
+ic issue "Add login audit trail" --json
+ic pr --title "Improve developer experience" --json
+ic pr --task <task-id> --title "Ship task evidence" --json
+ic commit-draft --json
+ic diff explain
+```
+
+这些命令只生成本地计划和草稿，不会自动提交、推送或调用 GitHub API。`ic pr` 默认会尝试附加最近一次任务报告和验证日志，方便把验收证据带进团队协作。
+
+## 发布信任门禁
+
+```bash
+npm run release:trust       # 快速本地门禁
+npm run release:trust:full  # 发布前完整门禁
+npm run smoke:golden        # Claude Code 替代品本地黄金路径 smoke
+```
+
+`release:trust` 会生成 `doc/release/TRUST_REPORT_YYYY-MM-DD.md`，并检查 warning budget；默认预算为 20，可用 `ICLOSER_WARNING_BUDGET=10` 或 `-- --warning-budget=10` 继续收紧。受限环境中可用 `-- --report-dir=<path>` 或 `ICLOSER_RELEASE_REPORT_DIR=<path>` 指定可写报告目录。
+
+真实 Provider 黄金路径必须由 AI Provider 生成计划和代码变更。`npm run smoke:golden:real` 默认会拒绝 scripted fallback；如只想调试证据链，可显式运行 `node scripts/golden-path-real.mjs --allow-scripted-fallback --artifact-dir=<path>`，但该结果不能作为 G1 满分验收。
 
 ## 记忆文件
 
 ```bash
 ic mem manifests
+ic mem edit
+ic mem used "修复登录测试"
+ic mem why <id-or-keyword>
 ic mem import
 ic mem recall "测试前需要做什么"
 ic mem export AGENTS.md

@@ -251,9 +251,18 @@ export class SQLiteStore {
 
 function loadSQLiteModule(): SQLiteModule | null {
   if (process.env.ICLOSER_DISABLE_SQLITE_INDEX === '1') return null;
+  const originalEmitWarning = process.emitWarning;
+  process.emitWarning = ((warning: string | Error, ...args: unknown[]) => {
+    const text = warning instanceof Error ? warning.message : String(warning);
+    const type = typeof args[0] === 'string' ? args[0] : '';
+    if (type === 'ExperimentalWarning' && text.includes('SQLite')) return;
+    return (originalEmitWarning as unknown as (warning: string | Error, ...args: unknown[]) => void)(warning, ...args);
+  }) as typeof process.emitWarning;
   try {
     return require('node:sqlite') as SQLiteModule;
   } catch {
     return null;
+  } finally {
+    process.emitWarning = originalEmitWarning;
   }
 }

@@ -12,7 +12,7 @@ import {
   renderTestWritePlan,
   writeTests,
 } from '../src/core/autotest.js';
-import type { TestWritePlan, TestDraft } from '../src/core/autotest.js';
+import type { TestWritePlan } from '../src/core/autotest.js';
 
 const roots: string[] = [];
 async function makeDir(): Promise<string> {

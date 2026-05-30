@@ -2,7 +2,7 @@
 //   src/core/security.ts  — getEffectiveMode (239-245), scanTaskSecurity (285-294)
 //   src/cli/output.ts     — spinner (159-164), printProjectIdentity (177-188)
 //   src/core/memory/jsonl-store.ts — clear() (96-102), rotateIfNeeded (109-118)
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtemp, rm } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';

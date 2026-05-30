@@ -322,6 +322,56 @@ export function registerTaskCommands(program: Command): void {
     });
 
   // ============================================================
+  // ic task-run — long task tool orchestration wrapper
+  // ============================================================
+  program.command('task-run')
+    .description('长任务自动编排：计划、执行、观察、恢复、验收')
+    .argument('<task...>', '任务描述')
+    .option('--execute', '允许执行真实命令；默认 dry-run')
+    .option('--json', 'JSON 格式输出')
+    .option('--max-steps <n>', '最多执行步骤数', '16')
+    .action(async (parts: string[], options?: { execute?: boolean; json?: boolean; maxSteps?: string }) => {
+      const rootPath = process.cwd();
+      const task = parts.join(' ').trim();
+      const maxSteps = parseInt(options?.maxSteps || '16', 10) || 16;
+      try {
+        const { runToolOrchestrator } = await import('../core/tool-orchestrator.js');
+        const events: { phase: string; message: string; stepId?: string; title?: string; status?: string }[] = [];
+        if (!options?.json) {
+          section('Task Run');
+          detail('任务', chalk.cyan(task));
+          detail('模式', options?.execute ? chalk.yellow('execute') : chalk.green('dry-run'));
+          console.log();
+        }
+        const result = await runToolOrchestrator({
+          rootPath,
+          task,
+          executeCommands: Boolean(options?.execute),
+          maxSteps,
+          onProgress: event => {
+            events.push({ phase: event.phase, message: event.message, stepId: event.step?.id, title: event.step?.title, status: event.step?.status });
+            if (options?.json) return;
+            if (event.phase === 'plan') console.log(`  ${chalk.cyan('◇')} ${event.message}`);
+            if (event.phase === 'step_start' && event.step) console.log(`  ${chalk.cyan('◉')} ${event.step.id} ${event.step.title}`);
+            if (event.phase === 'step_result' && event.step) {
+              const icon = event.step.status === 'success' ? chalk.green('✓') : chalk.red('✗');
+              console.log(`  ${icon} ${event.step.id} ${chalk.dim((event.step.result || '').replace(/\s+/g, ' ').slice(0, 180))}`);
+            }
+            if (event.phase === 'recover' && event.step) console.log(`  ${chalk.yellow('↻')} ${event.step.title}`);
+            if (event.phase === 'done') console.log(`  ${chalk.green('◆')} done`);
+          },
+        });
+        const payload = { ...result, events };
+        if (options?.json) console.log(JSON.stringify(jsonEnvelope('task-run', payload), null, 2));
+        else {
+          console.log();
+          console.log(result.summary);
+        }
+        if (!result.success) process.exitCode = 1;
+      } catch (err) { printError(err as Error); }
+    });
+
+  // ============================================================
   // ic d — diff
   // ============================================================
   program.command('d')

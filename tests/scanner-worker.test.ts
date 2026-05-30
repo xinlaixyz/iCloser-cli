@@ -1,6 +1,6 @@
 // Tests for src/core/scanner-worker.ts — run as an actual worker thread
 import { describe, it, expect } from 'vitest';
-import { Worker, isMainThread } from 'worker_threads';
+import { Worker } from 'worker_threads';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 

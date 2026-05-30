@@ -7,7 +7,7 @@ import {
   allTasksDone,
   formatDAGLevels,
   type PlanTask,
-  type DevPlan,
+  // type DevPlan,
 } from '../src/core/task-planner.js';
 
 function makeTask(overrides: Partial<PlanTask> = {}): PlanTask {

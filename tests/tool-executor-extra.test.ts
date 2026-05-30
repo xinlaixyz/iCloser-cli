@@ -5,7 +5,7 @@
 //          read_docx, read_xlsx, onToolExecution, offToolExecution, formatToolStart,
 //          formatToolEnd, buildToolCitation, getToolPermissionMatrix, renderToolPermissionTable,
 //          renderToolSandboxNote
-import { describe, it, expect, afterAll, vi } from 'vitest';
+import { describe, it, expect, afterAll } from 'vitest';
 import { mkdtemp, writeFile, rm, mkdir } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';

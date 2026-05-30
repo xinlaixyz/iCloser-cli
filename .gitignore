@@ -10,3 +10,7 @@ Thumbs.db
 *.tgz
 notes.txt
 package.js
+out/
+test-output.txt
+process.exit(0)
+

@@ -102,7 +102,7 @@ const PROVIDER_INFOS: ProviderInfo[] = [
     name: 'deepseek',
     label: 'DeepSeek',
     defaultModel: 'deepseek-v4-pro',
-    availableModels: ['deepseek-v4-pro', 'deepseek-v3', 'deepseek-r1'],
+    availableModels: ['deepseek-v4-pro', 'deepseek-v4-flash'],
     envVars: ['DEEPSEEK_API_KEY'],
     requiresApiKey: true,
   },
@@ -184,7 +184,52 @@ export function inferProviderFromApiKey(value: string, fallback: AIProvider = 'd
   if (key.startsWith('sk-ant-')) return 'claude';
   if (key.startsWith('sk-or-')) return 'openai';
   if (key.startsWith('dashscope-') || key.startsWith('qwen-') || key.startsWith('ak-')) return 'qwen';
+  if (key.startsWith('sk-')) {
+    return 'deepseek';
+  }
   return fallback === 'mock' ? 'deepseek' : fallback;
+}
+
+export function normalizeProviderForApiKey(provider: AIProvider, apiKey?: string): AIProvider {
+  const key = (apiKey || '').trim();
+  if (!key) return provider;
+  const inferred = inferProviderFromApiKey(key, provider);
+  if (provider === 'claude' && !key.startsWith('sk-ant-')) return inferred;
+  if (provider === 'openai' && key.startsWith('sk-') && !key.startsWith('sk-or-')) return inferred;
+  if (provider === 'qwen' && !(key.startsWith('dashscope-') || key.startsWith('qwen-') || key.startsWith('ak-'))) return inferred;
+  if (provider === 'mock') return inferred;
+  return provider;
+}
+
+export function resolveProviderRequestModel(provider: AIProvider, model: string): string {
+  if (provider !== 'deepseek') return model;
+  const normalized = model.trim().toLowerCase();
+  if (!normalized) return 'deepseek-v4-pro';
+  if (normalized === 'deepseek-v4-pro' || normalized === 'deepseek-v4-flash') return normalized;
+  return model;
+}
+
+export function buildOpenAICompatibleUserContent(prompt: AIPrompt): string {
+  const sections = [
+    prompt.task,
+    prompt.context.projectMeta ? `## 项目概况\n${prompt.context.projectMeta}` : '',
+    prompt.context.relevantCode.length > 0
+      ? `## 相关代码\n${prompt.context.relevantCode.map(c => `// ${c.file}\n${c.content}`).join('\n\n')}`
+      : '',
+    prompt.context.relevantMemory ? `## 项目记忆\n${prompt.context.relevantMemory}` : '',
+    prompt.context.externalKnowledge ? `## 网络搜索结果\n${prompt.context.externalKnowledge}` : '',
+    prompt.context.astHints ? `## 代码调用关系\n${prompt.context.astHints}` : '',
+    prompt.history ? `## 对话与工具历史\n${prompt.history}` : '',
+  ];
+  return sections.filter(Boolean).join('\n\n');
+}
+
+export function sanitizeDeepSeekMessageContent(text: string): string {
+  return text
+    .replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/g, '�')
+    .replace(/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '�')
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, ' ')
+    .replace(/\\/g, '/');
 }
 
 export function maskApiKey(value: string): string {
@@ -695,16 +740,22 @@ abstract class OpenAICompatibleProvider implements AIProviderAdapter {
   protected abstract resolveApiKey(): string;
   protected abstract resolveBaseURL(): string | undefined;
   protected abstract providerEnvVars(): string[];
+  protected resolveRequestModel(): string { return this.config.model; }
 
   /** Build the full user-facing prompt string from context fields. */
   protected buildUserContent(prompt: AIPrompt): string {
-    return (
-      prompt.task + '\n\n上下文：\n' +
-      prompt.context.relevantCode.map(c => `// ${c.file}\n${c.content}`).join('\n\n') +
-      (prompt.context.relevantMemory ? '\n\n## 项目记忆\n' + prompt.context.relevantMemory : '') +
-      (prompt.context.externalKnowledge ? '\n\n## 网络搜索结果\n' + prompt.context.externalKnowledge : '') +
-      (prompt.context.astHints ? '\n\n## 代码调用关系\n' + prompt.context.astHints : '')
-    );
+    return buildOpenAICompatibleUserContent(prompt);
+  }
+
+  protected prepareMessageContent(content: string): string {
+    return content;
+  }
+
+  protected buildMessages(prompt: AIPrompt): Array<{ role: 'system' | 'user'; content: string }> {
+    return [
+      { role: 'system', content: this.prepareMessageContent(prompt.systemPrompt) },
+      { role: 'user', content: this.prepareMessageContent(this.buildUserContent(prompt)) },
+    ];
   }
 
   async chat(prompt: AIPrompt, tools?: ToolDefinition[]): Promise<AIResponse> {
@@ -713,13 +764,10 @@ abstract class OpenAICompatibleProvider implements AIProviderAdapter {
       const client = new OpenAI({ apiKey: this.resolveApiKey(), baseURL: this.resolveBaseURL() });
 
       const response = await client.chat.completions.create({
-        model: this.config.model,
+        model: this.resolveRequestModel(),
         max_tokens: this.config.maxTokens,
         temperature: this.config.temperature,
-        messages: [
-          { role: 'system', content: prompt.systemPrompt },
-          { role: 'user', content: this.buildUserContent(prompt) },
-        ],
+        messages: this.buildMessages(prompt),
         ...(tools?.length ? {
           tools: tools.map(t => ({
             type: 'function' as const,
@@ -730,7 +778,7 @@ abstract class OpenAICompatibleProvider implements AIProviderAdapter {
 
       const choice = response.choices[0];
       const content = choice.message.content || '';
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+       
       const toolCalls: ToolCall[] = (choice.message.tool_calls || []).map((tc: any) => ({
         name: tc.function?.name || '',
         arguments: JSON.parse(tc.function?.arguments || '{}'),
@@ -753,13 +801,10 @@ abstract class OpenAICompatibleProvider implements AIProviderAdapter {
       const client = new OpenAI({ apiKey: this.resolveApiKey(), baseURL: this.resolveBaseURL() });
 
       const stream = await client.chat.completions.create({
-        model: this.config.model,
+        model: this.resolveRequestModel(),
         max_tokens: this.config.maxTokens,
         temperature: this.config.temperature,
-        messages: [
-          { role: 'system', content: prompt.systemPrompt },
-          { role: 'user', content: this.buildUserContent(prompt) },
-        ],
+        messages: this.buildMessages(prompt),
         stream: true,
       });
 
@@ -786,10 +831,12 @@ class DeepSeekProvider extends OpenAICompatibleProvider {
   supportsStreaming = true;
   supportsToolUse = true;
   defaultModel = 'deepseek-v4-pro';
-  availableModels = ['deepseek-v4-pro', 'deepseek-v3', 'deepseek-r1'];
+  availableModels = ['deepseek-v4-pro', 'deepseek-v4-flash'];
   protected resolveApiKey() { return this.config.apiKey || process.env.DEEPSEEK_API_KEY || ''; }
-  protected resolveBaseURL() { return this.config.baseUrl || 'https://api.deepseek.com/v1'; }
+  protected resolveBaseURL() { return this.config.baseUrl || 'https://api.deepseek.com'; }
   protected providerEnvVars() { return ['DEEPSEEK_API_KEY']; }
+  protected resolveRequestModel() { return resolveProviderRequestModel('deepseek', this.config.model); }
+  protected prepareMessageContent(content: string): string { return sanitizeDeepSeekMessageContent(content); }
 }
 
 // ============================================================

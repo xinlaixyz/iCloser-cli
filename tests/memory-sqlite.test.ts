@@ -257,7 +257,6 @@ describe('SQLiteStore — enabled (node:sqlite)', () => {
     try {
       const past = new Date(Date.now() - 86400000).toISOString(); // 1 day ago
       s.insert('episodic', makeEntry('old-1', { created_at: past, updated_at: past }));
-      const count = s.count('episodic');
       const deleted = s.deleteOlderThan('episodic', new Date().toISOString()); // delete all old
       expect(deleted).toBeGreaterThanOrEqual(0); // may delete 0 or more
     } finally { s.close(); }

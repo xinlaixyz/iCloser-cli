@@ -1,6 +1,7 @@
 // Configuration management for iCloser Agent Shell
 import * as path from 'path';
 import { fileExists, readJson, writeJson, ensureDir } from './utils/fs.js';
+import { getProviderInfo, normalizeProviderForApiKey } from './ai/provider.js';
 import type { ICloserConfig, ProjectIdentity, AIProvider, VerifyStage } from './types.js';
 
 const CONFIG_FILENAME = 'icloser.json';
@@ -86,7 +87,7 @@ export async function loadConfig(rootPath: string): Promise<ICloserConfig | null
       const identity = (raw.project && typeof raw.project === 'object' ? (raw.project as any).identity : null) || {};
       const defaults = defaultConfig(projectRoot, identity);
       const config = { ...defaults, ...raw } as ICloserConfig;
-      // Merge with global config for AI settings: only inherit apiKey, never override project choices
+      // Merge global API key and repair obvious provider/key mismatches from paste onboarding.
       const globalConfigPath = getGlobalConfigPath();
       if (await fileExists(globalConfigPath)) {
         try {
@@ -94,6 +95,14 @@ export async function loadConfig(rootPath: string): Promise<ICloserConfig | null
           if (globalConfig.ai && !config.ai.apiKey) {
             const globalAI = globalConfig.ai as Partial<ICloserConfig['ai']>;
             if (globalAI.apiKey) {
+              const normalizedProvider = normalizeProviderForApiKey(
+                (globalAI.provider || config.ai.provider) as AIProvider,
+                globalAI.apiKey,
+              );
+              if (normalizedProvider !== config.ai.provider && config.ai.provider !== 'mock') {
+                config.ai.provider = normalizedProvider;
+                config.ai.model = getProviderInfo(normalizedProvider).defaultModel;
+              }
               config.ai.apiKey = globalAI.apiKey;
             }
           }

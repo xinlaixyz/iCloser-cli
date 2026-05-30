@@ -1,6 +1,6 @@
 // Additional coverage for src/cli/system-runner.ts
 // Targets: startBackgroundCommand, stopStartedProcess, healthCheckProcess, extractLocalUrl edge cases
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import {
   startBackgroundCommand,
   stopStartedProcess,

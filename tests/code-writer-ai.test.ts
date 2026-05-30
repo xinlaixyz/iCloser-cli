@@ -25,7 +25,7 @@ afterAll(async () => {
   }
 });
 
-function makeMinimalIndex(dir: string): ProjectIndex {
+function makeMinimalIndex(_dir: string): ProjectIndex {
   return {
     identity: {
       language: 'typescript',
@@ -222,7 +222,7 @@ describe('generateScaffoldWithAI', () => {
     const dir = await makeDir();
     // Return the same content as the scaffold → should NOT update
     const provider = {
-      chat: async (p: any) => {
+      chat: async (_p: any) => {
         // Extract the scaffold content from the task and return it unchanged
         return { content: '{"content": "same content that wont change"}', tokensUsed: 50 };
       },

@@ -11,6 +11,7 @@ export interface VerifyOptions {
   stages: VerifyStage[];
   maxRetries: number;
   timeout: number;       // ms per stage
+  onProgress?: (stage: VerifyStage, status: 'running' | 'pass' | 'fail' | 'skipped', detail?: string, durationMs?: number) => void;
 }
 
 // ============================================================
@@ -28,97 +29,86 @@ export async function runVerification(
   let allPassed = false;
 
   for (attempts = 1; attempts <= options.maxRetries; attempts++) {
-    stageResults.length = 0; // Reset for retry
+    stageResults.length = 0;
     allPassed = true;
 
-    for (const stage of options.stages) {
-      const result = await runStage(rootPath, identity, stage, options.timeout);
+    // T9: Parallelize compile + lint (independent stages that can run concurrently)
+    const stages = options.stages;
+    let idx = 0;
+
+    while (idx < stages.length) {
+      const stage = stages[idx];
+
+      // Parallel group: compile + lint can run together
+      const canParallelize = stage === 'compile' && stages[idx + 1] === 'lint';
+      if (canParallelize) {
+        options.onProgress?.('compile', 'running', '并行执行 compile + lint', undefined);
+        options.onProgress?.('lint', 'running', undefined, undefined);
+        const [compileResult, lintResult] = await Promise.all([
+          runStage(rootPath, identity, 'compile', options.timeout, options.onProgress),
+          runStage(rootPath, identity, 'lint', options.timeout, options.onProgress),
+        ]);
+        idx += 2;
+
+        const parallelResults = [compileResult, lintResult];
+        const failed = parallelResults.filter(r => r.status === 'fail');
+
+        if (failed.length > 0) {
+          allPassed = false;
+          if (attempts === options.maxRetries) {
+            stageResults.push(...parallelResults);
+            for (let i = idx; i < stages.length; i++) {
+              stageResults.push({ stage: stages[i], status: 'skipped', output: '前序阶段失败，跳过', duration: 0 });
+            }
+            idx = stages.length;
+            break;
+          }
+
+          // Try to repair each failed stage
+          for (const result of failed) {
+            const repaired = await attemptStageRepair(rootPath, identity, result.stage as VerifyStage, result, options.timeout, options.onProgress);
+            if (!repaired) {
+              stageResults.push(...parallelResults.filter(r => r.stage !== result.stage));
+              stageResults.push(result);
+              for (let i = idx; i < stages.length; i++) {
+                stageResults.push({ stage: stages[i], status: 'skipped', output: '前序阶段失败，跳过', duration: 0 });
+              }
+              idx = stages.length;
+              break;
+            }
+          }
+
+          if (idx < stages.length) {
+            stageResults.push(...parallelResults);
+          }
+        } else {
+          stageResults.push(compileResult, lintResult);
+        }
+        continue;
+      }
+
+      // Serial stage execution
+      const result = await runStage(rootPath, identity, stage, options.timeout, options.onProgress);
+      idx++;
 
       if (result.status === 'fail') {
         allPassed = false;
 
-        // If this is the last attempt, don't try remaining stages
         if (attempts === options.maxRetries) {
-          // Mark remaining as skipped
-          const remaining = options.stages.slice(options.stages.indexOf(stage) + 1);
-          for (const s of remaining) {
-            stageResults.push({
-              stage: s,
-              status: 'skipped',
-              output: '前序阶段失败，跳过',
-              duration: 0,
-            });
+          stageResults.push(result);
+          for (let i = idx; i < stages.length; i++) {
+            stageResults.push({ stage: stages[i], status: 'skipped', output: '前序阶段失败，跳过', duration: 0 });
           }
           break;
         }
 
-        // Auto-repair: AI-driven fix with targeted error repair (max 2 repair attempts per stage)
-        let repaired = false;
-        let repairAttempts = 0;
-        while (!repaired && repairAttempts < 2) {
-          repairAttempts++;
-          try {
-            const errorText = result.output + (result.errorDetails || result.stderr || '');
-            const { parseErrorOutput } = await import('./code-writer.js');
-            const errors = parseErrorOutput(errorText);
-            if (errors.length === 0) break; // Can't locate errors, give up
-
-            // Read first 3 affected files in parallel
-            const fileContents: Record<string, string> = {};
-            const reads = errors.slice(0, 3).map(async (e) => {
-              try { fileContents[e.file] = await readFile(path.join(rootPath, e.file)); } catch { /* best-effort */ }
-            });
-            await Promise.all(reads);
-            if (Object.keys(fileContents).length === 0) break;
-
-            // Load config for AI provider
-            const { loadConfig } = await import('../config.js');
-            const config = await loadConfig(rootPath);
-            if (!config || config.ai.provider === 'mock') break;
-
-            const { createProvider } = await import('../ai/provider.js');
-            const ai = createProvider({ ...config.ai, apiKey: config.ai.apiKey || '' });
-            const filesBlock = Object.entries(fileContents).map(([f, c]) => `### ${f}\n${c.slice(0, 2000)}`).join('\n\n');
-
-            const resp = await ai.chat({
-              systemPrompt: '你是代码修复专家。输出JSON变更契约。只修改报错行，不改任何无关代码。',
-              task: `修复${stage}阶段错误:\n${errorText.slice(0, 2000)}\n\n错误位置:\n${errors.map(e => `  ${e.file}:${e.line} - ${e.message}`).join('\n')}\n\n${filesBlock}`,
-              context: { projectMeta: '', relevantCode: [], relevantMemory: '', totalTokens: 0, budgetUsed: 0 }, history: '',
-            });
-
-            const j = JSON.parse((resp.content.match(/\{[\s\S]*\}/)?.[0] || '{}'));
-            const changes = j.changes || [];
-            if (changes.length === 0) break;
-
-            const { writeFile, ensureDir } = await import('../utils/fs.js');
-            for (const c of changes) {
-              if (c.file && c.content) {
-                const fp = path.join(rootPath, c.file);
-                await ensureDir(path.dirname(fp));
-                await writeFile(fp, c.content);
-              }
-            }
-
-            // Retry the stage
-            const retryResult = await runStage(rootPath, identity, stage, options.timeout);
-            if (retryResult.status !== 'fail') {
-              result.status = retryResult.status;
-              result.output = retryResult.output;
-              result.errorDetails = retryResult.errorDetails;
-              repaired = true;
-              allPassed = true;
-            } else {
-              result.output += `\n[修复尝试${repairAttempts}失败]`;
-            }
-          } catch (repairErr) {
-            result.output += `\n[修复异常: ${(repairErr as Error).message.slice(0, 100)}]`;
-            repaired = false; // ensure outer check handles the push
-          }
-        }
-        if (!repaired) { stageResults.push(result); break; }
+        const repaired = await attemptStageRepair(rootPath, identity, stage, result, options.timeout, options.onProgress);
+        stageResults.push(result);
+        if (!repaired) break;
+        allPassed = true;
+      } else {
+        stageResults.push(result);
       }
-
-      stageResults.push(result);
     }
 
     if (allPassed) break;
@@ -148,37 +138,109 @@ export async function runVerification(
 }
 
 // ============================================================
+// Auto-repair logic (shared across serial and parallel execution)
+// ============================================================
+async function attemptStageRepair(
+  rootPath: string,
+  identity: ProjectIdentity,
+  stage: VerifyStage,
+  result: StageResult,
+  timeout: number,
+  onProgress?: (stage: VerifyStage, status: 'running' | 'pass' | 'fail' | 'skipped', detail?: string, durationMs?: number) => void,
+): Promise<boolean> {
+  let repairAttempts = 0;
+  while (repairAttempts < 2) {
+    repairAttempts++;
+    try {
+      const errorText = result.output + (result.errorDetails || result.stderr || '');
+      const { parseErrorOutput } = await import('./code-writer.js');
+      const errors = parseErrorOutput(errorText);
+      if (errors.length === 0) break;
+
+      const fileContents: Record<string, string> = {};
+      const reads = errors.slice(0, 3).map(async (e) => {
+        try { fileContents[e.file] = await readFile(path.join(rootPath, e.file)); } catch { /* best-effort */ }
+      });
+      await Promise.all(reads);
+      if (Object.keys(fileContents).length === 0) break;
+
+      const { loadConfig } = await import('../config.js');
+      const config = await loadConfig(rootPath);
+      if (!config || config.ai.provider === 'mock') break;
+
+      const { createProvider } = await import('../ai/provider.js');
+      const ai = createProvider({ ...config.ai, apiKey: config.ai.apiKey || '' });
+      const filesBlock = Object.entries(fileContents).map(([f, c]) => `### ${f}\n${c.slice(0, 2000)}`).join('\n\n');
+
+      const resp = await ai.chat({
+        systemPrompt: '你是代码修复专家。输出JSON变更契约。只修改报错行，不改任何无关代码。',
+        task: `修复${stage}阶段错误:\n${errorText.slice(0, 2000)}\n\n错误位置:\n${errors.map(e => `  ${e.file}:${e.line} - ${e.message}`).join('\n')}\n\n${filesBlock}`,
+        context: { projectMeta: '', relevantCode: [], relevantMemory: '', totalTokens: 0, budgetUsed: 0 }, history: '',
+      });
+
+      const j = JSON.parse((resp.content.match(/\{[\s\S]*\}/)?.[0] || '{}'));
+      const changes = j.changes || [];
+      if (changes.length === 0) break;
+
+      const { writeFile, ensureDir } = await import('../utils/fs.js');
+      for (const c of changes) {
+        if (c.file && c.content) {
+          const fp = path.join(rootPath, c.file);
+          await ensureDir(path.dirname(fp));
+          await writeFile(fp, c.content);
+        }
+      }
+
+      const retryResult = await runStage(rootPath, identity, stage, timeout, onProgress);
+      if (retryResult.status !== 'fail') {
+        result.status = retryResult.status;
+        result.output = retryResult.output;
+        result.errorDetails = retryResult.errorDetails;
+        return true;
+      }
+      result.output += `\n[修复尝试${repairAttempts}失败]`;
+    } catch (repairErr) {
+      result.output += `\n[修复异常: ${(repairErr as Error).message.slice(0, 100)}]`;
+      return false;
+    }
+  }
+  return false;
+}
+
+// ============================================================
 // Stage execution
 // ============================================================
 async function runStage(
   rootPath: string,
   identity: ProjectIdentity,
   stage: VerifyStage,
-  timeout: number
+  timeout: number,
+  onProgress?: (stage: VerifyStage, status: 'running' | 'pass' | 'fail' | 'skipped', detail?: string, durationMs?: number) => void,
 ): Promise<StageResult> {
   const startTime = Date.now();
+  onProgress?.(stage, 'running', undefined);
 
+  let result: StageResult;
   switch (stage) {
     case 'compile':
-      return runCompile(rootPath, identity, timeout, startTime);
+      result = await runCompile(rootPath, identity, timeout, startTime); break;
     case 'lint':
-      return runLint(rootPath, identity, timeout, startTime);
+      result = await runLint(rootPath, identity, timeout, startTime); break;
     case 'unit-test':
-      return runUnitTest(rootPath, identity, timeout, startTime);
+      result = await runUnitTest(rootPath, identity, timeout, startTime); break;
     case 'integration-test':
-      return runIntegrationTest(rootPath, identity, timeout, startTime);
+      result = await runIntegrationTest(rootPath, identity, timeout, startTime); break;
     case 'e2e':
-      return runE2E(rootPath, identity, timeout, startTime);
+      result = await runE2E(rootPath, identity, timeout, startTime); break;
     case 'coverage':
-      return runCoverageStage(rootPath, identity, timeout, startTime);
+      result = await runCoverageStage(rootPath, identity, timeout, startTime); break;
     default:
-      return {
-        stage,
-        status: 'skipped',
-        output: '未知验证阶段',
-        duration: 0,
-      };
+      result = { stage, status: 'skipped', output: '未知验证阶段', duration: 0 };
   }
+
+  const detail = result.status === 'pass' ? result.output : result.errorDetails?.slice(0, 80) || result.output;
+  onProgress?.(stage, result.status === 'fail' ? 'fail' : result.status === 'skipped' ? 'skipped' : 'pass', detail, result.duration);
+  return result;
 }
 
 // ============================================================

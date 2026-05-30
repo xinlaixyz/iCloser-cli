@@ -1,0 +1,84 @@
+{
+  "layers": [
+    {
+      "type": "recall",
+      "content": "[记忆·历史] feat: /docs REPL 界面 — ask/summarize/review/rewrite/changelog 2026-05-15 05:31:54 +0800\nCommit 8f6cd00: feat: /docs REPL 界面 — ask/summarize/review/rewrite/changelog 2026-05-15 05:31:54 +0800\n变更文件: src/cli/repl.ts, src/index.ts",
+      "priority": 29,
+      "addedAt": "2026-05-20T03:31:15.648Z",
+      "tokenEstimate": 64
+    },
+    {
+      "type": "recall",
+      "content": "[记忆·历史] feat: AI 文档操作 5 项 — ask/summarize/review/rewrite/changelog 2026-05-15 05:12:04 +0800\nCommit a72e85c: feat: AI 文档操作 5 项 — ask/summarize/review/rewrite/changelog 2026-05-15 05:12:04 +0800\n变更文件: src/core/docs-generator.ts, src/index.ts, tests/docs-ops.test.ts",
+      "priority": 29,
+      "addedAt": "2026-05-20T03:31:15.648Z",
+      "tokenEstimate": 74
+    },
+    {
+      "type": "recall",
+      "content": "[记忆·历史] 继续\n继续",
+      "priority": 25,
+      "addedAt": "2026-05-20T03:31:15.648Z",
+      "tokenEstimate": 7
+    },
+    {
+      "type": "recall",
+      "content": "[记忆·历史] 开始任务: 继续\nRecall 找到 5 条相关记忆",
+      "priority": 25,
+      "addedAt": "2026-05-20T03:31:15.648Z",
+      "tokenEstimate": 16
+    },
+    {
+      "type": "recall",
+      "content": "[记忆·历史] 分析整个项目的能力对比市场的工具，徐娅客观的分析对比\n分析整个项目的能力对比市场的工具，徐娅客观的分析对比",
+      "priority": 25,
+      "addedAt": "2026-05-20T03:31:15.648Z",
+      "tokenEstimate": 38
+    },
+    {
+      "type": "task",
+      "content": "继续",
+      "priority": 100,
+      "addedAt": "2026-05-20T03:32:35.663Z",
+      "tokenEstimate": 2
+    },
+    {
+      "type": "recall",
+      "content": "[记忆·历史] 继续\n继续",
+      "priority": 68,
+      "addedAt": "2026-05-20T03:32:35.665Z",
+      "tokenEstimate": 7
+    },
+    {
+      "type": "recall",
+      "content": "[记忆·历史] 开始任务: 继续\nRecall 找到 5 条相关记忆",
+      "priority": 68,
+      "addedAt": "2026-05-20T03:32:35.665Z",
+      "tokenEstimate": 16
+    },
+    {
+      "type": "recall",
+      "content": "[记忆·历史] 开始任务: 检查项目的缺陷和对比其他同类型对比\nRecall 找到 5 条相关记忆",
+      "priority": 40,
+      "addedAt": "2026-05-20T03:32:35.665Z",
+      "tokenEstimate": 26
+    },
+    {
+      "type": "recall",
+      "content": "[记忆·历史] 分析整个项目的能力对比市场的工具，徐娅客观的分析对比\n分析整个项目的能力对比市场的工具，徐娅客观的分析对比",
+      "priority": 40,
+      "addedAt": "2026-05-20T03:32:35.665Z",
+      "tokenEstimate": 38
+    },
+    {
+      "type": "recall",
+      "content": "[记忆·历史] feat: /docs REPL 界面 — ask/summarize/review/rewrite/changelog 2026-05-15 05:31:54 +0800\nCommit 8f6cd00: feat: /docs REPL 界面 — ask/summarize/review/rewrite/changelog 2026-05-15 05:31:54 +0800\n变更文件: src/cli/repl.ts, src/index.ts",
+      "priority": 32,
+      "addedAt": "2026-05-20T03:32:35.665Z",
+      "tokenEstimate": 64
+    }
+  ],
+  "taskId": "repl-mpdiakzy",
+  "savedAt": "2026-05-20T03:33:18.616Z",
+  "totalTokens": 352
+}
