@@ -11,7 +11,7 @@ npm install -g icloser
 或本地开发：
 
 ```bash
-git clone https://github.com/xinlaixyz/icloser.git
+git clone https://github.com/xinlaixyz/iCloser-cli.git
 cd icloser
 npm install && npm run build && npm link
 ```

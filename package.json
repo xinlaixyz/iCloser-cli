@@ -72,11 +72,11 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/xinlaixyz/icloser.git"
+    "url": "git+https://github.com/xinlaixyz/iCloser-cli.git"
   },
-  "homepage": "https://github.com/xinlaixyz/icloser",
+  "homepage": "https://github.com/xinlaixyz/iCloser-cli",
   "bugs": {
-    "url": "https://github.com/xinlaixyz/icloser/issues"
+    "url": "https://github.com/xinlaixyz/iCloser-cli/issues"
   },
   "author": "xinlaixyz",
   "license": "MIT",

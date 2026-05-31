@@ -407,7 +407,7 @@ export function generatePRDescription(task: Task): string {
   }
 
   parts.push('---');
-  parts.push('🤖 Generated with [icloser Agent Shell](https://github.com/xinlaixyz/icloser)');
+  parts.push('🤖 Generated with [icloser Agent Shell](https://github.com/xinlaixyz/iCloser-cli)');
 
   return parts.join('\n');
 }
