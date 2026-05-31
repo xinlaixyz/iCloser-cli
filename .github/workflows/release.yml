@@ -77,8 +77,11 @@ jobs:
       # preflight already ran the full quality gate across 3 OSes, so skip the
       # prepublishOnly (release:trust:full) hook here to avoid a redundant ~10min
       # re-run inside this job.
+      # NOTE: --provenance dropped for v0.1 — it is an optional supply-chain
+      # attestation and an extra failure surface on a first publish. Can be
+      # re-added once the basic publish flow is confirmed working.
       - name: Publish
-        run: npm publish --tag latest --provenance --access public --ignore-scripts
+        run: npm publish --tag latest --access public --ignore-scripts
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
