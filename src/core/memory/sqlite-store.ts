@@ -65,11 +65,23 @@ export class SQLiteStore {
         : `node:sqlite is not available on ${process.version}; using JSONL/rules.json memory storage without SQLite indexing.`;
       return;
     }
-    const { DatabaseSync } = sqliteModule;
-    this.db = new DatabaseSync(this.dbPath);
-    this.db.exec('PRAGMA journal_mode=WAL');
-    this.db.exec('PRAGMA synchronous=NORMAL');
-    this.initSchema();
+    // Constructing the database can still throw even after the module loads —
+    // e.g. a partial/experimental node:sqlite build, or a platform-specific WAL
+    // or file-locking failure (seen on Windows). A memory *index* must never
+    // crash the process: degrade to the JSONL/rules.json fallback exactly as if
+    // SQLite were absent.
+    try {
+      const { DatabaseSync } = sqliteModule;
+      this.db = new DatabaseSync(this.dbPath);
+      this.db.exec('PRAGMA journal_mode=WAL');
+      this.db.exec('PRAGMA synchronous=NORMAL');
+      this.initSchema();
+    } catch (err) {
+      try { this.db?.close(); } catch { /* ignore */ }
+      this.db = null;
+      const reason = err instanceof Error ? err.message : String(err);
+      this.disabledReason = `node:sqlite failed to initialize on ${process.version} (${reason}); using JSONL/rules.json memory storage without SQLite indexing.`;
+    }
   }
 
   close(): void {
@@ -251,6 +263,14 @@ export class SQLiteStore {
 
 function loadSQLiteModule(): SQLiteModule | null {
   if (process.env.ICLOSER_DISABLE_SQLITE_INDEX === '1') return null;
+  // node:sqlite only became a stable, unflagged built-in in Node 24. On Node
+  // 22/23 it is experimental (requires --experimental-sqlite) and its native
+  // layer behaves inconsistently across platforms — notably it can throw during
+  // DatabaseSync construction / WAL setup on Windows, crashing the worker. Gate
+  // to Node >= 24 so older runtimes use the JSONL/rules.json fallback, matching
+  // the documented "Node 24+" contract.
+  const major = Number.parseInt(process.versions.node.split('.')[0] ?? '', 10);
+  if (!Number.isNaN(major) && major < 24) return null;
   const originalEmitWarning = process.emitWarning;
   process.emitWarning = ((warning: string | Error, ...args: unknown[]) => {
     const text = warning instanceof Error ? warning.message : String(warning);
