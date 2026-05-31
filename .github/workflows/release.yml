@@ -60,7 +60,7 @@ jobs:
     name: Publish to npm
     needs: preflight
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     steps:
       - uses: actions/checkout@v4
@@ -74,8 +74,11 @@ jobs:
       - run: npm ci
       - run: npm run build
 
+      # preflight already ran the full quality gate across 3 OSes, so skip the
+      # prepublishOnly (release:trust:full) hook here to avoid a redundant ~10min
+      # re-run inside this job.
       - name: Publish
-        run: npm publish --tag latest --provenance --access public
+        run: npm publish --tag latest --provenance --access public --ignore-scripts
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
@@ -85,6 +88,8 @@ jobs:
   docker:
     name: Docker (${{ matrix.platform }})
     needs: preflight
+    # Best-effort: a Docker/ghcr hiccup must never block npm publish or the release.
+    continue-on-error: true
     strategy:
       fail-fast: false
       matrix:
@@ -131,10 +136,11 @@ jobs:
           cache-to: type=gha,mode=max
 
   # ════════════════════════════════════════════════════════════
-  # Build offline dist packages (macOS + Windows zip)
+  # Build offline dist packages (Linux/macOS tar.gz + Windows zip),
+  # each built natively so binaries match the target platform.
   # ════════════════════════════════════════════════════════════
-  dist:
-    name: Dist packages
+  dist-linux:
+    name: Dist (Linux/macOS tar.gz + npm tgz)
     needs: preflight
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -150,20 +156,54 @@ jobs:
       - run: npm ci
       - run: npm run build
 
-      - name: Package for distribution
+      - name: Build offline portable package (tar.gz)
         run: npm run package
 
-      - name: Create platform archives
+      - name: Pack npm tarball
+        run: npm pack
+
+      - name: Stage release artifacts
         run: |
           mkdir -p release-artifacts
-          # Create tarball for Linux/macOS
-          tar -czf release-artifacts/icloser-linux-x64.tar.gz -C dist .
-          # Copy npm package tarball
+          cp out/*.tar.gz release-artifacts/ 2>/dev/null || true
           cp icloser-*.tgz release-artifacts/ 2>/dev/null || true
+          ls -la release-artifacts/
 
       - uses: actions/upload-artifact@v4
         with:
-          name: dist-packages
+          name: dist-linux
+          path: release-artifacts/
+
+  dist-windows:
+    name: Dist (Windows zip)
+    needs: preflight
+    runs-on: windows-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - run: npm ci
+      - run: npm run build
+
+      - name: Build offline portable package (zip)
+        run: npm run package
+
+      - name: Stage release artifacts
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force release-artifacts | Out-Null
+          Copy-Item out/*.zip release-artifacts/ -ErrorAction SilentlyContinue
+          Get-ChildItem release-artifacts/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-windows
           path: release-artifacts/
 
   # ════════════════════════════════════════════════════════════
@@ -171,7 +211,9 @@ jobs:
   # ════════════════════════════════════════════════════════════
   github-release:
     name: GitHub Release
-    needs: [npm-publish, docker, dist]
+    # Gated on npm publish + dist packaging only. Docker is best-effort and must
+    # not block the release.
+    needs: [npm-publish, dist-linux, dist-windows]
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -180,9 +222,9 @@ jobs:
         with:
           fetch-depth: 0
 
+      # Download every uploaded artifact (dist-linux, dist-windows) into subdirs.
       - uses: actions/download-artifact@v4
         with:
-          name: dist-packages
           path: release-artifacts/
 
       - name: Generate changelog
@@ -199,5 +241,5 @@ jobs:
           name: ${{ github.ref_name }}
           body: ${{ steps.changelog.outputs.changelog }}
           generate_release_notes: true
-          files: release-artifacts/*
+          files: release-artifacts/**/*
           fail_on_unmatched_files: false
