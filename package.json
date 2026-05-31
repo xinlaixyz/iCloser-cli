@@ -72,10 +72,13 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/iCloser/icloser-agent-shell.git"
+    "url": "git+https://github.com/xinlaixyz/icloser-agent-shell.git"
   },
-  "homepage": "https://github.com/iCloser/icloser-agent-shell",
-  "author": "iCloser",
+  "homepage": "https://github.com/xinlaixyz/icloser-agent-shell",
+  "bugs": {
+    "url": "https://github.com/xinlaixyz/icloser-agent-shell/issues"
+  },
+  "author": "xinlaixyz",
   "license": "MIT",
   "engines": {
     "node": ">=18.0.0"

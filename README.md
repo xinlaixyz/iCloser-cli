@@ -11,7 +11,7 @@ npm install -g icloser-agent-shell
 或本地开发：
 
 ```bash
-git clone https://github.com/iCloser/icloser-agent-shell.git
+git clone https://github.com/xinlaixyz/icloser-agent-shell.git
 cd icloser-agent-shell
 npm install && npm run build && npm link
 ```
