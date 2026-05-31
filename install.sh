@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# iCloser Agent Shell — macOS/Linux 一键安装脚本
+# icloser Agent Shell — macOS/Linux 一键安装脚本
 # 用法: chmod +x install.sh && ./install.sh
 # 卸载: ./install.sh --uninstall
 
@@ -22,8 +22,8 @@ info() { echo -e "    ${GRAY}$1${NC}"; }
 # Uninstall
 # ============================================================
 if $UNINSTALL; then
-    echo -e "\n${BLUE}iCloser Agent Shell 卸载${NC}\n"
-    npm uninstall -g icloser 2>/dev/null && ok "已卸载 icloser-agent-shell" || info "未找到全局安装"
+    echo -e "\n${BLUE}icloser Agent Shell 卸载${NC}\n"
+    npm uninstall -g icloser 2>/dev/null && ok "已卸载 icloser" || info "未找到全局安装"
     HOME_DIR="${ICLOSER_HOME:-$HOME/.icloser}"
     if [ -d "$HOME_DIR" ]; then
         rm -rf "$HOME_DIR"
@@ -38,7 +38,7 @@ fi
 # ============================================================
 echo ""
 echo -e "  ${CYAN}╭─────────────────────────────────────────────╮${NC}"
-echo -e "  ${CYAN}│${NC}  ${BOLD}iCloser Agent Shell${NC} v${ICLOSER_VERSION}                  ${CYAN}│${NC}"
+echo -e "  ${CYAN}│${NC}  ${BOLD}icloser Agent Shell${NC} v${ICLOSER_VERSION}                  ${CYAN}│${NC}"
 echo -e "  ${CYAN}│${NC}  AI 工程执行 CLI · 一键安装                   ${CYAN}│${NC}"
 echo -e "  ${CYAN}╰─────────────────────────────────────────────╯${NC}"
 echo ""

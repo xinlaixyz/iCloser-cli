@@ -135,7 +135,7 @@ async function main() {
     await sleep(4000);
     const stripped = strip(outputBuffer);
     assert(
-      stripped.includes('iCloser') || outputBuffer.includes('◇') || stripped.length > 50,
+      stripped.includes('icloser') || outputBuffer.includes('◇') || stripped.length > 50,
       'REPL started with output'
     );
     // Should be in mock mode (no API key)
@@ -188,7 +188,7 @@ async function main() {
     // STEP 5: Send a simple task — expect mock AI to produce pending files
     // ═══════════════════════════════════════════════════════════
     log('STEP 5: Sending task request...');
-    const taskInput = '帮我创建 hello.txt 和 guide.txt，写入 iCloser beginner smoke';
+    const taskInput = '帮我创建 hello.txt 和 guide.txt，写入 icloser beginner smoke';
     const beforeTask = outputBuffer.length;
     send(taskInput);
     // Wait for AI response + pending file extraction
@@ -241,14 +241,14 @@ async function main() {
     const helloContent = readFileSync(helloPath, 'utf-8');
     log(`hello.txt content: ${helloContent.substring(0, 200)}`);
     assert(
-      helloContent.includes('iCloser') && helloContent.includes('smoke'),
-      'hello.txt contains iCloser beginner smoke marker'
+      helloContent.includes('icloser') && helloContent.includes('smoke'),
+      'hello.txt contains icloser beginner smoke marker'
     );
     const guideContent = readFileSync(guidePath, 'utf-8');
     log(`guide.txt content: ${guideContent.substring(0, 200)}`);
     assert(
-      guideContent.includes('iCloser') && guideContent.includes('smoke'),
-      'guide.txt contains iCloser beginner smoke marker'
+      guideContent.includes('icloser') && guideContent.includes('smoke'),
+      'guide.txt contains icloser beginner smoke marker'
     );
 
     const beforeWhere = outputBuffer.length;

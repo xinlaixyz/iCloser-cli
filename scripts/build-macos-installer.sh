@@ -61,7 +61,7 @@ SIZE=$(wc -c < "$BUNDLE_TGZ")
 cat > "$INSTALLER" << 'HEADER'
 #!/usr/bin/env bash
 # ═══════════════════════════════════════════════════════════
-#  iCloser Agent Shell · macOS 离线安装器
+#  icloser Agent Shell · macOS 离线安装器
 #  单文件，零网络。发给 Mac 同学直接运行即可。
 #
 #  用法: chmod +x icloser-installer.sh && ./icloser-installer.sh
@@ -83,9 +83,9 @@ step() { echo -e "  ${YELLOW}·${NC} $1"; }
 
 # ── Uninstall ──────────────────────────────────────
 if $UNINSTALL; then
-    echo -e "\n${BLUE}iCloser Agent Shell · 卸载${NC}\n"
+    echo -e "\n${BLUE}icloser Agent Shell · 卸载${NC}\n"
     npm uninstall -g icloser 2>/dev/null && ok "npm 全局包已移除" || true
-    for bin in ic iCloser; do
+    for bin in ic icloser; do
         [ -f "/usr/local/bin/$bin" ] && sudo rm -f "/usr/local/bin/$bin" && ok "/usr/local/bin/$bin" || true
     done
     [ -d "$HOME/.icloser" ] && rm -rf "$HOME/.icloser" && ok "$HOME/.icloser"
@@ -97,7 +97,7 @@ fi
 clear 2>/dev/null || true
 echo ""
 echo -e "  ${CYAN}╭──────────────────────────────────────────────────────╮${NC}"
-echo -e "  ${CYAN}│${NC}  ${BOLD}iCloser Agent Shell${NC} · macOS 离线安装                  ${CYAN}│${NC}"
+echo -e "  ${CYAN}│${NC}  ${BOLD}icloser Agent Shell${NC} · macOS 离线安装                  ${CYAN}│${NC}"
 echo -e "  ${CYAN}│${NC}  完全离线 · 无需网络 · 包含所有依赖                      ${CYAN}│${NC}"
 echo -e "  ${CYAN}╰──────────────────────────────────────────────────────╯${NC}"
 echo ""
@@ -124,7 +124,7 @@ fi
 
 # ── Extract Bundle ─────────────────────────────────
 step "解压离线包..."
-INSTALL_DIR="$HOME/.icloser-agent-shell"
+INSTALL_DIR="$HOME/.icloser"
 rm -rf "$INSTALL_DIR"
 mkdir -p "$INSTALL_DIR"
 
@@ -156,7 +156,7 @@ export NODE_PATH="$BUNDLE_DIR/node_modules:\$NODE_PATH"
 exec node "$BUNDLE_DIR/dist/index.js" "\$@"
 WRAPPER
 sudo chmod +x /usr/local/bin/ic
-sudo ln -sf /usr/local/bin/ic /usr/local/bin/iCloser 2>/dev/null || true
+sudo ln -sf /usr/local/bin/ic /usr/local/bin/icloser 2>/dev/null || true
 ok "ic 命令已就绪"
 
 # ── Verify ─────────────────────────────────────────

@@ -176,7 +176,7 @@ const STAGES: ExecutionChainStage[] = [
 
 export function buildExecutionChain(): ExecutionChain {
   return {
-    name: 'iCloser Autonomous Execution Chain',
+    name: 'icloser Autonomous Execution Chain',
     version: 1,
     purpose: '让 Agent Shell 自动找问题、自动小步执行、自动验证、失败修复、必要时回滚，并始终让零知识用户只做关键选择。',
     policy: {
@@ -193,7 +193,7 @@ export function buildExecutionChain(): ExecutionChain {
 
 export function renderExecutionChain(chain = buildExecutionChain()): string {
   const lines: string[] = [];
-  lines.push('iCloser 自动执行链');
+  lines.push('icloser 自动执行链');
   lines.push('');
   lines.push(chain.purpose);
   lines.push('');

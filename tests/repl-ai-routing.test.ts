@@ -86,14 +86,14 @@ describe('REPL natural language AI routing', () => {
     const evidence = buildToolEvidenceSummary([{
       name: 'web_fetch',
       args: { url: 'https://icloser.asia/' },
-      result: '标题: iCloser | 加密钱包、自托管与Web3支付入口\n来源: icloser.asia\n\nWeb3 支付入口，自托管钱包。',
+      result: '标题: icloser | 加密钱包、自托管与Web3支付入口\n来源: icloser.asia\n\nWeb3 支付入口，自托管钱包。',
       success: true,
     }]);
     expect(evidence).toContain('web_fetch');
-    expect(evidence).toContain('iCloser | 加密钱包、自托管与Web3支付入口');
+    expect(evidence).toContain('icloser | 加密钱包、自托管与Web3支付入口');
 
     const answer = synthesizeToolAnswerIfNeeded('告诉我内容', '让我访问这个网址看看内容。', evidence);
-    expect(answer).toContain('标题：iCloser | 加密钱包、自托管与Web3支付入口');
+    expect(answer).toContain('标题：icloser | 加密钱包、自托管与Web3支付入口');
     expect(answer).toContain('不是当前本地代码项目');
   });
 
@@ -107,10 +107,10 @@ describe('REPL natural language AI routing', () => {
       toolCalls: [{
         name: 'web_fetch',
         args: { url: 'https://icloser.asia/' },
-        result: '标题: iCloser',
+        result: '标题: icloser',
         success: true,
       }],
-      finalResponse: '这是 iCloser 页面。',
+      finalResponse: '这是 icloser 页面。',
       success: true,
       rounds: 2,
     }));

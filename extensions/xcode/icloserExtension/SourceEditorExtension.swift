@@ -3,7 +3,7 @@ import XcodeKit
 
 class SourceEditorExtension: NSObject, XCSourceEditorExtension {
     func extensionDidFinishLaunching() {
-        print("iCloser Xcode Extension loaded")
+        print("icloser Xcode Extension loaded")
     }
 }
 
@@ -68,7 +68,7 @@ func runIC(_ args: String, completion: @escaping (Error?) -> Void) {
         } else {
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
             let output = String(data: data, encoding: .utf8) ?? "Unknown error"
-            completion(NSError(domain: "iCloser", code: Int(process.terminationStatus),
+            completion(NSError(domain: "icloser", code: Int(process.terminationStatus),
                 userInfo: [NSLocalizedDescriptionKey: output]))
         }
     }

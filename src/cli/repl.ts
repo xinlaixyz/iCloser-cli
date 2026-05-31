@@ -1,4 +1,4 @@
-// iCloser Agent Shell — Interactive REPL Mode
+// icloser Agent Shell — Interactive REPL Mode
 import * as readline from 'readline';
 import * as nodePath from 'path';
 import chalk from 'chalk';
@@ -423,7 +423,7 @@ async function shutdownRepl(): Promise<void> {
     if (procs.length > 0) console.log(`  ${I.ok} 已全部停止\n`);
     await saveSession();
   } catch (e) { console.log(`  ${C.warn('!')} 退出时出错: ${(e as Error).message}`); }
-  console.log(chalk.dim('\n  iCloser 会话结束\n'));
+  console.log(chalk.dim('\n  icloser 会话结束\n'));
   process.exit(0);
 }
 
@@ -648,7 +648,7 @@ async function doCommit(msg: string): Promise<void> {
       }
     } catch { /* no config — proceed without sensitive-file filter */ }
 
-    const message = msg || 'iCloser: 代码修改';
+    const message = msg || 'icloser: 代码修改';
     const ok = createCommit(cwd, message, filesToCommit, commitConfig);
     if (ok) {
       console.log(`  ${I.ok} 已提交\n`);
@@ -1108,7 +1108,7 @@ export function synthesizeToolAnswerIfNeeded(input: string, finalResponse: strin
     source ? `来源：${source}` : '',
     summary ? `\n主要内容：\n${summary}` : '',
     !summary && title ? `\n从抓取结果看，它是关于「${title}」的页面。` : '',
-    `\n你的问题是“${input}”，所以直接回答：这是 iCloser 相关站点页面，不是当前本地代码项目。`,
+    `\n你的问题是“${input}”，所以直接回答：这是 icloser 相关站点页面，不是当前本地代码项目。`,
   ].filter(Boolean).join('\n');
 }
 
@@ -1773,7 +1773,7 @@ async function looksLikeDirectory(value: string): Promise<boolean> {
 }
 
 function isCliCommandInRepl(input: string): boolean {
-  return /^(ic|iCloser)\s+\w+/i.test(input.trim());
+  return /^(ic|icloser)\s+\w+/i.test(input.trim());
 }
 
 function isCurrentDirectoryQuestion(input: string): boolean {
@@ -2566,7 +2566,7 @@ async function cmdTestGen(): Promise<void> {
 async function cmdReport(): Promise<void> {
   if (state.conversation.length === 0) { console.log(`  ${C.dim('暂无对话')}\n`); return; }
   const fsp = await import('fs/promises'); const path2 = await import('path'); const cwd = process.cwd(); const rd = path2.join(cwd, '.icloser', 'reports'); await fsp.mkdir(rd, { recursive: true }); const rp = path2.join(rd, 'report-' + new Date().toISOString().replace(/[:.]/g, '-').substring(0, 19) + '.md');
-  const lns: string[] = []; lns.push('# iCloser 任务报告\n'); for (const msg of state.conversation) { lns.push(`**${msg.role === 'user' ? '用户' : 'AI'}**: ${msg.content.substring(0, 100)}\n`); }
+  const lns: string[] = []; lns.push('# icloser 任务报告\n'); for (const msg of state.conversation) { lns.push(`**${msg.role === 'user' ? '用户' : 'AI'}**: ${msg.content.substring(0, 100)}\n`); }
   await fsp.writeFile(rp, lns.join('\n'), 'utf-8'); console.log(`  ${I.ok} 报告已保存: ${C.accent(rp)}\n`);
 }
 
@@ -2575,7 +2575,7 @@ async function cmdCommit(msg: string): Promise<void> {
   let st = '';
   try { const { execFileSync } = await import('child_process'); const cwd = process.cwd(); st = execFileSync('git', ['status', '--porcelain'], { cwd, encoding: 'utf-8', timeout: 5000 }); } catch { console.log(`  ${C.dim('非 Git 仓库')}\n`); return; }
   if (!st.trim()) { console.log(`  ${C.dim('无变更')}\n`); return; }
-  pendingCommitMsg = msg || 'iCloser: 代码修改';
+  pendingCommitMsg = msg || 'icloser: 代码修改';
   const files = st.trim().split('\n').slice(0, 6).map(l => l.trim().substring(3)).filter(Boolean);
   process.stdout.write(`  ${C.dim('Git 变更:')} ${files.map(f => C.accent(f)).join(', ')}${st.trim().split('\n').length > 6 ? C.dim(` +${st.trim().split('\n').length - 6} 个`) : ''}\n`);
   process.stdout.write(`  ${C.accent('[1]')}${C.dim(' 确认提交')}  ${C.accent('[2]')}${C.dim(' 取消')}\n`);
@@ -3232,7 +3232,7 @@ async function buildSystemPrompt(withTools = false): Promise<string> {
   const ctx = state.context;
   const idx = state.projectIndex;
   const cwd = process.cwd();
-  let p = '你是 iCloser Agent Shell，运行在用户当前项目目录里的终端 AI 工程助手。\n';
+  let p = '你是 icloser Agent Shell，运行在用户当前项目目录里的终端 AI 工程助手。\n';
   if (withTools) {
     p += '**你拥有完整的工具调用能力，可以自主决定何时使用工具。**\n';
     p += '可用工具：\n';
@@ -3358,7 +3358,7 @@ async function buildFallbackDirectoryContext(rootPath: string): Promise<ContextP
       note: 'fallback directory listing; scanner unavailable',
     }),
     relevantCode: [],
-    relevantMemory: 'iCloser 已获取当前目录文件列表，但核心扫描失败。请基于文件列表给出可行分析，并建议运行 /scan 刷新索引。',
+    relevantMemory: 'icloser 已获取当前目录文件列表，但核心扫描失败。请基于文件列表给出可行分析，并建议运行 /scan 刷新索引。',
     totalTokens: 0,
     budgetUsed: 0,
   };
@@ -3471,7 +3471,7 @@ async function repairWriteOutput(
     const repairPrompt: AIPrompt = {
       ...originalPrompt,
       systemPrompt: [
-        '你是 iCloser 的写入方案修复器。',
+        '你是 icloser 的写入方案修复器。',
         '你只能输出一个严格 JSON 代码块，不能输出解释。',
         'JSON 结构必须是 {"summary":"...","changes":[{"file":"相对路径","operation":"write","content":"完整文件内容","reasoning":"..."}]}。',
         'operation 只能是 write。',
@@ -3605,7 +3605,7 @@ async function cmdExport(format: string): Promise<void> {
   if (format !== 'md' && format !== 'markdown') { console.log(`  ${C.dim('用法: /export md')}\n`); return; }
   if (state.conversation.length === 0) { console.log(`  ${C.dim('无对话可导出')}\n`); return; }
   const lines: string[] = [
-    `# iCloser Agent Shell — 对话导出`,
+    `# icloser Agent Shell — 对话导出`,
     `> 导出时间: ${new Date().toLocaleString('zh-CN')}`,
     `> 项目: ${state.context.projectName || '未命名'}`,
     `> 模型: ${state.aiConfig.provider} / ${state.aiConfig.model}`,

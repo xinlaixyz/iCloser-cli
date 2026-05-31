@@ -1,4 +1,4 @@
-# iCloser Agent Shell — Windows 一键安装脚本
+# icloser Agent Shell — Windows 一键安装脚本
 # 用法: powershell -ExecutionPolicy Bypass -File install.ps1
 #       或右键 install.ps1 → "使用 PowerShell 运行"
 
@@ -16,10 +16,10 @@ function Write-INFO { param($msg) Write-Host "    $msg" -ForegroundColor Gray }
 # Uninstall
 # ============================================================
 if ($Uninstall) {
-    Write-Host "`niCloser Agent Shell 卸载`n" -ForegroundColor Blue
+    Write-Host "`nicloser Agent Shell 卸载`n" -ForegroundColor Blue
     try {
         npm uninstall -g icloser 2>$null
-        Write-OK "已卸载 icloser-agent-shell"
+        Write-OK "已卸载 icloser"
     } catch {
         Write-INFO "未找到全局安装"
     }
@@ -38,7 +38,7 @@ if ($Uninstall) {
 # ============================================================
 Write-Host ""
 Write-Host "  ╭─────────────────────────────────────────────╮" -ForegroundColor Blue
-Write-Host "  │  iCloser Agent Shell v$ICLOSER_VERSION                  │" -ForegroundColor Blue
+Write-Host "  │  icloser Agent Shell v$ICLOSER_VERSION                  │" -ForegroundColor Blue
 Write-Host "  │  AI 工程执行 CLI · 一键安装                   │" -ForegroundColor Blue
 Write-Host "  ╰─────────────────────────────────────────────╯" -ForegroundColor Blue
 Write-Host ""
@@ -130,7 +130,7 @@ try {
 Write-Step "验证安装..."
 try {
     $icVersion = node dist/index.js --version 2>$null
-    Write-OK "安装成功! iCloser Agent Shell v$ICLOSER_VERSION"
+    Write-OK "安装成功! icloser Agent Shell v$ICLOSER_VERSION"
 } catch {
     Write-INFO "验证跳过"
 }

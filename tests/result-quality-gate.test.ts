@@ -5,10 +5,10 @@ describe('result quality gate', () => {
   it('detects missing investment report sections', () => {
     const report = evaluateResultQuality({
       type: 'analysis',
-      input: '补齐 iCloser 投资报告和竞品分析',
+      input: '补齐 icloser 投资报告和竞品分析',
       finalResponse: [
         '## 公司概况',
-        'iCloser 是 Web3 支付入口。',
+        'icloser 是 Web3 支付入口。',
         '## 市场机会',
         '市场需求存在。',
         '## 核心风险',
@@ -32,10 +32,10 @@ describe('result quality gate', () => {
       type: 'web',
       input: '访问 https://icloser.asia/ 告诉我内容',
       finalResponse: [
-        '标题：iCloser | 加密钱包、自托管与Web3支付入口',
+        '标题：icloser | 加密钱包、自托管与Web3支付入口',
         '来源：https://icloser.asia/',
-        '主要内容：页面介绍 iCloser 的钱包、自托管和 Web3 支付能力。',
-        '直接回答：这是 iCloser 的产品官网页面。',
+        '主要内容：页面介绍 icloser 的钱包、自托管和 Web3 支付能力。',
+        '直接回答：这是 icloser 的产品官网页面。',
       ].join('\n'),
       codeDelivery: { status: 'none', changes: [], summary: '' },
       evidenceTargets: ['https://icloser.asia/'],

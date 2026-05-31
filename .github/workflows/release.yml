@@ -159,7 +159,7 @@ jobs:
           # Create tarball for Linux/macOS
           tar -czf release-artifacts/icloser-linux-x64.tar.gz -C dist .
           # Copy npm package tarball
-          cp icloser-agent-shell-*.tgz release-artifacts/ 2>/dev/null || true
+          cp icloser-*.tgz release-artifacts/ 2>/dev/null || true
 
       - uses: actions/upload-artifact@v4
         with:

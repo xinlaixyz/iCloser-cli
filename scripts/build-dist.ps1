@@ -32,7 +32,7 @@ Copy-Item "$ROOT\package.json" "$BUNDLE\" -Force
 # Create Mac launcher
 @"
 #!/usr/bin/env bash
-# iCloser Agent Shell v$VERSION — 离线运行
+# icloser Agent Shell v$VERSION — 离线运行
 # 用法: ./ic [命令]
 DIR="`$(cd "`$(dirname "`$0")" && pwd)"
 export NODE_PATH="`$DIR/node_modules:`$NODE_PATH"

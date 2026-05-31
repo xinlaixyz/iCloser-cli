@@ -1,4 +1,4 @@
-# iCloser Agent Shell — macOS 安装指南
+# icloser Agent Shell — macOS 安装指南
 
 ## 系统要求
 
@@ -34,7 +34,7 @@ npm install -g icloser
 
 ```bash
 ic
-iCloser
+icloser
 ```
 
 ### 3. 首次配置
@@ -162,7 +162,7 @@ nvm install 22
 nvm use 22
 ```
 
-### 命令 `ic` 或 `iCloser` 不识别
+### 命令 `ic` 或 `icloser` 不识别
 
 1. 检查是否安装成功：`npm list -g icloser`
 2. 检查 PATH：`echo $PATH | grep npm`

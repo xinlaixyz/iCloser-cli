@@ -9,7 +9,7 @@ if (!API_KEY) {
   process.exit(1);
 }
 
-const SYSTEM_PROMPT = `你是 iCloser Agent Shell，终端中的 AI 工程助手。
+const SYSTEM_PROMPT = `你是 icloser Agent Shell，终端中的 AI 工程助手。
 
 ## 项目信息
 - 语言: typescript

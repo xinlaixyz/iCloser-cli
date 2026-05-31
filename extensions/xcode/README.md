@@ -1,10 +1,10 @@
-# iCloser Xcode Source Editor Extension
+# icloser Xcode Source Editor Extension
 
-Adds iCloser commands directly into Xcode's Editor menu.
+Adds icloser commands directly into Xcode's Editor menu.
 
 ## Install
 
-1. Open `iCloserExtension.xcodeproj` in Xcode
+1. Open `icloserExtension.xcodeproj` in Xcode
 2. Build (Cmd+B)
 3. Enable in System Preferences → Extensions → Xcode Source Editor
 4. Restart Xcode

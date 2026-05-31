@@ -1,4 +1,4 @@
-# iCloser Agent Shell — 开发者指南
+# icloser Agent Shell — 开发者指南
 
 版本: 1.1.0 | 日期: 2026-05-20 | 状态: 98% 完成
 
@@ -8,7 +8,7 @@
 
 ## 1. 项目概览
 
-iCloser Agent Shell 是一个**终端 AI 工程助手**。理解项目结构 → 精确修改代码 → 自动验证 → 生成报告。
+icloser Agent Shell 是一个**终端 AI 工程助手**。理解项目结构 → 精确修改代码 → 自动验证 → 生成报告。
 
 ```
 技术栈:  TypeScript + Node.js >= 18
@@ -314,8 +314,8 @@ chmod +x install.sh && ./install.sh
 ### NPM 包分发
 
 ```bash
-npm pack                           # → icloser-agent-shell-0.1.0.tgz
-npm install -g ./icloser-agent-shell-0.1.0.tgz  # 离线安装
+npm pack                           # → icloser-0.1.0.tgz
+npm install -g ./icloser-0.1.0.tgz  # 离线安装
 npm publish                        # 发布到 npm registry
 ```
 

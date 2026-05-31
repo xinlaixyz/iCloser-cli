@@ -1,6 +1,6 @@
 {
   "name": "icloser-vscode",
-  "displayName": "iCloser Agent Shell",
+  "displayName": "icloser Agent Shell",
   "description": "Terminal AI Engineering Assistant — understand, edit, verify, report",
   "version": "0.1.0",
   "publisher": "icloser",
@@ -10,18 +10,18 @@
   "main": "./extension.js",
   "contributes": {
     "commands": [
-      { "command": "icloser.openTerminal", "title": "iCloser: Open Terminal" },
-      { "command": "icloser.runTask", "title": "iCloser: Run Task" },
-      { "command": "icloser.analyzeProject", "title": "iCloser: Analyze Project" },
-      { "command": "icloser.generateDocs", "title": "iCloser: Generate Documentation" },
-      { "command": "icloser.fixError", "title": "iCloser: Fix Error" }
+      { "command": "icloser.openTerminal", "title": "icloser: Open Terminal" },
+      { "command": "icloser.runTask", "title": "icloser: Run Task" },
+      { "command": "icloser.analyzeProject", "title": "icloser: Analyze Project" },
+      { "command": "icloser.generateDocs", "title": "icloser: Generate Documentation" },
+      { "command": "icloser.fixError", "title": "icloser: Fix Error" }
     ],
     "keybindings": [
       { "command": "icloser.openTerminal", "key": "ctrl+shift+i", "mac": "cmd+shift+i" },
       { "command": "icloser.runTask", "key": "ctrl+shift+t", "mac": "cmd+shift+t" }
     ],
     "configuration": {
-      "title": "iCloser",
+      "title": "icloser",
       "properties": {
         "icloser.provider": { "type": "string", "default": "deepseek", "description": "AI Provider" },
         "icloser.model": { "type": "string", "default": "", "description": "Model name" }

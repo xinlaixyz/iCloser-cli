@@ -49,7 +49,7 @@ describe('mock provider', () => {
     expect(response.content).toContain('```json');
     expect(response.content).toContain('"changes"');
     expect(response.structuredOutput?.changes[0]?.file).toBe('src/hello.ts');
-    expect(response.content).toContain('iCloser mock edit');
+    expect(response.content).toContain('icloser mock edit');
   });
 
   it('is listed as an available provider', () => {
@@ -196,7 +196,7 @@ describe('mock provider', () => {
     const content = buildOpenAICompatibleUserContent({
       systemPrompt: 'test',
       task: '告诉我这个网页是什么',
-      history: '[工具(web_fetch)] 标题: iCloser | 加密钱包、自托管与Web3支付入口',
+      history: '[工具(web_fetch)] 标题: icloser | 加密钱包、自托管与Web3支付入口',
       context: {
         projectMeta: '',
         relevantMemory: '',
@@ -206,11 +206,11 @@ describe('mock provider', () => {
       },
     });
     expect(content).toContain('## 对话与工具历史');
-    expect(content).toContain('iCloser | 加密钱包、自托管与Web3支付入口');
+    expect(content).toContain('icloser | 加密钱包、自托管与Web3支付入口');
   });
 
   it('escapes DeepSeek message text that contains Windows paths and regex backslashes', () => {
-    const raw = 'D:\\temp\\Codex\\iCloserxyz\\financial-risk-disclosure\nsearch_code /1\\.0[^0-9]/\ncss: content: "\\x";';
+    const raw = 'D:\\temp\\Codex\\icloserxyz\\financial-risk-disclosure\nsearch_code /1\\.0[^0-9]/\ncss: content: "\\x";';
     const sanitized = sanitizeDeepSeekMessageContent(raw);
     expect(sanitized).toContain('D:/temp/Codex');
     expect(sanitized).toContain('/1/.0[^0-9]/');

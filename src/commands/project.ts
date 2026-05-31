@@ -32,7 +32,7 @@ export function registerProjectCommands(program: Command): void {
     .option('--json', 'JSON 格式输出')
     .action(async (options?: { provider?: string; model?: string; key?: string; mock?: boolean; json?: boolean }) => {
       if (!options?.json) {
-        console.log(`\n${chalk.bold.blue('iCloser Agent Shell')} ${chalk.dim('v0.1.0')} — 首次安装向导\n`);
+        console.log(`\n${chalk.bold.blue('icloser Agent Shell')} ${chalk.dim('v0.1.0')} — 首次安装向导\n`);
       }
       try {
         const nodeVersion = process.version;

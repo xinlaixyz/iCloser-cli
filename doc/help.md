@@ -1,4 +1,4 @@
-# ic — iCloser Agent Shell CLI
+# ic — icloser Agent Shell CLI
 
 ## 简介
 
@@ -95,7 +95,7 @@ ic t "增加手机登录" "增加邮箱验证" "修复头像上传"
 
 ## 主路径与命令分组
 
-iCloser 后续所有自然语言任务都进入统一 AgentTaskLoop：
+icloser 后续所有自然语言任务都进入统一 AgentTaskLoop：
 
 ```text
 理解需求 -> 采用记忆 -> 调用工具 -> 结构化证据 -> 生成结果/补丁 -> diff/写入/验证 -> 报告与记忆

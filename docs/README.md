@@ -76,7 +76,7 @@ AgentCode 支持把 `AGENTS.md`、`CLAUDE.md`、`.github/copilot-instructions.md
 
 ## 项目结构
 
-> 由 iCloser autopilot 自动生成，运行 `ic autopilot` 刷新。
+> 由 icloser autopilot 自动生成，运行 `ic autopilot` 刷新。
 
 ## 文档索引
 

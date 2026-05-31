@@ -1,4 +1,4 @@
-# iCloser Agent Shell — 开发指南
+# icloser Agent Shell — 开发指南
 
 ## 一、环境要求
 
@@ -25,8 +25,8 @@ npm run build
 npm link
 
 # 5. 验证安装
-iCloser --version
-iCloser --help
+icloser --version
+icloser --help
 ```
 
 ## 三、开发命令
@@ -137,8 +137,8 @@ $env:DASHSCOPE_API_KEY = "sk-xxx"      # 通义千问
 
 ```powershell
 $env:ICLOSER_AI_PROVIDER = "mock"
-iCloser init --force
-iCloser t "修改 notes.txt 添加离线验收标记" --go
+icloser init --force
+icloser t "修改 notes.txt 添加离线验收标记" --go
 ```
 
 `mock` provider 会基于任务中显式提到的文件路径或上下文中最相关的文件，生成标准 AI Output Contract JSON，用于验证写文件、验证、报告、记忆等主链行为。它只用于本地验收，不代表真实 AI 代码质量。
@@ -313,7 +313,7 @@ export interface NewResult {
 
 ```bash
 # 直接进入交互式 REPL
-iCloser
+icloser
 
 # REPL 内可用命令
 /status    # 查看会话状态（provider/model/索引/Token 用量）
@@ -390,8 +390,8 @@ cat .icloser/audit.log
 - `npm run build` 通过。
 - `npm run test` 通过。
 - `detectProject()` 能识别 TypeScript/npm/vitest 与 Go/Gin/PostgreSQL。
-- `iCloser init --force` 能正确写入项目身份。
-- `iCloser scan` 调用核心 `scanProject()` 并写入 `.icloser/index.json`。
+- `icloser init --force` 能正确写入项目身份。
+- `icloser scan` 调用核心 `scanProject()` 并写入 `.icloser/index.json`。
 - `assembleContextFromProject()` 可从项目目录直接组装 `ContextPackage`。
 - REPL 普通对话优先使用持久化索引组装 rich context。
 - `mock` AI Provider 可用于无 API Key 的离线端到端验收。
@@ -406,18 +406,18 @@ cat .icloser/audit.log
 
 ```bash
 # 1. 已完成任务 — 展示 stage / command / exitCode
-iCloser config provider mock
-iCloser t "修改某个文件添加验收标记" --go
-iCloser st <task-id>
+icloser config provider mock
+icloser t "修改某个文件添加验收标记" --go
+icloser st <task-id>
 # 预期输出：验证阶段表格 + 每阶段图标/耗时/退出码/命令 + 失败阶段错误摘要
 
 # 2. 未执行 queued 任务 — 展示 planned verification commands
-iCloser t "测试预览任务"           # 不 --go，预览模式
-iCloser st <task-id>
+icloser t "测试预览任务"           # 不 --go，预览模式
+icloser st <task-id>
 # 预期输出：「验证: 未执行」+「计划执行的验证命令」列表
 
 # 3. 安全门禁阻塞 — 展示安全门禁摘要
-iCloser gate <task-id>
+icloser gate <task-id>
 # 预期输出：安全门禁行展示阻塞详情（▸ 逐条列出）
 
 # 4. 纯 formatter 测试
@@ -1054,7 +1054,7 @@ npm run smoke:repl:e2e
 3. `/doctor` → 提示未初始化或 `/init`
 4. `/init` → 项目识别成功
 5. `/doctor` → ready 或下一步建议
-6. 输入 "帮我创建 hello.txt 和 guide.txt，写入 iCloser beginner smoke"
+6. 输入 "帮我创建 hello.txt 和 guide.txt，写入 icloser beginner smoke"
 7. mock AI 生成 hello.txt、guide.txt 两个 pending file
 8. 输入 `1和2` 一次写入两个文件
 9. `hello.txt` 和 `guide.txt` 存在于磁盘且包含 smoke 标记
@@ -1527,7 +1527,7 @@ dev1、dev2 以及后续开发者必须遵守 [开发特别声明](DEVELOPER_SPE
   - 覆盖自然语言“启动项目”先展示系统操作确认面板。
   - 覆盖用户选择 `1` 后才执行 `npm run dev` 并捕获 URL。
 - 文档
-  - `doc/iCloser_Agent_Shell_完整需求文档.md` 增加“输入框与系统权限操作”。
+  - `doc/icloser_Agent_Shell_完整需求文档.md` 增加“输入框与系统权限操作”。
   - `doc/ARCHITECTURE.md` 增加“选择优先”关键设计决策。
   - `doc/DEVELOPER_SPECIAL_DECLARATION.md` 增加系统权限操作确认红线。
 
@@ -1559,7 +1559,7 @@ dev1、dev2 以及后续开发者必须遵守 [开发特别声明](DEVELOPER_SPE
 
 ### DEV2-S5.5 PowerShell-style System Approval（2026-05-13）
 
-**问题：** S5.3 把系统操作做成了 iCloser 自己的“下一步选择框”，但产品目标是 PowerShell/Claude Code 风格的命令审批：用户看到要执行的命令、原因和影响，然后选择 Yes / Don't ask again / No。
+**问题：** S5.3 把系统操作做成了 icloser 自己的“下一步选择框”，但产品目标是 PowerShell/Claude Code 风格的命令审批：用户看到要执行的命令、原因和影响，然后选择 Yes / Don't ask again / No。
 
 **已完成：**
 
@@ -1571,8 +1571,8 @@ dev1、dev2 以及后续开发者必须遵守 [开发特别声明](DEVELOPER_SPE
     - `2. Yes, and don't ask again for: ...`：本次会话记住同类操作并执行。
     - `3. No`：取消。
 - `scripts/repl-first-run-smoke.mjs`
-  - 验收自然语言“启动项目”必须出现命令审批面板，而不是普通 iCloser 菜单。
-- `doc/iCloser_Agent_Shell_完整需求文档.md`
+  - 验收自然语言“启动项目”必须出现命令审批面板，而不是普通 icloser 菜单。
+- `doc/icloser_Agent_Shell_完整需求文档.md`
   - 修正“输入框与系统权限操作”的标准样例。
 
 **验收标准：**
@@ -1660,9 +1660,9 @@ dev1、dev2 以及后续开发者必须遵守 [开发特别声明](DEVELOPER_SPE
   - `loadSession()` 只有在 `session.projectRoot === process.cwd()` 时才恢复会话。
   - 不再从 session 恢复项目名、语言、框架，启动项目上下文永远以当前工作目录检测结果为准。
 - `scripts/repl-first-run-smoke.mjs`
-  - 启动前故意写入一个旧项目 `iCloser2026/react` 的 session。
+  - 启动前故意写入一个旧项目 `icloser2026/react` 的 session。
   - 验证新项目启动时不会显示“已恢复上次会话”。
-  - 验证不会显示旧项目名 `iCloser2026`。
+  - 验证不会显示旧项目名 `icloser2026`。
 
 **验收：**
 
@@ -1944,7 +1944,7 @@ dev1、dev2 以及后续开发者必须遵守 [开发特别声明](DEVELOPER_SPE
 2. 修改代码
 3. 运行 `npm run typecheck` 确保类型正确
 4. 运行 `npm run build` 确保编译通过
-5. 在实际项目中测试：`cd test-project && iCloser init && iCloser t "测试任务"`
+5. 在实际项目中测试：`cd test-project && icloser init && icloser t "测试任务"`
 
 ### 添加新功能
 

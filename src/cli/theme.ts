@@ -1,4 +1,4 @@
-// iCloser Agent Shell — Terminal UI Theme & Design System
+// icloser Agent Shell — Terminal UI Theme & Design System
 import chalk from 'chalk';
 
 export const C = {
@@ -213,7 +213,7 @@ export function commandHelp(): string {
   ];
   const tw = termWidth(); const w = Math.min(tw - 4, 78);
   let out = '  ' + C.primary('╭') + C.primary('─'.repeat(w)) + C.primary('╮') + '\n';
-  out += '  ' + C.primary('│') + ' ' + C.primaryBold('iCloser Agent Shell') + ' ' + C.dim('- 按目标选择，不用背命令') + ' '.repeat(Math.max(0, w - 41)) + ' ' + C.primary('│') + '\n';
+  out += '  ' + C.primary('│') + ' ' + C.primaryBold('icloser Agent Shell') + ' ' + C.dim('- 按目标选择，不用背命令') + ' '.repeat(Math.max(0, w - 41)) + ' ' + C.primary('│') + '\n';
   out += '  ' + C.primary('│') + ' '.repeat(w + 2) + ' ' + C.primary('│') + '\n';
   for (const [group, desc, cmds] of groups) {
     const line = `${C.accent(group.padEnd(9))} ${C.bright(desc.padEnd(16))} ${C.dim(cmds)}`;

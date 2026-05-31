@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// iCloser Agent Shell — CLI Entry Point
+// icloser Agent Shell — CLI Entry Point
 
 import { Command } from 'commander';
 import chalk from 'chalk';
@@ -41,7 +41,7 @@ import { registerAutopilotCommand } from './commands/autopilot.js';
 import { registerPlanCommand } from './commands/plan.js';
 
 const program = new Command();
-program.name('ic').description('iCloser Agent Shell — AI 工程执行 CLI').version('0.1.0');
+program.name('ic').description('icloser Agent Shell — AI 工程执行 CLI').version('0.1.0');
 
 // ── Shared helpers from task-pipeline.ts ──
 import { getToolStrategy, isAnalysisOnlyTask } from './core/task-pipeline.js';
@@ -1184,7 +1184,7 @@ async function _buildSystemPrompt(
   } catch { /* non-critical */ }
 
   const isWin = process.platform === 'win32';
-  let p = `你是 iCloser Agent Shell，终端中的 AI 工程助手。
+  let p = `你是 icloser Agent Shell，终端中的 AI 工程助手。
 
 ## 记忆规则
 - 如果上下文中没有相关信息，说"无历史记录"，不要编造

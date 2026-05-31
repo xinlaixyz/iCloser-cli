@@ -455,7 +455,7 @@ function createOrchTask(orchId: string, name: string, affectedFiles: string[]): 
 
 function buildAgentSystemPrompt(agent: AgentInstance): string {
   const template = DEFAULT_TEMPLATES.find(t => t.type === agent.type);
-  const base = template?.systemPrompt || '你是 iCloser Agent，负责执行分配给你的任务。';
+  const base = template?.systemPrompt || '你是 icloser Agent，负责执行分配给你的任务。';
   const toolSection = buildToolCapabilitySection();
   return [
     base,

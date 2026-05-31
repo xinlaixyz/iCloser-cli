@@ -1,10 +1,10 @@
-# Homebrew Formula for iCloser Agent Shell
+# Homebrew Formula for icloser Agent Shell
 # 用法:
 #   brew tap icloser/agent-shell
-#   brew install icloser-agent-shell
+#   brew install icloser
 #
 # 或本地安装:
-#   brew install --build-from-source ./homebrew/icloser-agent-shell.rb
+#   brew install --build-from-source ./homebrew/icloser.rb
 
 class IcloserAgentShell < Formula
   desc "AI engineering execution CLI — understand, modify, verify, report"
@@ -13,12 +13,12 @@ class IcloserAgentShell < Formula
   license "MIT"
 
   on_macos do
-    url "https://github.com/YOUR_ORG/agent-shell/releases/download/v0.1.0/icloser-agent-shell-0.1.0-portable.tar.gz"
+    url "https://github.com/YOUR_ORG/agent-shell/releases/download/v0.1.0/icloser-0.1.0-portable.tar.gz"
     sha256 "PLACEHOLDER_SHA256"
   end
 
   on_linux do
-    url "https://github.com/YOUR_ORG/agent-shell/releases/download/v0.1.0/icloser-agent-shell-0.1.0-portable.tar.gz"
+    url "https://github.com/YOUR_ORG/agent-shell/releases/download/v0.1.0/icloser-0.1.0-portable.tar.gz"
     sha256 "PLACEHOLDER_SHA256"
   end
 
@@ -36,8 +36,8 @@ class IcloserAgentShell < Formula
     EOS
     chmod 0755, bin/"ic"
 
-    # Symlink iCloser alias
-    bin.install_symlink bin/"ic" => "iCloser"
+    # Symlink icloser alias
+    bin.install_symlink bin/"ic" => "icloser"
   end
 
   test do
@@ -46,7 +46,7 @@ class IcloserAgentShell < Formula
 
   def caveats
     <<~EOS
-      \e[36m╭─ iCloser Agent Shell ─────────────────────╮\e[0m
+      \e[36m╭─ icloser Agent Shell ─────────────────────╮\e[0m
       \e[36m│\e[0m  \e[1mic setup\e[0m    配置 AI 服务              \e[36m│\e[0m
       \e[36m│\e[0m  \e[1mic init\e[0m     初始化项目                \e[36m│\e[0m
       \e[36m│\e[0m  \e[1mic\e[0m         启动对话 REPL             \e[36m│\e[0m

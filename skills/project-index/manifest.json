@@ -5,7 +5,7 @@
   "triggers": ["扫描", "索引", "分析项目", "scan", "index", "项目结构"],
   "requires": [],
   "provider": "claude",
-  "author": "iCloser",
+  "author": "icloser",
   "license": "MIT",
   "type": "builtin"
 }

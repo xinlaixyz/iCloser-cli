@@ -51,7 +51,7 @@ function timeoutAfterToolProvider() {
 
 describe('agent task loop rebuild', () => {
   it('summarizes evidence before feeding provider context', () => {
-    const raw = 'D:\\temp\\Codex\\x\n'.repeat(100) + '标题: iCloser\n正文内容';
+    const raw = 'D:\\temp\\Codex\\x\n'.repeat(100) + '标题: icloser\n正文内容';
     const summary = summarizeToolEvidence('web_fetch', { url: 'https://icloser.asia/' }, raw);
     expect(summary.length).toBeLessThan(1000);
     expect(summary).not.toContain('\\');
@@ -104,7 +104,7 @@ describe('agent task loop rebuild', () => {
     expect(classifyAgentTask('访问 https://icloser.asia/')).toBe('web');
     expect(classifyAgentTask('把 Android 需求转成 H5 网页')).toBe('code');
     expect(classifyAgentTask('修复 Web 项目 bug')).toBe('code');
-    expect(classifyAgentTask('补齐 iCloser 投资报告和竞品分析')).toBe('analysis');
+    expect(classifyAgentTask('补齐 icloser 投资报告和竞品分析')).toBe('analysis');
   });
 
   it('runs the unified task loop and persists structured evidence', async () => {

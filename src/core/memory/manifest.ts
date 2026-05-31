@@ -150,7 +150,7 @@ function renderAgentsManifest(rules: SemanticRule[]): string {
   const lines = [
     '# AGENTS.md',
     '',
-    'This file is generated from iCloser Memory Kernel project rules.',
+    'This file is generated from icloser Memory Kernel project rules.',
     'Edit it directly when you want Codex, Claude Code, or other coding agents to share the same project instructions.',
     '',
     '## Project Instructions',

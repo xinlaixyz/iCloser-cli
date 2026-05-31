@@ -4,7 +4,7 @@
 set -e
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-PKG_NAME="icloser-agent-shell"
+PKG_NAME="icloser"
 VERSION=$(node -e "console.log(require('$ROOT/package.json').version)")
 BUILD_DIR="$ROOT/out/macos-pkg"
 PAYLOAD="$BUILD_DIR/payload"
@@ -34,13 +34,13 @@ cp "$ROOT/package.json" "$PAYLOAD/usr/local/lib/$PKG_NAME/"
 # Create launcher
 cat > "$PAYLOAD/usr/local/bin/ic" << 'LAUNCHER'
 #!/usr/bin/env bash
-export NODE_PATH="/usr/local/lib/icloser-agent-shell/node_modules:$NODE_PATH"
-exec node "/usr/local/lib/icloser-agent-shell/dist/index.js" "$@"
+export NODE_PATH="/usr/local/lib/icloser/node_modules:$NODE_PATH"
+exec node "/usr/local/lib/icloser/dist/index.js" "$@"
 LAUNCHER
 chmod +x "$PAYLOAD/usr/local/bin/ic"
 
-# iCloser alias
-ln -sf ic "$PAYLOAD/usr/local/bin/iCloser"
+# icloser alias
+ln -sf ic "$PAYLOAD/usr/local/bin/icloser"
 
 echo "        ✓ payload prepared"
 
@@ -63,8 +63,8 @@ echo "  │  $PKG_FILE"
 echo "  │"
 echo "  │  安装: open $PKG_FILE"
 echo "  │  或:   sudo installer -pkg $PKG_FILE -target /"
-echo "  │  卸载: sudo rm -rf /usr/local/lib/icloser-agent-shell"
-echo "  │         sudo rm /usr/local/bin/ic /usr/local/bin/iCloser"
+echo "  │  卸载: sudo rm -rf /usr/local/lib/icloser"
+echo "  │         sudo rm /usr/local/bin/ic /usr/local/bin/icloser"
 echo "  └──────────────────────────────────────────────┘"
 echo ""
 

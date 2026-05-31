@@ -28,14 +28,14 @@ export function getDefaultRealTaskRegressionCases(): RealTaskRegressionCase[] {
   return [
     {
       id: 'web-visit-icloser',
-      title: '网页访问：解释 iCloser 官网内容',
+      title: '网页访问：解释 icloser 官网内容',
       input: '访问 https://icloser.asia/，告诉我内容',
       expectedType: 'web',
       finalResponse: [
-        '标题：iCloser | 加密钱包、自托管与Web3支付入口',
+        '标题：icloser | 加密钱包、自托管与Web3支付入口',
         '来源：https://icloser.asia/',
-        '主要内容：页面介绍 iCloser 的钱包、自托管和 Web3 支付入口能力。',
-        '直接回答：这是 iCloser 产品官网，用于展示钱包、自托管和 Web3 支付服务。',
+        '主要内容：页面介绍 icloser 的钱包、自托管和 Web3 支付入口能力。',
+        '直接回答：这是 icloser 产品官网，用于展示钱包、自托管和 Web3 支付服务。',
         '可追问点：可以继续问产品定位、目标用户和商业模式。',
       ].join('\n'),
       evidenceTargets: ['https://icloser.asia/'],
@@ -44,12 +44,12 @@ export function getDefaultRealTaskRegressionCases(): RealTaskRegressionCase[] {
     },
     {
       id: 'investment-report',
-      title: '投资研究：补齐 iCloser 投资报告',
-      input: '补齐 iCloser 投资报告和竞品分析',
+      title: '投资研究：补齐 icloser 投资报告',
+      input: '补齐 icloser 投资报告和竞品分析',
       expectedType: 'analysis',
       finalResponse: [
         '## 公司概况',
-        'iCloser 定位为 Web3 钱包、自托管和支付入口。',
+        'icloser 定位为 Web3 钱包、自托管和支付入口。',
         '## 市场机会',
         'Web3 支付、跨境金融和自托管钱包仍有需求空间。',
         '## 融资/估值线索',

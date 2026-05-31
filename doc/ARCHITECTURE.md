@@ -1,8 +1,8 @@
-# iCloser Agent Shell — 架构设计文档
+# icloser Agent Shell — 架构设计文档
 
 ## 一、总体架构
 
-iCloser Agent Shell 采用**分层架构**，自上而下分为 Human Governance / Auto Review / CLI 交互层、核心服务层、记忆与审计层、基础工具层和项目运行时层。
+icloser Agent Shell 采用**分层架构**，自上而下分为 Human Governance / Auto Review / CLI 交互层、核心服务层、记忆与审计层、基础工具层和项目运行时层。
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -165,7 +165,7 @@ Phase 10: detectArchitecturePattern() → MVC / Clean / Layered / Microservices
 ```
 
 **S1 当前实现状态：**
-- `scanProject()` 是当前唯一推荐扫描入口，CLI `iCloser scan` 与 REPL `/scan` 都应复用它。
+- `scanProject()` 是当前唯一推荐扫描入口，CLI `icloser scan` 与 REPL `/scan` 都应复用它。
 - 扫描结果通过 `saveProjectIndex(rootPath, index)` 写入 `.icloser/index.json`。
 - 读取索引用 `loadProjectIndex(rootPath)`，该函数会把 JSON 中的 `dependencyGraph` 恢复成 `Map<string, string[]>`。
 - 模块分组粒度按目录归并：根级源码文件归入 `src`，二级目录归入 `src/core`、`src/cli`、`src/utils` 等。

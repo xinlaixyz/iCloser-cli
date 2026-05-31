@@ -206,4 +206,4 @@ AgentCode 是基于 TypeScript 的 AI coding agent CLI 系统，产品定位是 
 
 ---
 
-> 本文档由 iCloser autopilot 生成，S20 UI 章节为手动补充。运行 `ic auto docs` 重新生成。
+> 本文档由 icloser autopilot 生成，S20 UI 章节为手动补充。运行 `ic auto docs` 重新生成。

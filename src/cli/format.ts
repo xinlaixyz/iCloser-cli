@@ -114,4 +114,4 @@ export function hasSecurityBlocking(gr: GateResult): boolean {
   const sc = gr.checks.find(c => c.category === 'security');
   return sc ? sc.status === 'fail' : false;
 }
-// iCloser mock edit: 接入ai
+// icloser mock edit: 接入ai

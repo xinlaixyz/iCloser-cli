@@ -145,7 +145,7 @@ const LOOP_STEPS: TaskLoopStep[] = [
 
 export function buildTaskThinkingLoop(): TaskLoopMechanism {
   return {
-    name: 'iCloser Task Thinking Loop',
+    name: 'icloser Task Thinking Loop',
     version: 1,
     purpose: '像可靠工程师一样循环执行：先收集上下文，再采取行动，最后验证结果；每一步都绑定所需工具能力，失败则带着新证据进入下一轮。',
     policy: {
@@ -248,7 +248,7 @@ export function applyUserIntervention(state: TaskLoopState, intervention: TaskLo
 
 export function renderTaskThinkingLoop(mechanism = buildTaskThinkingLoop()): string {
   const lines: string[] = [];
-  lines.push('iCloser 三步任务循环');
+  lines.push('icloser 三步任务循环');
   lines.push('');
   lines.push(mechanism.purpose);
   lines.push('');

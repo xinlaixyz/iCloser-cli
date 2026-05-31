@@ -86,7 +86,7 @@ Terminal AI Engineering Assistant
 
 来源要求：
 
-- Logo 母版以用户提供的 `iCloser-LOGOvector.svg` 为准。
+- Logo 母版以用户提供的 `icloser-LOGOvector.svg` 为准。
 - 默认首屏不得使用低保真字符 logo，因为半块像素锯齿明显，Braille 细节过密，轮廓图也无法稳定表达原始品牌。
 - Logo 只在高保真图片协议、`/logo`、README 或品牌页中展示。
 - 若未来要恢复默认首屏 logo，必须先通过人工截图验收，不能只靠宽度测试通过。

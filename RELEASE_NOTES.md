@@ -1,4 +1,4 @@
-# iCloser Agent Shell v0.1.0
+# icloser Agent Shell v0.1.0
 
 > Terminal AI Engineering Assistant — 理解项目、精确编辑、自动验证、生成报告。
 

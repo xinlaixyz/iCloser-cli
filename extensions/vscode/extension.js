@@ -1,9 +1,9 @@
-// iCloser VSCode Extension
+// icloser VSCode Extension
 const vscode = require('vscode');
 const { exec } = require('child_process');
 
 function activate(context) {
-  const terminal = vscode.window.createTerminal('iCloser');
+  const terminal = vscode.window.createTerminal('icloser');
 
   context.subscriptions.push(
     vscode.commands.registerCommand('icloser.openTerminal', () => {

@@ -101,7 +101,7 @@ describe('Mission Cockpit REPL experience', () => {
       evidenceTargets: [
         'https://pitchhub.36kr.com/project/2793907771741958',
         'https://icloser.xyz',
-        'iCloser 公司 融资 投资 估值',
+        'icloser 公司 融资 投资 估值',
       ],
       qualityGate: {
         score: 58,

@@ -139,7 +139,7 @@ export async function searchWeb(query: string, options: WebSearchOptions = {}): 
       const htmlUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
       const resp = await fetch(htmlUrl, {
         signal: controller.signal,
-        headers: { 'User-Agent': 'iCloser-Agent-Shell/0.1' },
+        headers: { 'User-Agent': 'icloser-Agent-Shell/0.1' },
       });
       clearTimeout(timeout);
       if (resp.ok) {

@@ -1,4 +1,4 @@
-// Configuration management for iCloser Agent Shell
+// Configuration management for icloser Agent Shell
 import * as path from 'path';
 import { fileExists, readJson, writeJson, ensureDir } from './utils/fs.js';
 import { getProviderInfo, normalizeProviderForApiKey } from './ai/provider.js';

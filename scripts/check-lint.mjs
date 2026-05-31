@@ -7,7 +7,7 @@ const roots = ['src', 'tests', 'scripts'];
 const allowedExtensions = new Set(['.ts', '.tsx', '.js', '.mjs', '.cjs']);
 const blockedPatterns = [
   { name: 'merge conflict marker', regex: /^(<<<<<<<|=======|>>>>>>>) /m },
-  { name: 'mock edit residue', regex: /^\/\/ iCloser mock edit: 以下修改导致了错误：\s*$/m },
+  { name: 'mock edit residue', regex: /^\/\/ icloser mock edit: 以下修改导致了错误：\s*$/m },
 ];
 
 async function collectFiles(dir) {

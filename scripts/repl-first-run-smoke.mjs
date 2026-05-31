@@ -52,12 +52,12 @@ async function main() {
   const project = join(tempRoot, 'project');
 
   try {
-    const staleProject = join(tempRoot, 'stale-iCloser2026');
+    const staleProject = join(tempRoot, 'stale-icloser2026');
     await mkdir(join(home, '.icloser'), { recursive: true });
     await mkdir(staleProject, { recursive: true });
     await writeFile(join(home, '.icloser', 'session.json'), JSON.stringify({
       projectRoot: staleProject,
-      projectName: 'iCloser2026',
+      projectName: 'icloser2026',
       language: 'typescript',
       framework: 'react',
       conversation: [{ role: 'user', content: '旧项目里的消息', timestamp: new Date().toISOString() }],
@@ -168,7 +168,7 @@ async function main() {
     assert(hasMockOrKeyHelp, 'REPL shows mock mode or API Key guidance on startup');
     assert(!outputBuffer.includes('已恢复上次会话'), 'REPL does not restore a session from a different project directory');
     assert(outputBuffer.includes('repl-smoke-test') || outputBuffer.includes('project'), 'REPL startup uses current project context, not stale session project name');
-    assert(!outputBuffer.includes('iCloser2026'), 'REPL startup does not show stale project name from old session');
+    assert(!outputBuffer.includes('icloser2026'), 'REPL startup does not show stale project name from old session');
 
     // ═══════════════════════════════════════════════════════════
     // STEP 2: Send "我要配置 key" — should trigger key help, NOT AI chat

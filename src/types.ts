@@ -1,4 +1,4 @@
-// iCloser Agent Shell — Core Type Definitions
+// icloser Agent Shell — Core Type Definitions
 
 // ============================================================
 // Project Identity (auto-detected)

@@ -1,7 +1,7 @@
 // Build offline portable package
 // Usage: node scripts/build-package.mjs
-// Output: out/icloser-agent-shell-0.1.0-portable.zip (Windows)
-//         out/icloser-agent-shell-0.1.0-portable.tar.gz (macOS/Linux)
+// Output: out/icloser-0.1.0-portable.zip (Windows)
+//         out/icloser-0.1.0-portable.tar.gz (macOS/Linux)
 
 import { execSync } from 'child_process';
 import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';

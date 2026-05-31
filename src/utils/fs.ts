@@ -1,4 +1,4 @@
-// File system utilities for iCloser Agent Shell
+// File system utilities for icloser Agent Shell
 import fse from 'fs-extra';
 import { readFile as nodeReadFile, writeFile as nodeWriteFile, stat as nodeStat, readdir as nodeReaddir } from 'fs/promises';
 import { realpathSync } from 'fs';

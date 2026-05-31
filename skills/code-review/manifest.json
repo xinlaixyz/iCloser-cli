@@ -5,7 +5,7 @@
   "triggers": ["审查", "review", "检查代码", "code quality", "代码质量"],
   "requires": ["project-index"],
   "provider": "claude",
-  "author": "iCloser",
+  "author": "icloser",
   "license": "MIT",
   "type": "builtin"
 }

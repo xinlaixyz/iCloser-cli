@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================
-#  iCloser Agent Shell — macOS 一键安装器
+#  icloser Agent Shell — macOS 一键安装器
 #  单文件分发，自动处理所有依赖
 #
 #  用法:
@@ -33,9 +33,9 @@ info()  { echo -e "    ${GRAY}$1${NC}"; }
 # UNINSTALL
 # ============================================================
 if $UNINSTALL; then
-    echo -e "\n${BLUE}iCloser Agent Shell · 卸载${NC}\n"
+    echo -e "\n${BLUE}icloser Agent Shell · 卸载${NC}\n"
     # Remove global bins
-    for bin in ic iCloser; do
+    for bin in ic icloser; do
         if [ -f "$BIN_DIR/$bin" ]; then
             sudo rm -f "$BIN_DIR/$bin" && ok "已移除 $BIN_DIR/$bin" || info "跳过 $bin"
         fi
@@ -62,7 +62,7 @@ fi
 clear 2>/dev/null || true
 echo ""
 echo -e "  ${CYAN}╭──────────────────────────────────────────────────────╮${NC}"
-echo -e "  ${CYAN}│${NC}  ${BOLD}iCloser Agent Shell${NC}  v${VERSION}                              ${CYAN}│${NC}"
+echo -e "  ${CYAN}│${NC}  ${BOLD}icloser Agent Shell${NC}  v${VERSION}                              ${CYAN}│${NC}"
 echo -e "  ${CYAN}│${NC}  AI 工程执行 CLI · macOS 一键安装                      ${CYAN}│${NC}"
 echo -e "  ${CYAN}╰──────────────────────────────────────────────────────╯${NC}"
 echo ""
@@ -105,9 +105,9 @@ else
 fi
 
 # ============================================================
-# 3. INSTALL iCloser
+# 3. INSTALL icloser
 # ============================================================
-step "安装 iCloser Agent Shell..."
+step "安装 icloser Agent Shell..."
 
 # Use local project directory (this script is inside the project)
 LOCAL_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -151,9 +151,9 @@ WRAPPER
         export PATH="$HOME/bin:$PATH"
         ok "ic 命令已注册到 ~/bin/ic (请重启终端或 source ~/.zshrc)"
     }
-    # iCloser alias
+    # icloser alias
     if [ -f "$BIN_DIR/ic" ]; then
-        sudo ln -sf "$BIN_DIR/ic" "$BIN_DIR/iCloser" 2>/dev/null || true
+        sudo ln -sf "$BIN_DIR/ic" "$BIN_DIR/icloser" 2>/dev/null || true
     fi
 fi
 

@@ -91,7 +91,7 @@ Complete:  100%
 5. **A3: 目录树快照** — `context.ts`: `buildDirectoryOverview` 展示根目录关键文件 + 文件样例
 6. **A4: 分析输出直接展示** — 分析任务完成后直接输出到终端，不依赖 JSON 变更协议
 
-### Analysis quality trajectory (iCloserTV)
+### Analysis quality trajectory (icloserTV)
 
 | Phase | Found | Key improvement |
 |-------|-------|-----------------|
@@ -110,7 +110,7 @@ Complete:  100%
 4. **P9: Tech stack extraction** — `context.ts`: `extractTechStackDetails` reads go.mod, package.json, requirements.txt dependency lists into AI context.
 5. **P10: Vendor stats** — `context.ts`: `countVendorDeps` counts vendor/node_modules without scanning their contents.
 
-### Target project improvement (iCloserTV)
+### Target project improvement (icloserTV)
 
 | Metric | Before | After |
 |--------|--------|-------|
@@ -127,7 +127,7 @@ Complete:  100%
 ### UX 优化 (13 items)
 
 1. **`fail()` 退出进程** — `output.ts`: 错误打印后 `process.exit(1)`，消除所有冗余 `return`
-2. **`printHelp` 重构** — 旧名 `iCloser` → `ic`，补全 20+ 命令分组
+2. **`printHelp` 重构** — 旧名 `icloser` → `ic`，补全 20+ 命令分组
 3. **AI 执行进度反馈** — `index.ts`: 工具轮次显示 `(第 2/5 轮)`，完成摘要
 4. **命令长别名** — `t→task`, `st→status`, `d→diff`, `y→accept`, `n→reject`, `g→gate`, `l→log`, `r→report`, `mem→memory`, `autopilot→auto`
 5. **CLI orchestrate** — 已存在 `ic agent orchestrate`

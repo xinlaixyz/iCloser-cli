@@ -407,7 +407,7 @@ export function generatePRDescription(task: Task): string {
   }
 
   parts.push('---');
-  parts.push('🤖 Generated with [iCloser Agent Shell](https://github.com/icloser/agent-shell)');
+  parts.push('🤖 Generated with [icloser Agent Shell](https://github.com/xinlaixyz/icloser)');
 
   return parts.join('\n');
 }
@@ -435,7 +435,7 @@ function generateCommitMessage(task: Task): string {
       : []),
     '',
     `Task: ${task.id}`,
-    `Co-Authored-By: iCloser Agent Shell <agent@icloser.dev>`,
+    `Co-Authored-By: icloser Agent Shell <agent@icloser.dev>`,
   ];
 
   return lines.join('\n');

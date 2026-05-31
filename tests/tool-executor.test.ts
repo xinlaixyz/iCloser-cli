@@ -116,7 +116,7 @@ describe('tool-executor (S18)', () => {
 
     it('read_file reads a real file', async () => {
       const result = await executeToolCall('read_file', { path: 'package.json' }, root);
-      expect(result).toContain('icloser-agent-shell');
+      expect(result).toContain('icloser');
     });
 
     it('search_code finds matches', async () => {

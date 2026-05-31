@@ -291,4 +291,4 @@ AI 调用错误分类（`src/ai/errors.ts`）：
 
 ---
 
-> 本文档由 iCloser autopilot 自动生成草稿。
+> 本文档由 icloser autopilot 自动生成草稿。

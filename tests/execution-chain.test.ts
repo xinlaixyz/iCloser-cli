@@ -25,7 +25,7 @@ describe('autonomous execution chain', () => {
 
   it('renders a Chinese beginner-readable chain', () => {
     const text = renderExecutionChain(buildExecutionChain());
-    expect(text).toContain('iCloser 自动执行链');
+    expect(text).toContain('icloser 自动执行链');
     expect(text).toContain('自动修复最多重试');
     expect(text).toContain('安全回滚');
     expect(text).toContain('记忆压缩与沉淀');

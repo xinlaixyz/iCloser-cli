@@ -236,7 +236,7 @@ describe('memory experience helpers', () => {
         rootPath: root,
         taskId: 'task-ok',
         type: 'analysis',
-        input: '补齐 iCloser 投资报告和竞品分析',
+        input: '补齐 icloser 投资报告和竞品分析',
         finalResponse: '完整报告',
         qualityGate: {
           score: 92,

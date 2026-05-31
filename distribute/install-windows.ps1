@@ -1,4 +1,4 @@
-# iCloser Agent Shell — Windows 一键安装器
+# icloser Agent Shell — Windows 一键安装器
 # 单文件分发。右键 → "使用 PowerShell 运行"
 # 卸载: .\install-windows.ps1 -Uninstall
 
@@ -15,7 +15,7 @@ function w-err  { param($m) Write-Host "  ✗ $m" -ForegroundColor Red; exit 1 }
 function w-info { param($m) Write-Host "    $m" -ForegroundColor Gray }
 
 if ($Uninstall) {
-    Write-Host "`niCloser Agent Shell · 卸载`n" -ForegroundColor Blue
+    Write-Host "`nicloser Agent Shell · 卸载`n" -ForegroundColor Blue
     npm uninstall -g icloser 2>$null
     if (Test-Path $INSTALL_DIR) { Remove-Item -Recurse -Force $INSTALL_DIR }
     $homeDir = Join-Path $env:USERPROFILE ".icloser"
@@ -26,7 +26,7 @@ if ($Uninstall) {
 
 Clear-Host 2>$null
 Write-Host ""
-Write-Host "  iCloser Agent Shell v$VERSION  —  Windows 一键安装" -ForegroundColor Cyan
+Write-Host "  icloser Agent Shell v$VERSION  —  Windows 一键安装" -ForegroundColor Cyan
 Write-Host ""
 
 # 1. Node.js
@@ -48,7 +48,7 @@ try {
 }
 
 # 2. Install
-w-step "安装 iCloser Agent Shell..."
+w-step "安装 icloser Agent Shell..."
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 if (-not (Test-Path (Join-Path $scriptDir "package.json"))) {
     w-err "未找到 package.json。请确保此脚本在项目根目录运行。"

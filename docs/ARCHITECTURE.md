@@ -358,4 +358,4 @@ ic docs diff-review
 
 ---
 
-> 本文档由 iCloser autopilot 自动生成草稿，运行 `ic auto docs` 重新生成。
+> 本文档由 icloser autopilot 自动生成草稿，运行 `ic auto docs` 重新生成。

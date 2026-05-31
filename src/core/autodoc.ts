@@ -126,7 +126,7 @@ function generateReadme(report: AutopilotReport): string {
     '',
     '## 项目结构',
     '',
-    '> 由 iCloser autopilot 自动生成，运行 `ic autopilot` 刷新。',
+    '> 由 icloser autopilot 自动生成，运行 `ic autopilot` 刷新。',
     '',
     '## 文档索引',
     '',
@@ -172,7 +172,7 @@ function generatePrd(report: AutopilotReport): string {
     '',
     '---',
     '',
-    '> 本文档由 iCloser autopilot 自动生成草稿，请根据实际项目情况补充完善。运行 `ic auto docs` 重新生成。',
+    '> 本文档由 icloser autopilot 自动生成草稿，请根据实际项目情况补充完善。运行 `ic auto docs` 重新生成。',
   ].join('\n') + '\n';
 }
 
@@ -218,7 +218,7 @@ function generateArchitecture(report: AutopilotReport): string {
     '',
     '---',
     '',
-    '> 本文档由 iCloser autopilot 自动生成草稿，运行 `ic auto docs` 重新生成。',
+    '> 本文档由 icloser autopilot 自动生成草稿，运行 `ic auto docs` 重新生成。',
   ].join('\n') + '\n';
 }
 
@@ -247,7 +247,7 @@ function generateApi(report: AutopilotReport): string {
     '',
     '---',
     '',
-    '> 本文档由 iCloser autopilot 自动生成草稿。',
+    '> 本文档由 icloser autopilot 自动生成草稿。',
   ].join('\n') + '\n';
 }
 
@@ -288,7 +288,7 @@ function generateTesting(report: AutopilotReport): string {
     '',
     '---',
     '',
-    '> 本文档由 iCloser autopilot 自动生成草稿。',
+    '> 本文档由 icloser autopilot 自动生成草稿。',
   ].join('\n') + '\n';
 }
 

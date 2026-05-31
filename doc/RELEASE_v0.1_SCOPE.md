@@ -1,4 +1,4 @@
-# iCloser v0.1 发布范围（冻结）
+# icloser v0.1 发布范围（冻结）
 
 > 这是 v0.1 唯一的范围文档。**不再新增 reanalysis / assessment / gap 文档。**
 > 历史分析文档已归档到 `doc/archive/`，仅供参考，不代表 v0.1 的承诺。

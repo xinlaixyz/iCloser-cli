@@ -1,4 +1,4 @@
-# iCloser 新手上手流程
+# icloser 新手上手流程
 
 这份文档只面向完全不会命令行、也不知道 Provider / 环境变量是什么的用户。
 
@@ -24,7 +24,7 @@ ic
 
 然后按提示选择 Provider 并粘贴 Key。Key 输入时不会显示。
 
-iCloser 会自动完成：
+icloser 会自动完成：
 
 1. 识别这是一段 API Key。
 2. 保存到用户全局配置。
@@ -67,7 +67,7 @@ ic
 
 任何时候拿到 Key，都可以直接粘贴后回车。
 
-首次进入 REPL 时，iCloser 会显示三个下一步选项：
+首次进入 REPL 时，icloser 会显示三个下一步选项：
 
 ```text
 1  粘贴 API Key    接入真实模型
@@ -103,7 +103,7 @@ ic
 'tsc' is not recognized as an internal or external command
 ```
 
-iCloser 会追加提示：
+icloser 会追加提示：
 
 ```text
 项目依赖可能还没安装。请先在项目目录运行 npm install，然后重新执行 ic t 或 ic verify。

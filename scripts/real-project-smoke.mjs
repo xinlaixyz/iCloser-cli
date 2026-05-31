@@ -103,7 +103,7 @@ async function writeFixture(project) {
   await writeFile(join(project, 'scripts', 'check-test.mjs'), [
     'import { readFileSync } from "node:fs";',
     'const math = readFileSync("src/math.ts", "utf-8");',
-    'if (!math.includes("iCloser mock edit")) throw new Error("mock edit marker missing");',
+    'if (!math.includes("icloser mock edit")) throw new Error("mock edit marker missing");',
     'console.log("test ok");',
     '',
   ].join('\n'), 'utf-8');
@@ -160,7 +160,7 @@ async function main() {
     run(process.execPath, [cli, 'report'], { cwd: project, env });
 
     const math = await readFile(join(project, 'src', 'math.ts'), 'utf-8');
-    assert(math.includes('iCloser mock edit'), 'src/math.ts should contain mock edit marker');
+    assert(math.includes('icloser mock edit'), 'src/math.ts should contain mock edit marker');
 
     process.stdout.write(`\n[project-smoke] PASS ${task.id}\n`);
     process.stdout.write(`[project-smoke] workspace ${project}\n`);

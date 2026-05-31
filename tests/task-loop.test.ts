@@ -102,7 +102,7 @@ describe('task thinking loop', () => {
   it('renders beginner-readable Chinese rules', () => {
     const text = renderTaskThinkingLoop();
 
-    expect(text).toContain('iCloser 三步任务循环');
+    expect(text).toContain('icloser 三步任务循环');
     expect(text).toContain('模型：负责理解目标');
     expect(text).toContain('工具：负责真正动手');
     expect(text).toContain('用户可随时打断');

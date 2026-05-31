@@ -67,9 +67,9 @@ describe('P0 product acceptance contract', () => {
     expect(isVagueFollowup('具体是什么呀')).toBe(true);
     expect(isVagueFollowup('详细点')).toBe(true);
 
-    const evidence = '### web_fetch\nURL: https://icloser.asia/\n标题: iCloser | 加密钱包、自托管与Web3支付入口\n来源: icloser.asia\n\nWeb3 支付入口。';
+    const evidence = '### web_fetch\nURL: https://icloser.asia/\n标题: icloser | 加密钱包、自托管与Web3支付入口\n来源: icloser.asia\n\nWeb3 支付入口。';
     const answer = synthesizeToolAnswerIfNeeded('具体是什么呀', '让我查看项目代码。', evidence);
-    expect(answer).toContain('iCloser | 加密钱包、自托管与Web3支付入口');
+    expect(answer).toContain('icloser | 加密钱包、自托管与Web3支付入口');
     expect(answer).toContain('不是当前本地代码项目');
   });
 

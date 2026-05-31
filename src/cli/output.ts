@@ -392,7 +392,7 @@ export function printError(err: Error | string): void {
 
 export function printHelp(): void {
   console.log(`
-${chalk.bold.blue('ic — iCloser Agent Shell')} ${chalk.dim('AI 工程执行 CLI')}
+${chalk.bold.blue('ic — icloser Agent Shell')} ${chalk.dim('AI 工程执行 CLI')}
 
 ${chalk.bold('首次使用')}
   ${chalk.cyan('ic setup')}                 配置 AI 服务和环境

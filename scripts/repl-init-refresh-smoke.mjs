@@ -97,7 +97,7 @@ async function main() {
     }
 
     await sleep(4000);
-    assert(outputBuffer.includes('iCloser') || outputBuffer.includes('◇'), 'REPL started');
+    assert(outputBuffer.includes('icloser') || outputBuffer.includes('◇'), 'REPL started');
     assert(!existsSync(join(project, '.icloser', 'icloser.json')), 'Project starts uninitialized');
 
     log('STEP 1: /doctor before init');

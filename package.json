@@ -1,12 +1,12 @@
 {
   "name": "icloser",
   "version": "0.1.0",
-  "description": "iCloser Agent Shell - AI 工程执行 CLI 系统。理解项目、修改代码、自动验证、生成报告。",
+  "description": "icloser Agent Shell - AI 工程执行 CLI 系统。理解项目、修改代码、自动验证、生成报告。",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
     "ic": "./dist/index.js",
-    "iCloser": "./dist/index.js"
+    "icloser": "./dist/index.js"
   },
   "files": [
     "dist/",
@@ -38,7 +38,7 @@
     "smoke:all": "node scripts/full-smoke.mjs",
     "smoke:keep": "node -e \"process.env.ICLOSER_KEEP_SMOKE='1'; import('./scripts/release-smoke.mjs')\"",
     "setup": "node dist/index.js setup",
-    "postinstall": "node -e \"const m='\\niCloser Agent Shell 已安装。\\n\\n快速开始：\\n  ic setup    首次配置向导\\n  ic --help   查看所有命令\\n  iCloser     也可用此命令（兼容旧习惯）\\n\\n如果 ic 命令不可用：\\n  全局安装：npm install -g icloser\\n  本地开发：npm link\\n  不用全局命令：npm run setup\\n'; console.log(m)\"",
+    "postinstall": "node -e \"const m='\\nicloser Agent Shell 已安装。\\n\\n快速开始：\\n  ic setup    首次配置向导\\n  ic --help   查看所有命令\\n  icloser     也可用此命令（兼容旧习惯）\\n\\n如果 ic 命令不可用：\\n  全局安装：npm install -g icloser\\n  本地开发：npm link\\n  不用全局命令：npm run setup\\n'; console.log(m)\"",
     "smoke:autopilot": "node scripts/autopilot-smoke.mjs",
     "smoke:repair": "node scripts/autopilot-repair-smoke.mjs",
     "smoke:loop": "node scripts/loop-tool-smoke.mjs",
@@ -72,11 +72,11 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/xinlaixyz/icloser-agent-shell.git"
+    "url": "git+https://github.com/xinlaixyz/icloser.git"
   },
-  "homepage": "https://github.com/xinlaixyz/icloser-agent-shell",
+  "homepage": "https://github.com/xinlaixyz/icloser",
   "bugs": {
-    "url": "https://github.com/xinlaixyz/icloser-agent-shell/issues"
+    "url": "https://github.com/xinlaixyz/icloser/issues"
   },
   "author": "xinlaixyz",
   "license": "MIT",

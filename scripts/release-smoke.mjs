@@ -103,7 +103,7 @@ async function main() {
     run(process.execPath, [cli, 'report'], { cwd: project, env });
 
     const notes = await readFile(join(project, 'notes.txt'), 'utf-8');
-    assert(notes.includes('iCloser mock edit'), 'notes.txt should contain mock edit marker');
+    assert(notes.includes('icloser mock edit'), 'notes.txt should contain mock edit marker');
     const report = await readFile(join(project, '.icloser', 'tasks', task.id, 'report.md'), 'utf-8');
     assert(report.includes('任务记忆候选'), 'report should include task memory candidates section');
     assert(report.includes('模板'), 'report should include proposed template candidate');

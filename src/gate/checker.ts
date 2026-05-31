@@ -307,7 +307,7 @@ function generatePRDescription(task: Task): string {
   lines.push(`风险等级：${riskLevel}`);
   lines.push('');
   lines.push('---');
-  lines.push(`🤖 Generated with iCloser Agent Shell | Task: ${task.id}`);
+  lines.push(`🤖 Generated with icloser Agent Shell | Task: ${task.id}`);
 
   return lines.join('\n');
 }

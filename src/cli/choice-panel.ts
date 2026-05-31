@@ -93,4 +93,4 @@ export function parseChoiceInput(input: string, optionCount: number, allowMultip
 function isAllChoice(input: string): boolean {
   return ['all', 'a', '全部', '全选', '都写', '全部写入', '写入全部'].includes(input);
 }
-// iCloser mock edit: S13验收：用一句话介绍iCloser
+// icloser mock edit: S13验收：用一句话介绍icloser

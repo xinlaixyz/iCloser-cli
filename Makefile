@@ -1,4 +1,4 @@
-# iCloser Agent Shell — Makefile
+# icloser Agent Shell — Makefile
 # 跨平台构建自动化
 
 VERSION := $(shell node -e "console.log(require('./package.json').version)")
@@ -42,7 +42,7 @@ macos-pkg: build test
 	bash scripts/build-macos-pkg.sh
 
 homebrew-test:
-	brew install --build-from-source ./homebrew/icloser-agent-shell.rb
+	brew install --build-from-source ./homebrew/icloser.rb
 
 # ── Quick Start ─────────────────────────────────
 

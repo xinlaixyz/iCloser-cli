@@ -5,7 +5,7 @@
   "triggers": ["安全", "security", "注入", "漏洞", "扫描漏洞", "安全检查", "security audit"],
   "requires": ["project-index"],
   "provider": "claude",
-  "author": "iCloser",
+  "author": "icloser",
   "license": "MIT",
   "type": "builtin"
 }

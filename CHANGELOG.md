@@ -5,7 +5,7 @@
 ### Release
 - v0.1 范围冻结与发布门禁收敛：修复阻断发布门禁的问题，锁定 v0.1 交付范围。
 - 全量发布门禁（full）全部通过、0 warnings：build / tsc / lint / 1802 测试 / smoke / smoke:tools / package。报告见 `doc/release/TRUST_REPORT_2026-05-31.md`，校验和见 `doc/release/CHECKSUMS_2026-05-31.json`。
-- 离线便携包产出 `out/icloser-agent-shell-0.1.0-portable.zip`（87.5 MB，含 node_modules，无需 npm install）。
+- 离线便携包产出 `out/icloser-0.1.0-portable.zip`（87.5 MB，含 node_modules，无需 npm install）。
 - 清理 git：Agent 运行时记忆产物（working/sensory/episodic 流 + SQLite 索引及 WAL/SHM）改为忽略并取消跟踪，curated `semantic/` 保留。
 
 ### Fixed

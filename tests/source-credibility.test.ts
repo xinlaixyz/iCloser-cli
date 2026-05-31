@@ -6,12 +6,12 @@ describe('source credibility', () => {
     expect(classifySourceCredibility('https://icloser.xyz').kind).toBe('official');
     expect(classifySourceCredibility('https://pitchhub.36kr.com/project/1').kind).toBe('database');
     expect(classifySourceCredibility('src/pages/Login.tsx').kind).toBe('local-file');
-    expect(classifySourceCredibility('iCloser 公司 融资 投资 估值').kind).toBe('search-query');
+    expect(classifySourceCredibility('icloser 公司 融资 投资 估值').kind).toBe('search-query');
   });
 
   it('summarizes best source and source mix', () => {
     const summary = summarizeSourceCredibility([
-      'iCloser 公司 融资 投资 估值',
+      'icloser 公司 融资 投资 估值',
       'https://pitchhub.36kr.com/project/1',
       'https://icloser.xyz',
     ]);

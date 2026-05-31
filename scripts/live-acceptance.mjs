@@ -19,7 +19,7 @@ function check(name, condition, detail = '') {
   else { console.log(`  [FAIL] ${name}${detail ? ': ' + detail : ''}`); failed++; }
 }
 
-console.log('=== iCloser Agent Shell — Acceptance ===\n');
+console.log('=== icloser Agent Shell — Acceptance ===\n');
 
 // Gate 1: Build + Test
 console.log('[1/6] Build & test');

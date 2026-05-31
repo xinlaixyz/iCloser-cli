@@ -1,4 +1,4 @@
-# iCloser
+# icloser
 
 终端里的中文 AI 改代码助手。接国产模型（DeepSeek / Qwen），理解项目、精确改代码、给你可审查的 diff。
 
@@ -11,8 +11,8 @@ npm install -g icloser
 或本地开发：
 
 ```bash
-git clone https://github.com/xinlaixyz/icloser-agent-shell.git
-cd icloser-agent-shell
+git clone https://github.com/xinlaixyz/icloser.git
+cd icloser
 npm install && npm run build && npm link
 ```
 

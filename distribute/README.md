@@ -1,4 +1,4 @@
-# iCloser Agent Shell · 分发包
+# icloser Agent Shell · 分发包
 
 给用户的一键安装文件。每个平台一个文件，双击或命令行运行。
 
@@ -17,7 +17,7 @@ chmod +x install-macos.sh
 
 **自动完成:**
 - 检测/安装 Homebrew + Node.js
-- 下载/编译 iCloser
+- 下载/编译 icloser
 - 全局注册 `ic` 命令
 - 添加到 PATH
 
@@ -41,7 +41,7 @@ chmod +x install-macos.sh
 
 **自动完成:**
 - 检测/安装 Node.js (winget)
-- 下载/编译 iCloser
+- 下载/编译 icloser
 - 全局注册 `ic` 命令
 
 ---

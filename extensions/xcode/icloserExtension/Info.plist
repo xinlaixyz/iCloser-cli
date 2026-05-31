@@ -3,9 +3,9 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key>
-    <string>iCloser</string>
+    <string>icloser</string>
     <key>CFBundleDisplayName</key>
-    <string>iCloser Agent Shell</string>
+    <string>icloser Agent Shell</string>
     <key>CFBundleIdentifier</key>
     <string>com.icloser.xcode-extension</string>
     <key>CFBundleVersion</key>

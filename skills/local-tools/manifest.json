@@ -5,7 +5,7 @@
   "triggers": ["安装工具", "本地工具", "配置工具", "eslint", "prettier", "jest", "lint", "格式化", "install tool", "setup tool", "local tools", "dev tools", "开发工具"],
   "requires": [],
   "provider": "claude",
-  "author": "iCloser",
+  "author": "icloser",
   "license": "MIT",
   "type": "builtin"
 }

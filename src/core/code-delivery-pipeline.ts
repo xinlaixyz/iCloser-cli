@@ -49,7 +49,7 @@ export async function requestCodeDeliveryPatch(
   const patchPrompt: AIPrompt = {
     ...prompt,
     systemPrompt: [
-      '你是 iCloser Code Delivery Pipeline。',
+      '你是 icloser Code Delivery Pipeline。',
       '你只能输出严格 JSON 代码块，不能输出解释。',
       'JSON 结构：{"summary":"...","changes":[{"file":"相对路径","operation":"write","content":"完整文件内容","reasoning":"..."}]}',
       'content 必须是完整文件内容，不能省略，不能用占位符。',

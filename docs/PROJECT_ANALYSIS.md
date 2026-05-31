@@ -1,4 +1,4 @@
-# iCloser Agent Shell — 项目完成度分析报告
+# icloser Agent Shell — 项目完成度分析报告
 
 版本: 1.1.0 | 日期: 2026-05-20 | 分析方式: 全量自动化测试 + 数据流验收 + CLI端到端
 

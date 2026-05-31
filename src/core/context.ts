@@ -222,7 +222,7 @@ export async function assembleContextFromProject(
   }
 
   if (!index) {
-    throw new Error('项目索引不存在，请先运行 iCloser scan');
+    throw new Error('项目索引不存在，请先运行 icloser scan');
   }
 
   const memory = await loadProjectMemory(rootPath);

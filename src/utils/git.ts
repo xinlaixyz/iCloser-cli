@@ -1,4 +1,4 @@
-// Git utilities for iCloser Agent Shell
+// Git utilities for icloser Agent Shell
 import { execFileSync } from 'child_process';
 import { validateCommitSafety, type CommitSecurityConfig } from '../core/commit-security.js';
 
