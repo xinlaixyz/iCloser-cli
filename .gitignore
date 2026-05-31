@@ -2,6 +2,15 @@ node_modules/
 dist/
 .env
 .icloser/
+
+# Agent runtime memory (ephemeral; regenerated at runtime). Curated semantic/ stays tracked.
+.agent/memory/working/
+.agent/memory/sensory/
+.agent/memory/long-term/episodic/
+.agent/memory/long-term/index.sqlite
+.agent/memory/long-term/index.sqlite-shm
+.agent/memory/long-term/index.sqlite-wal
+
 *.log
 .DS_Store
 Thumbs.db
