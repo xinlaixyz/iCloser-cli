@@ -41,7 +41,7 @@ if $UNINSTALL; then
         fi
     done
     # Remove npm global
-    npm uninstall -g icloser-agent-shell 2>/dev/null && ok "已移除 npm 全局包" || true
+    npm uninstall -g icloser 2>/dev/null && ok "已移除 npm 全局包" || true
     # Remove install dir
     if [ -d "$INSTALL_DIR" ]; then
         rm -rf "$INSTALL_DIR"

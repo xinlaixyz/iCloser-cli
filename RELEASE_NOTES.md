@@ -39,7 +39,7 @@
 ## 快速开始
 
 ```bash
-npm install -g icloser-agent-shell
+npm install -g icloser
 ic setup --mock          # 离线体验
 ic init                  # 初始化项目
 ic t "你的任务" --go      # 创建并执行

@@ -4,7 +4,7 @@
 
 ### npm 全局安装
 ```bash
-npm install -g icloser-agent-shell
+npm install -g icloser
 ic setup --mock       # 离线体验
 ```
 

@@ -84,7 +84,7 @@ step() { echo -e "  ${YELLOW}·${NC} $1"; }
 # ── Uninstall ──────────────────────────────────────
 if $UNINSTALL; then
     echo -e "\n${BLUE}iCloser Agent Shell · 卸载${NC}\n"
-    npm uninstall -g icloser-agent-shell 2>/dev/null && ok "npm 全局包已移除" || true
+    npm uninstall -g icloser 2>/dev/null && ok "npm 全局包已移除" || true
     for bin in ic iCloser; do
         [ -f "/usr/local/bin/$bin" ] && sudo rm -f "/usr/local/bin/$bin" && ok "/usr/local/bin/$bin" || true
     done

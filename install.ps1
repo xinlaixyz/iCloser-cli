@@ -18,7 +18,7 @@ function Write-INFO { param($msg) Write-Host "    $msg" -ForegroundColor Gray }
 if ($Uninstall) {
     Write-Host "`niCloser Agent Shell 卸载`n" -ForegroundColor Blue
     try {
-        npm uninstall -g icloser-agent-shell 2>$null
+        npm uninstall -g icloser 2>$null
         Write-OK "已卸载 icloser-agent-shell"
     } catch {
         Write-INFO "未找到全局安装"

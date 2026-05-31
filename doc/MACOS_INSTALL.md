@@ -27,7 +27,7 @@ nvm use 22
 ### 2. 全局安装
 
 ```bash
-npm install -g icloser-agent-shell
+npm install -g icloser
 ```
 
 安装完成后，以下两个命令均可启动：
@@ -133,7 +133,7 @@ export PATH="$(npm bin -g):$PATH"
 
 ```bash
 nvm use 22
-npm install -g icloser-agent-shell
+npm install -g icloser
 ```
 
 nvm 管理的 Node.js 全局模块目录在用户目录下，不需要 sudo。
@@ -144,7 +144,7 @@ nvm 管理的 Node.js 全局模块目录在用户目录下，不需要 sudo。
 mkdir ~/.npm-global
 npm config set prefix '~/.npm-global'
 export PATH="$HOME/.npm-global/bin:$PATH"
-npm install -g icloser-agent-shell
+npm install -g icloser
 ```
 
 ### 启动后提示"项目未初始化"
@@ -164,9 +164,9 @@ nvm use 22
 
 ### 命令 `ic` 或 `iCloser` 不识别
 
-1. 检查是否安装成功：`npm list -g icloser-agent-shell`
+1. 检查是否安装成功：`npm list -g icloser`
 2. 检查 PATH：`echo $PATH | grep npm`
-3. 重新安装：`npm uninstall -g icloser-agent-shell && npm install -g icloser-agent-shell`
+3. 重新安装：`npm uninstall -g icloser && npm install -g icloser`
 
 ## 验证安装
 
@@ -179,5 +179,5 @@ ic setup --mock    # 离线模式快速体验
 ## 卸载
 
 ```bash
-npm uninstall -g icloser-agent-shell
+npm uninstall -g icloser
 ```

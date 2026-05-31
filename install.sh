@@ -23,7 +23,7 @@ info() { echo -e "    ${GRAY}$1${NC}"; }
 # ============================================================
 if $UNINSTALL; then
     echo -e "\n${BLUE}iCloser Agent Shell 卸载${NC}\n"
-    npm uninstall -g icloser-agent-shell 2>/dev/null && ok "已卸载 icloser-agent-shell" || info "未找到全局安装"
+    npm uninstall -g icloser 2>/dev/null && ok "已卸载 icloser-agent-shell" || info "未找到全局安装"
     HOME_DIR="${ICLOSER_HOME:-$HOME/.icloser}"
     if [ -d "$HOME_DIR" ]; then
         rm -rf "$HOME_DIR"

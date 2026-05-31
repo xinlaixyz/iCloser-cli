@@ -16,7 +16,7 @@ function w-info { param($m) Write-Host "    $m" -ForegroundColor Gray }
 
 if ($Uninstall) {
     Write-Host "`niCloser Agent Shell · 卸载`n" -ForegroundColor Blue
-    npm uninstall -g icloser-agent-shell 2>$null
+    npm uninstall -g icloser 2>$null
     if (Test-Path $INSTALL_DIR) { Remove-Item -Recurse -Force $INSTALL_DIR }
     $homeDir = Join-Path $env:USERPROFILE ".icloser"
     if (Test-Path $homeDir) { Remove-Item -Recurse -Force $homeDir }

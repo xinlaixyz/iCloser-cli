@@ -5,7 +5,7 @@
 ## 安装
 
 ```bash
-npm install -g icloser-agent-shell
+npm install -g icloser
 ```
 
 或本地开发：
