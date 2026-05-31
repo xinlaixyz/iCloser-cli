@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
+import { tmpdir } from 'os';
 import {
   buildToolPlan,
   classifyFailure,
@@ -10,7 +11,7 @@ import {
 import { ExecutionMemory } from '../src/core/execution-memory.js';
 
 function fixture(): string {
-  const dir = mkdtempSync(join(process.cwd(), 'out', 'icloser-orch-'));
+  const dir = mkdtempSync(join(tmpdir(), 'icloser-orch-'));
   mkdirSync(join(dir, 'src'), { recursive: true });
   writeFileSync(join(dir, 'package.json'), JSON.stringify({
     name: 'orch-fixture',
@@ -21,7 +22,7 @@ function fixture(): string {
 }
 
 function multiModuleFixture(): string {
-  const dir = mkdtempSync(join(process.cwd(), 'out', 'icloser-orch-multi-'));
+  const dir = mkdtempSync(join(tmpdir(), 'icloser-orch-multi-'));
   mkdirSync(join(dir, 'agentfi-web'), { recursive: true });
   mkdirSync(join(dir, 'agentfi-server'), { recursive: true });
   mkdirSync(join(dir, 'database'), { recursive: true });

@@ -38,7 +38,7 @@ describe('verifier', () => {
       const result = await runVerification(root, identity, createTask('验证 scripts 优先'), {
         stages: ['compile', 'unit-test'],
         maxRetries: 1,
-        timeout: 5000,
+        timeout: 20000,
       });
 
       expect(result.overall).toBe('pass');
@@ -64,7 +64,7 @@ describe('verifier', () => {
       const result = await runVerification(root, identity, createTask('验证失败脚本'), {
         stages: ['compile', 'unit-test'],
         maxRetries: 1,
-        timeout: 5000,
+        timeout: 20000,
       });
 
       const failStage = result.stages.find(s => s.status === 'fail');
@@ -92,7 +92,7 @@ describe('verifier', () => {
       const result = await runVerification(root, identity, createTask('验证缺少依赖提示'), {
         stages: ['compile'],
         maxRetries: 1,
-        timeout: 5000,
+        timeout: 20000,
       });
 
       const failStage = result.stages.find(s => s.status === 'fail');

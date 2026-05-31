@@ -112,7 +112,7 @@ describe('tool-executor (S18)', () => {
   // executeToolCall success paths
   // ============================================================
   describe('executeToolCall success paths', () => {
-    const root = 'D:/temp/Codex/AgentCode';
+    const root = process.cwd();
 
     it('read_file reads a real file', async () => {
       const result = await executeToolCall('read_file', { path: 'package.json' }, root);

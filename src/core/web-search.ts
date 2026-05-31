@@ -352,6 +352,23 @@ function extractResults(data: Record<string, unknown>, query: string): WebSearch
   return results;
 }
 
+// DDG HTML links are protocol-relative redirect wrappers
+// (`//duckduckgo.com/l/?uddg=<encoded-target>&rut=...`). Unwrap them to the
+// real absolute target URL so callers get a usable https?:// link.
+function resolveDdgUrl(href: string): string {
+  let u = href.trim();
+  if (u.startsWith('//')) u = `https:${u}`;
+  try {
+    const parsed = new URL(u, 'https://duckduckgo.com');
+    if (parsed.pathname.endsWith('/l/') && parsed.searchParams.has('uddg')) {
+      return parsed.searchParams.get('uddg') as string; // already percent-decoded
+    }
+    return parsed.toString();
+  } catch {
+    return u;
+  }
+}
+
 // Extract results from DuckDuckGo HTML page (fallback when JSON API fails)
 function extractHtmlResults(html: string): WebSearchResult[] {
   const results: WebSearchResult[] = [];
@@ -362,7 +379,7 @@ function extractHtmlResults(html: string): WebSearchResult[] {
   const links: { url: string; title: string }[] = [];
   let m: RegExpExecArray | null;
   while ((m = linkRegex.exec(html)) !== null) {
-    links.push({ url: m[1], title: m[2].replace(/<[^>]+>/g, '').trim() });
+    links.push({ url: resolveDdgUrl(m[1]), title: m[2].replace(/<[^>]+>/g, '').trim() });
   }
 
   const snippets: string[] = [];
@@ -378,7 +395,7 @@ function extractHtmlResults(html: string): WebSearchResult[] {
   if (results.length === 0) {
     const broadLinkRegex = /<a[^>]*href="(https?:\/\/[^"]+)"[^>]*class="[^"]*result[^"]*"[^>]*>([^<]+)<\/a>/gi;
     while ((m = broadLinkRegex.exec(html)) !== null) {
-      results.push({ title: m[2].replace(/<[^>]+>/g, '').trim(), url: m[1], snippet: '' });
+      results.push({ title: m[2].replace(/<[^>]+>/g, '').trim(), url: resolveDdgUrl(m[1]), snippet: '' });
     }
   }
 
